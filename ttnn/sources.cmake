@@ -38,7 +38,6 @@ set(TTNN_CORE_SRCS
     core/tensor/serialization.cpp
     core/tensor/storage.cpp
     core/tensor/tensor.cpp
-    core/tensor/tensor_attributes.cpp
     core/tensor/tensor_impl.cpp
     core/tensor/tensor_ops.cpp
     cpp/ttnn/operations/experimental/core_subset_write/copy_to_device_filtered.cpp
@@ -464,7 +463,6 @@ set(TTNNCPP_API_HEADERS
     api/ttnn/tensor/shape/shape.hpp
     api/ttnn/tensor/storage.hpp
     api/ttnn/tensor/tensor.hpp
-    api/ttnn/tensor/tensor_attributes.hpp
     api/ttnn/tensor/tensor_impl.hpp
     api/ttnn/tensor/tensor_ops.hpp
     api/ttnn/tensor/tensor_spec.hpp
