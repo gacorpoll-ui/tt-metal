@@ -48,6 +48,33 @@ void RoutedMatmulDeviceOperation::validate_on_program_cache_miss(
         std::holds_alternative<ttnn::operations::matmul::MatmulMultiCoreReuseMultiCastProgramConfig>(
             operation_attributes.program_config),
         "routed_matmul: only MatmulMultiCoreReuseMultiCastProgramConfig is supported");
+
+    // Row-major in0 takes the fuse-tilize path (reader pulls sticks, compute
+    // tilizes before matmul). Only valid for unpackable dtypes (block-formats
+    // bfp8_b/bfp4_b cannot exist in DRAM as ROW_MAJOR), interleaved DRAM, and
+    // 32-aligned K (no ragged-edge padding in the row-major reader).
+    const auto& a = tensor_args.a;
+    if (a.layout() == tt::tt_metal::Layout::ROW_MAJOR) {
+        const auto dt = a.dtype();
+        TT_FATAL(
+            dt == tt::tt_metal::DataType::BFLOAT16 || dt == tt::tt_metal::DataType::FLOAT32 ||
+                dt == tt::tt_metal::DataType::UINT16 || dt == tt::tt_metal::DataType::UINT32,
+            "routed_matmul: ROW_MAJOR in0 must be a non-block-format dtype "
+            "(bfloat16/float32/uint16/uint32); got dtype index {}.",
+            static_cast<int>(dt));
+        TT_FATAL(
+            a.memory_config().memory_layout() == tt::tt_metal::TensorMemoryLayout::INTERLEAVED,
+            "routed_matmul: ROW_MAJOR in0 must be DRAM-interleaved.");
+        const auto& a_logical = a.logical_shape();
+        TT_FATAL(
+            a_logical[-1] % 32 == 0,
+            "routed_matmul: ROW_MAJOR in0 K (last dim = {}) must be 32-aligned (no ragged-edge support yet).",
+            a_logical[-1]);
+        TT_FATAL(
+            a_logical[-2] % 32 == 0,
+            "routed_matmul: ROW_MAJOR in0 M (second-to-last dim = {}) must be 32-aligned.",
+            a_logical[-2]);
+    }
 }
 
 RoutedMatmulDeviceOperation::spec_return_value_t RoutedMatmulDeviceOperation::compute_output_specs(

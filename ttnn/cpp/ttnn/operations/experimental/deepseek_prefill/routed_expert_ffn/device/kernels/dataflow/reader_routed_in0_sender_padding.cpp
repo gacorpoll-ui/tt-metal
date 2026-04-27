@@ -116,6 +116,18 @@ void kernel_main() {
     experimental::Semaphore<> sender_sem(get_compile_time_arg_val(15));
     experimental::Semaphore<> receiver_sem(get_compile_time_arg_val(16));
 
+#ifdef IN0_UNTILIZED
+    // Fuse-tilize sender path (interleaved DRAM in0 only). Reads sticks (full
+    // DRAM rows) into cb_in0_rm; the compute kernel calls tilize_block on this
+    // staging CB to produce cb_in0 tiles for matmul. Same total bytes per
+    // block as the tile path, so mcast topology is unchanged.
+    constexpr uint32_t cb_id_in0_rm = get_named_compile_time_arg_val("cb_in0_rm");
+    constexpr uint32_t in0_row_size_bytes = get_named_compile_time_arg_val("in0_row_size_bytes");
+    constexpr uint32_t in0_block_row_bytes = get_named_compile_time_arg_val("in0_block_row_bytes");
+    constexpr uint32_t in0_block_h_x_32 = get_named_compile_time_arg_val("in0_block_h_x_32");
+    experimental::CircularBuffer cb_in0_rm(cb_id_in0_rm);
+#endif  // IN0_UNTILIZED
+
 #ifdef IN0_SHARDED
     // In case we need to send multiple blocks per shard, in0 sharded cb is cb2 and we extract the sub-blocks to cb0
     constexpr uint32_t shard_read_stride = shard_width_in_tiles * in0_single_tile_size_bytes;
@@ -211,12 +223,24 @@ void kernel_main() {
             uint32_t in0_tensor_current_h_dim_block_start_addr = noc_shard_read_start_addr;
 #endif  // IN0_SHARDED
             uint32_t in0_tensor_current_h_dim_block_tile_id = in0_tensor_start_tile_id;
+#ifdef IN0_UNTILIZED
+            // Row-major path: track the top-of-block row id (DRAM page index for
+            // the row-major TensorAccessor). Derived from the tile id by
+            // converting tile-row (tile_id / stride_h_tiles) to physical row
+            // (* tile_height). Increments by in0_block_h * tile_height per bh.
+            uint32_t in0_tensor_current_h_dim_block_row_id =
+                (in0_tensor_start_tile_id / in0_tensor_stride_h) * in0_block_h_x_32 / in0_block_h;
+#endif  // IN0_UNTILIZED
             for (uint32_t bh = 0; bh < num_blocks_h_dim; ++bh) {
                 for (uint32_t bw = 0; bw < num_blocks_w_dim; ++bw) {
 #ifdef IN0_SHARDED
                     uint32_t in0_tensor_current_inner_dim_block_start_addr = in0_tensor_current_h_dim_block_start_addr;
 #endif  // IN0_SHARDED
                     uint32_t in0_tensor_current_inner_dim_block_start_tile_id = in0_tensor_current_h_dim_block_tile_id;
+#ifdef IN0_UNTILIZED
+                    // Byte offset within a row: inner-dim block index * block_w * 32 * elem_size.
+                    uint32_t in0_tensor_current_inner_dim_block_byte_offset = 0;
+#endif  // IN0_UNTILIZED
                     for (uint32_t block = 0; block < num_blocks_inner_dim; ++block) {
                         if constexpr (fuse_op) {
                             fused_op_receiver.update_current_block_start_tile_id(
@@ -225,6 +249,32 @@ void kernel_main() {
 
                         // Operand 0
                         // Common for sharded and interleaved paths
+#ifdef IN0_UNTILIZED
+                        cb_in0_rm.reserve_back(in0_block_h_x_32);
+                        uint32_t in0_rm_write_offset = 0;
+#ifndef SKIP_MCAST
+                        uint32_t in0_rm_start_address = cb_in0_rm.get_write_ptr();
+#endif  // SKIP_MCAST
+
+                        // Stick read: one DRAM page per row, fetch in0_block_row_bytes
+                        // starting at the block's column byte offset within the row.
+                        // Padding for ragged-edge M (last_block_h) is deferred — the
+                        // host op rejects M not 32-aligned for the row-major path, so
+                        // every stick is a real row.
+                        for (uint32_t h = 0; h < in0_block_h_x_32; ++h) {
+                            const uint32_t row_id = in0_tensor_current_h_dim_block_row_id + h;
+                            noc.async_read(
+                                s0,
+                                cb_in0_rm,
+                                in0_block_row_bytes,
+                                {.page_id = row_id, .offset_bytes = in0_tensor_current_inner_dim_block_byte_offset},
+                                {.offset_bytes = in0_rm_write_offset});
+                            in0_rm_write_offset += in0_block_row_bytes;
+                        }
+                        in0_tensor_current_inner_dim_block_byte_offset += in0_block_row_bytes;
+
+                        noc.async_read_barrier();
+#else  // !IN0_UNTILIZED
                         cb_in0.reserve_back(in0_block_num_tiles);
 #ifndef IN0_SHARDED
 
@@ -345,6 +395,7 @@ void kernel_main() {
                             }
                         }
 #endif  // IN0_SHARDED
+#endif  // IN0_UNTILIZED (close the outer if/else; mcast + push run for both paths)
 
 #ifndef SKIP_MCAST
                         // wait until all in0 mcast destinations have atomically incremented the in0 semaphore_addr
@@ -356,8 +407,16 @@ void kernel_main() {
                         // Now we have the block in the CB address, we can mcast to dests!
                         experimental::MulticastEndpoint mcast_dst;
                         // num_dests must not include source, since we are NOT really doing a local copy!
+                        // Source/dest L1 address is the staging CB write_ptr for the row-major path,
+                        // or the cb_in0 write_ptr for the tile path. Total bytes are identical
+                        // (in0_block_h * 32 * in0_block_w * 32 * elem_size = in0_block_num_tiles * tile_bytes).
+#ifdef IN0_UNTILIZED
+                        const uint32_t in0_mcast_src_addr = in0_rm_start_address;
+#else
+                        const uint32_t in0_mcast_src_addr = in0_start_address;
+#endif
                         noc.async_write_multicast(
-                            experimental::CoreLocalMem<uint32_t>(in0_start_address),
+                            experimental::CoreLocalMem<uint32_t>(in0_mcast_src_addr),
                             mcast_dst,
                             in0_block_size_bytes,
                             in0_mcast_num_cores,
@@ -366,7 +425,7 @@ void kernel_main() {
                              .noc_y_start = in0_mcast_dest_noc_start_y,
                              .noc_x_end = in0_mcast_dest_noc_end_x,
                              .noc_y_end = in0_mcast_dest_noc_end_y,
-                             .addr = in0_start_address},
+                             .addr = in0_mcast_src_addr},
                             true);
 
                         // Note: no need for write barrier, since these two multicasts are done on the same noc id, same
@@ -389,7 +448,12 @@ void kernel_main() {
                             in0_mcast_num_cores);
 #endif  // SKIP_MCAST
 
-                        // Common for sharded and interleaved paths
+                        // Push to the CB consumed by compute. Row-major path
+                        // pushes sticks to cb_in0_rm; the compute kernel calls
+                        // tilize_block to convert into cb_in0 for matmul.
+#ifdef IN0_UNTILIZED
+                        cb_in0_rm.push_back(in0_block_h_x_32);
+#else
                         cb_in0.push_back(in0_block_num_tiles);
 #ifdef INTERMEDIATE_CB_READ
                         // Clean up helper CB
@@ -397,12 +461,16 @@ void kernel_main() {
                         cb_helper.wait_front(one_tile);
                         cb_helper.pop_front(one_tile);
 #endif  // INTERMEDIATE_CB_READ
+#endif  // IN0_UNTILIZED
                     }
                 }
 #ifdef IN0_SHARDED
                 in0_tensor_current_h_dim_block_start_addr += in0_tensor_next_h_dim_block_stride_bytes;
 #endif  // IN0_SHARDED
                 in0_tensor_current_h_dim_block_tile_id += in0_tensor_next_h_dim_block_stride;
+#ifdef IN0_UNTILIZED
+                in0_tensor_current_h_dim_block_row_id += in0_block_h_x_32;
+#endif  // IN0_UNTILIZED
             }
 
             if constexpr (!bcast_A) {

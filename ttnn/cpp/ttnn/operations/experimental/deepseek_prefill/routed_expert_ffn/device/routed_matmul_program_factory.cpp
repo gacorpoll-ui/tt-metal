@@ -90,6 +90,7 @@ RoutedMatmulMcast2DProgramFactory::cached_program_t create_program_mcast_in0_in1
     uint32_t local_expert_idx,
     uint32_t curr_expert_iter,
     uint32_t expert_iter_length,
+    bool in0_is_row_major,
     CoreCoord sub_device_start_core = {0, 0}) {
     using namespace tt;
     using tt::tt_metal::TensorMemoryLayout;
@@ -687,6 +688,16 @@ RoutedMatmulMcast2DProgramFactory::cached_program_t create_program_mcast_in0_in1
         mm_kernel_in0_sender_interleaved_defines["IN0_SHARDED"] = "1";
     }
 
+    // Fuse-tilize path: enabled only when the host detected a ROW_MAJOR DRAM
+    // interleaved in0. The reader stops fetching tile pages and instead reads
+    // sticks (one DRAM row at a time) into cb_in0_rm; the compute kernel
+    // tilizes them into cb_in0 with compute_kernel_lib::tilize before matmul.
+    if (in0_is_row_major) {
+        mm_kernel_in0_sender_interleaved_defines["IN0_UNTILIZED"] = "1";
+        mm_kernel_in0_receiver_defines["IN0_UNTILIZED"] = "1";
+        mm_kernel_defines["IN0_UNTILIZED"] = "1";
+    }
+
     if (in1_receiver.num_cores() == 0) {
         mm_kernel_in1_sender_writer_defines["SKIP_MCAST"] = "1";
     }
@@ -798,6 +809,15 @@ RoutedMatmulMcast2DProgramFactory::cached_program_t create_program_mcast_in0_in1
             }
         }
 
+        // Row-major fuse-tilize path: stick = row of K elements; one in0 K-block
+        // is in0_block_w * 32 elements wide. The DRAM TensorAccessor is built
+        // from the row-major buffer's page geometry (page_size = K*elem_size),
+        // so noc_async_read uses {.page_id = row_id, .offset_bytes = block_off}.
+        const uint32_t in0_elem_size_bytes = in0_single_tile_size / (in0_tile.get_height() * in0_tile.get_width());
+        const uint32_t in0_row_size_bytes = K * in0_elem_size_bytes;
+        const uint32_t in0_block_row_bytes = in0_block_w * in0_tile.get_width() * in0_elem_size_bytes;
+        const uint32_t in0_block_h_x_32 = in0_block_h * in0_tile.get_height();
+
         mm_kernel_in0_sender_id = tt_metal::CreateKernel(
             program,
             "ttnn/cpp/ttnn/operations/experimental/deepseek_prefill/routed_expert_ffn/device/kernels/dataflow/"
@@ -813,6 +833,10 @@ RoutedMatmulMcast2DProgramFactory::cached_program_t create_program_mcast_in0_in1
                     {"cb_in0_sharded", tt::CBIndex::c_2},
                     {"cb_sparsity", tt::CBIndex::c_6},
                     {"cb_in0_intermediate", tt::CBIndex::c_8},
+                    {"cb_in0_rm", tt::CBIndex::c_12},
+                    {"in0_row_size_bytes", in0_row_size_bytes},
+                    {"in0_block_row_bytes", in0_block_row_bytes},
+                    {"in0_block_h_x_32", in0_block_h_x_32},
                     {"GUARD_CB_ID", guard_cb_index},
                     {"GUARD_ARG_BASE", 8u},
                     {"GUARD_GLOBAL_TABLE_CTA_OFFSET", in0_sender_global_cta_off},
@@ -868,6 +892,11 @@ RoutedMatmulMcast2DProgramFactory::cached_program_t create_program_mcast_in0_in1
                 }});
     }
 
+    // Row-major receiver args: per-block stick count = in0_block_h * 32. Same
+    // value computed in the sender path; recompute here so it's available
+    // unconditionally (kernels reference these only when IN0_UNTILIZED).
+    const uint32_t recv_in0_block_h_x_32 = in0_block_h * in0_tile.get_height();
+
     tt::tt_metal::KernelHandle mm_kernel_in0_receiver_id = 0;
     if (!in0_block_sharded and in0_receiver_interleaved.num_cores() > 0) {
         mm_kernel_in0_receiver_id = tt_metal::CreateKernel(
@@ -883,6 +912,8 @@ RoutedMatmulMcast2DProgramFactory::cached_program_t create_program_mcast_in0_in1
                 .defines = mm_kernel_in0_receiver_defines,
                 .named_compile_args = {
                     {"cb_in0", tt::CBIndex::c_0},
+                    {"cb_in0_rm", tt::CBIndex::c_12},
+                    {"in0_block_h_x_32", recv_in0_block_h_x_32},
                     {"GUARD_CB_ID", guard_cb_index},
                     {"GUARD_ARG_BASE", 2u},
                     {"GUARD_GLOBAL_TABLE_CTA_OFFSET", in0_recv_global_cta_off},
@@ -926,6 +957,8 @@ RoutedMatmulMcast2DProgramFactory::cached_program_t create_program_mcast_in0_in1
                 .defines = mm_kernel_in0_receiver_defines,
                 .named_compile_args = {
                     {"cb_in0", tt::CBIndex::c_0},
+                    {"cb_in0_rm", tt::CBIndex::c_12},
+                    {"in0_block_h_x_32", recv_in0_block_h_x_32},
                     {"GUARD_CB_ID", guard_cb_index},
                     {"GUARD_ARG_BASE", 2u},
                     {"GUARD_GLOBAL_TABLE_CTA_OFFSET", in0_recv_global_cta_off},
@@ -992,6 +1025,8 @@ RoutedMatmulMcast2DProgramFactory::cached_program_t create_program_mcast_in0_in1
                 {"cb_in0_intermediate", tt::CBIndex::c_8},
                 {"cb_in1_intermediate", tt::CBIndex::c_9},
                 {"cb_in0_transposed", tt::CBIndex::c_10},
+                {"cb_in0_rm", tt::CBIndex::c_12},
+                {"in0_block_h_x_32", recv_in0_block_h_x_32},
                 {"bias_ntiles", in1_per_core_w},
                 {"GUARD_CB_ID", guard_cb_index},
                 {"GUARD_ARG_BASE", 0u},
@@ -1014,6 +1049,30 @@ RoutedMatmulMcast2DProgramFactory::cached_program_t create_program_mcast_in0_in1
         in0_single_tile_size,
         in0_CB_size / in0_single_tile_size,
         in0_CB_size);
+
+    // Row-major staging CB for fused tilize-on-read.
+    // Same total bytes as cb_in0 (tilize is a layout reshape, not a size change),
+    // but pages are sticks (block_w * 32 * elem_size) instead of tiles. The
+    // compute kernel consumes this via compute_kernel_lib::tilize and writes
+    // tiles into cb_in0 for the matmul body. Created on all_cores so the mcast
+    // sender and receivers see identical L1 offsets — the sender mcast addr is
+    // its own cb_in0_rm write_ptr.
+    if (in0_is_row_major) {
+        const uint32_t in0_elem_size_bytes = in0_single_tile_size / (in0_tile.get_height() * in0_tile.get_width());
+        const uint32_t in0_block_row_bytes = in0_block_w * in0_tile.get_width() * in0_elem_size_bytes;
+        constexpr uint32_t in0_rm_cb_index = tt::CBIndex::c_12;
+        tt_metal::CircularBufferConfig in0_rm_cb_config =
+            tt_metal::CircularBufferConfig(in0_CB_size, {{in0_rm_cb_index, in0_data_format}})
+                .set_page_size(in0_rm_cb_index, in0_block_row_bytes);
+        tt_metal::CreateCircularBuffer(program, all_cores, in0_rm_cb_config);
+        log_debug(
+            LogOp,
+            "CB {} :: PS = {}, NP = {}, TOTAL = {} (in0_rm)",
+            in0_rm_cb_index,
+            in0_block_row_bytes,
+            in0_CB_size / in0_block_row_bytes,
+            in0_CB_size);
+    }
 
     uint32_t src1_cb_index = tt::CBIndex::c_1;
     tt_metal::CircularBufferConfig src1_cb_config =
@@ -1933,6 +1992,13 @@ static RoutedMatmulMcast2DProgramFactory::cached_program_t routed_matmul_build_p
     const uint32_t guard_expert_iter = operation_attributes.curr_expert_iter;
     const uint32_t expert_iter_length = operation_attributes.expert_iter_length;
 
+    // Fuse-tilize path: when in0 is interleaved DRAM ROW_MAJOR, the reader pulls
+    // sticks (full DRAM rows) into a row-major staging CB and the compute kernel
+    // tilizes per inner-dim block before matmul. Sharded in0 stays on the existing
+    // tile-pages path.
+    const bool in0_is_row_major = a.layout() == tt::tt_metal::Layout::ROW_MAJOR &&
+                                  a.memory_config().memory_layout() == tt::tt_metal::TensorMemoryLayout::INTERLEAVED;
+
     return routed_mcast_optimized_helpers::create_program_mcast_in0_in1(
         program,
         device,
@@ -1979,6 +2045,7 @@ static RoutedMatmulMcast2DProgramFactory::cached_program_t routed_matmul_build_p
         local_expert_idx,
         guard_expert_iter,
         expert_iter_length,
+        in0_is_row_major,
         sub_device_start_core);
 }
 

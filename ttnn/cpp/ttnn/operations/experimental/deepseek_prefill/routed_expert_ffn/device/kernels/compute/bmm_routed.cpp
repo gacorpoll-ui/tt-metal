@@ -21,6 +21,13 @@
 
 #include "api/compute/eltwise_unary/sfpu_split_includes.h"
 
+#ifdef IN0_UNTILIZED
+// Fused-tilize path: row-major sticks land in cb_in0_rm via the in0 reader/
+// receiver, and the compute kernel tilizes one matmul-block's worth into
+// cb_in0 before each matmul block.
+#include "ttnn/cpp/ttnn/kernel_lib/tilize_helpers.hpp"
+#endif
+
 // Guard: mark this as the compute (TRISC) path so guard.h compiles the no-op variant.
 // NOT added to mm_kernel_defines to avoid redefinition in defines_generated.h.
 #define GUARD_COMPUTE_KERNEL
@@ -200,6 +207,13 @@ void kernel_main() {
     // as input for the matmul call.
     constexpr uint32_t in0_transpose_cb_id = get_named_compile_time_arg_val("cb_in0");
 
+#ifdef IN0_UNTILIZED
+    // Row-major staging CB filled by the in0 reader/receiver; tilize_block writes
+    // tiles into in0_cb (cb_in0) for the matmul block.
+    constexpr uint32_t in0_rm_cb_id = get_named_compile_time_arg_val("cb_in0_rm");
+    constexpr uint32_t in0_block_h_x_32 = get_named_compile_time_arg_val("in0_block_h_x_32");
+#endif
+
     experimental::CircularBuffer in0_cb(in0_cb_id);
     experimental::CircularBuffer in1_cb(in1_cb_id);
     experimental::CircularBuffer out_cb(out_cb_id);
@@ -285,6 +299,30 @@ void kernel_main() {
                             in0_block_w);
                         PACK((pack_reconfig_data_format(mm_partials_cb_id)));
                     }
+
+#ifdef IN0_UNTILIZED
+                    // Row-major sticks have arrived in cb_in0_rm; tilize one
+                    // matmul block's worth (in0_block_h tile-rows x in0_block_w
+                    // tile-cols) into cb_in0. tilize_block waits/pops the
+                    // staging CB internally and pushes tiles into cb_in0;
+                    // matmul then waits/pops cb_in0 as in the tile path.
+                    compute_kernel_lib::tilize<
+                        in0_block_w,
+                        in0_rm_cb_id,
+                        in0_cb_id,
+                        compute_kernel_lib::tilize_config::InitUninitMode::InitAndUninit,
+                        compute_kernel_lib::tilize_config::WaitMode::WaitBlock,
+                        compute_kernel_lib::tilize_config::ReconfigureRegisterDatatypeMode::UnpackReconfigure>(
+                        in0_block_h_x_32 / 32, in0_block_h_x_32);
+                    mm_block_init_short_with_dt(
+                        in0_cb_id,
+                        in1_cb_id,
+                        in0_rm_cb_id,
+                        in1_transpose_tile,
+                        out_subblock_w,
+                        out_subblock_h,
+                        in0_block_w);
+#endif  // IN0_UNTILIZED
 
                     in0_cb.wait_front(in0_block_num_tiles);
                     in1_cb.wait_front(in1_block_num_tiles);

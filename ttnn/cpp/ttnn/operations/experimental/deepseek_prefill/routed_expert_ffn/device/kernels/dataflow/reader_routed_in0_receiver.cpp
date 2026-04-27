@@ -52,6 +52,14 @@ void kernel_main() {
     experimental::Semaphore<> sender_sem(get_compile_time_arg_val(4));
     experimental::Semaphore<> receiver_sem(get_compile_time_arg_val(5));
 
+#ifdef IN0_UNTILIZED
+    // Row-major fuse-tilize path: receive sticks into cb_in0_rm; the local
+    // compute kernel tilizes them into cb_in0 before matmul.
+    constexpr uint32_t cb_id_in0_rm = get_named_compile_time_arg_val("cb_in0_rm");
+    constexpr uint32_t in0_block_h_x_32 = get_named_compile_time_arg_val("in0_block_h_x_32");
+    experimental::CircularBuffer cb_in0_rm(cb_id_in0_rm);
+#endif  // IN0_UNTILIZED
+
     volatile tt_l1_ptr uint32_t* in0_mcast_receiver_semaphore_addr_ptr =
         reinterpret_cast<volatile tt_l1_ptr uint32_t*>(in0_mcast_receiver_semaphore_addr);
 
@@ -84,8 +92,14 @@ void kernel_main() {
         for (uint32_t bh = 0; bh < num_blocks_h_dim; ++bh) {
             for (uint32_t bw = 0; bw < num_blocks_w_dim; ++bw) {
                 for (uint32_t block = 0; block < num_blocks_inner_dim; ++block) {
-                    // Operand 0
+                    // Operand 0: receive mcasted block. Row-major fuse-tilize
+                    // path receives sticks into cb_in0_rm (page count =
+                    // in0_block_h * 32); tile path receives tiles into cb_in0.
+#ifdef IN0_UNTILIZED
+                    cb_in0_rm.reserve_back(in0_block_h_x_32);
+#else
                     cb_in0.reserve_back(in0_block_num_tiles);
+#endif
 
                     // Set in0 semaphore value to INVALID
                     receiver_sem.set(INVALID);
@@ -96,7 +110,11 @@ void kernel_main() {
                     // wait on in0 semaphore value to become VALID (set by mcast sender after it multicasts data)
                     receiver_sem.wait(VALID);
 
+#ifdef IN0_UNTILIZED
+                    cb_in0_rm.push_back(in0_block_h_x_32);
+#else
                     cb_in0.push_back(in0_block_num_tiles);
+#endif
                 }
             }
         }
