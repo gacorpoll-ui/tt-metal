@@ -11,6 +11,7 @@
 #include "ckernel_instr_params.h"
 #include "ckernel_proj_params.h"
 #include "ckernel_template.h"
+#include "llk_assert.h"
 #include "llk_defs.h"
 #include "tensix_types.h"
 
@@ -80,6 +81,15 @@ tile_counter_u volatile* const tile_counters = (tile_counter_u volatile* const)T
 
 // Destination register offset, offset = 0 -> targets dest bank 0, offset = 512 for 16bit dest, 256 for 32bit dest -> targets dest bank 1
 static std::uint32_t dest_register_offset = 0;
+
+enum DataFormatConfigSet : std::uint8_t
+{
+    DEFAULT               = 0,
+    MOV_SRC2DST_OPS_INT32 = 1
+};
+
+// global variable for all 4 threads
+inline DataFormatConfigSet data_format_config_set = DataFormatConfigSet::DEFAULT;
 
 /**
 * @brief Check divisibility by power of 2
@@ -263,6 +273,98 @@ inline void _set_packer_dest_registers_()
     else
     {
         cfg[THCON_PACKER1_REG0_SRC_ADDR_OFFSET_ADDR32] = dest_buffer_base_offset;
+    }
+}
+
+/**
+ * @brief Determines whether the source register format and Float32 destination register format are a supported combination
+ *
+ * @param src_reg_fmt: The source register format
+ */
+inline bool _is_src_fmt_fp32_dest_compatible_(const DataFormat src_reg_fmt)
+{
+    return src_reg_fmt == DataFormat::Float16_b || src_reg_fmt == DataFormat::Float16 || src_reg_fmt == DataFormat::Tf32 ||
+           src_reg_fmt == DataFormat::MxFp4_2x_A || src_reg_fmt == DataFormat::MxFp4_2x_B;
+}
+
+/**
+ * @brief Determines whether the source register format and Int32 destination register format are a supported combination
+ *
+ * @param src_reg_fmt: The source register format
+ */
+inline bool _is_src_fmt_int32_dest_compatible_(const DataFormat src_reg_fmt)
+{
+    return src_reg_fmt == DataFormat::Int8 || src_reg_fmt == DataFormat::UInt8 || src_reg_fmt == DataFormat::Int8_2x || src_reg_fmt == DataFormat::UInt8_2x;
+}
+
+template <bool EN_IMPLIED_MATH_FORMAT, bool EN_32BIT_DEST>
+inline void _configure_default_data_format_state_(DataFormat srcA_format, DataFormat srcB_format)
+{
+    if (data_format_config_set != DataFormatConfigSet::DEFAULT)
+    {
+        TTI_STALLWAIT(p_stall::STALL_CFG, 0, p_stall::SFPU1, p_stall::MATH);
+        cfg_rmw(DISABLE_IMPLIED_SRCA_FMT_SEC0_Base_RMW, !EN_IMPLIED_MATH_FORMAT);
+        cfg_rmw(DISABLE_IMPLIED_SRCA_FMT_SEC1_Base_RMW, !EN_IMPLIED_MATH_FORMAT);
+        cfg_rmw(DISABLE_IMPLIED_SRCA_FMT_SEC2_Base_RMW, !EN_IMPLIED_MATH_FORMAT);
+        cfg_rmw(DISABLE_IMPLIED_SRCA_FMT_SEC3_Base_RMW, !EN_IMPLIED_MATH_FORMAT);
+        cfg_rmw(DISABLE_IMPLIED_SRCB_FMT_SEC0_Base_RMW, !EN_IMPLIED_MATH_FORMAT);
+        cfg_rmw(DISABLE_IMPLIED_SRCB_FMT_SEC1_Base_RMW, !EN_IMPLIED_MATH_FORMAT);
+        cfg_rmw(DISABLE_IMPLIED_SRCB_FMT_SEC2_Base_RMW, !EN_IMPLIED_MATH_FORMAT);
+        cfg_rmw(DISABLE_IMPLIED_SRCB_FMT_SEC3_Base_RMW, !EN_IMPLIED_MATH_FORMAT);
+
+        const bool EN_FP32_DEST_FORMAT  = _is_src_fmt_fp32_dest_compatible_(srcA_format) && _is_src_fmt_fp32_dest_compatible_(srcB_format);
+        const bool EN_INT32_DEST_FORMAT = _is_src_fmt_int32_dest_compatible_(srcA_format) && _is_src_fmt_int32_dest_compatible_(srcB_format);
+        LLK_ASSERT(!(EN_FP32_DEST_FORMAT && EN_INT32_DEST_FORMAT), "Cannot have Int32 dest & Float32 dest at the same time");
+
+        std::uint8_t SRCA_FORMAT_MASKED = static_cast<std::uint8_t>(srcA_format) & 0xFF;
+        std::uint8_t SRCB_FORMAT_MASKED = static_cast<std::uint8_t>(srcB_format) & 0xFF;
+
+        cfg_rmw(ALU_FORMAT_SPEC_REG_SrcA_val_RMW, SRCA_FORMAT_MASKED);
+        cfg_rmw(ALU_FORMAT_SPEC_REG_SrcA_override_RMW, 0x1);
+        cfg_rmw(ALU_FORMAT_SPEC_REG_SrcB_val_RMW, SRCB_FORMAT_MASKED);
+        cfg_rmw(ALU_FORMAT_SPEC_REG_SrcB_override_RMW, 0x1);
+
+        cfg_rmw(ALU_FORMAT_SPEC_REG0_SrcA_RMW, SRCA_FORMAT_MASKED);
+        cfg_rmw(ALU_FORMAT_SPEC_REG1_SrcB_RMW, SRCB_FORMAT_MASKED);
+
+        cfg_rmw(ALU_ACC_CTRL_Fp32_enabled_RMW, EN_32BIT_DEST && EN_FP32_DEST_FORMAT);
+        cfg_rmw(ALU_ACC_CTRL_SFPU_Fp32_enabled_RMW, EN_32BIT_DEST && EN_FP32_DEST_FORMAT);
+        cfg_rmw(ALU_ACC_CTRL_INT8_math_enabled_RMW, EN_32BIT_DEST && EN_INT32_DEST_FORMAT);
+
+        data_format_config_set = DataFormatConfigSet::DEFAULT;
+    }
+}
+
+inline void _configure_mov_src2dst_ops_data_format_state_(DataFormat srcA_format, DataFormat srcB_format)
+{
+    if (data_format_config_set != DataFormatConfigSet::MOV_SRC2DST_OPS_INT32)
+    {
+        TTI_STALLWAIT(p_stall::STALL_CFG, 0, p_stall::SFPU1, p_stall::MATH);
+        cfg_rmw(DISABLE_IMPLIED_SRCA_FMT_SEC0_Base_RMW, 1);
+        cfg_rmw(DISABLE_IMPLIED_SRCA_FMT_SEC1_Base_RMW, 1);
+        cfg_rmw(DISABLE_IMPLIED_SRCA_FMT_SEC2_Base_RMW, 1);
+        cfg_rmw(DISABLE_IMPLIED_SRCA_FMT_SEC3_Base_RMW, 1);
+        cfg_rmw(DISABLE_IMPLIED_SRCB_FMT_SEC0_Base_RMW, 1);
+        cfg_rmw(DISABLE_IMPLIED_SRCB_FMT_SEC1_Base_RMW, 1);
+        cfg_rmw(DISABLE_IMPLIED_SRCB_FMT_SEC2_Base_RMW, 1);
+        cfg_rmw(DISABLE_IMPLIED_SRCB_FMT_SEC3_Base_RMW, 1);
+
+        std::uint8_t SRCA_FORMAT_MASKED = static_cast<std::uint8_t>(srcA_format) & 0xFF;
+        std::uint8_t SRCB_FORMAT_MASKED = static_cast<std::uint8_t>(srcB_format) & 0xFF;
+
+        cfg_rmw(ALU_FORMAT_SPEC_REG_SrcA_val_RMW, SRCA_FORMAT_MASKED);
+        cfg_rmw(ALU_FORMAT_SPEC_REG_SrcA_override_RMW, 0x1);
+        cfg_rmw(ALU_FORMAT_SPEC_REG_SrcB_val_RMW, SRCB_FORMAT_MASKED);
+        cfg_rmw(ALU_FORMAT_SPEC_REG_SrcB_override_RMW, 0x1);
+
+        cfg_rmw(ALU_FORMAT_SPEC_REG0_SrcA_RMW, SRCA_FORMAT_MASKED);
+        cfg_rmw(ALU_FORMAT_SPEC_REG1_SrcB_RMW, SRCB_FORMAT_MASKED);
+
+        cfg_rmw(ALU_ACC_CTRL_Fp32_enabled_RMW, 1);
+        cfg_rmw(ALU_ACC_CTRL_SFPU_Fp32_enabled_RMW, 0);
+        cfg_rmw(ALU_ACC_CTRL_INT8_math_enabled_RMW, 0);
+
+        data_format_config_set = DataFormatConfigSet::MOV_SRC2DST_OPS_INT32;
     }
 }
 
