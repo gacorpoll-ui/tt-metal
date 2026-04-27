@@ -8,11 +8,11 @@ tt-inference-server, etc.) — detect context from the working directory, don't 
 ## Inputs
 
 You will receive:
-- **Topic**: what to research (natural language query)
+- **Subject**: what to research (natural language query)
 - **Reference pointers**: relevant content from `tt-agent/knowledge/<topic>.md`, if
   available in the current repo (external references + distilled patterns as
   starting points)
-- **Notes path**: where to write the output (e.g., `~/.tt-agent/notes/context-<slug>.md`)
+- **Topic slug**: target topic for the note (e.g., `learn-<slug>`)
 
 ## Research Strategy
 
@@ -47,32 +47,26 @@ name from `git remote get-url origin` (e.g., `tenstorrent/tt-metal`). Good queri
 If deepwiki-mcp is unavailable, do a broader local search (widen Grep patterns,
 explore adjacent directories). Note the limitation in your output.
 
-### Step 4: Write the context note
+### Step 4: Prepend a research entry
 
-Write to the notes path provided. Use this format exactly:
+Invoke `/tt:note` with topic=`learn-<subject-slug>`, title=<one-line summary>,
+body=<your research findings, using the body convention below>.
+
+Conventional body for tt-learn entries:
 
 ```markdown
-# Context: <topic>
+**Core insight:** <1–3 sentences: the single most important thing the reader needs to know.>
 
-**Date**: <today's date>  **Repo**: <from git remote>  **Commit**: <short hash>
+**How it works:**
+- <Concise bullet points — only what's needed to act on the subject>
 
-## Core Insight
-
-<1-3 sentences: the single most important thing the reader needs to know.>
-
-## How It Works
-
-<Concise explanation — bullet points preferred over prose. Only include what
-someone needs to act on the topic. Typical length: 5-15 bullet points.>
-
-## Key Files
-
+**Key files:**
 - `path/to/file` — one-line description
 ```
 
-**Length target: under 80 lines total.** If you're over, cut — don't summarize
-what's obvious from file paths, don't repeat the topic question, don't add
-background the reader didn't ask for.
+**Body target: under 80 lines.** If over, cut — don't summarize what's obvious
+from file paths, don't repeat the subject query, don't add background the
+reader didn't ask for.
 
 ## Rules
 
@@ -93,5 +87,7 @@ background the reader didn't ask for.
 
 6. **Stay on topic.** Answer the query. Nothing tangential.
 
-7. **Get the commit hash and repo.** Run `git rev-parse --short HEAD` and detect the
-   repo from `git remote get-url origin`.
+7. **Get the source SHA and repo.** Run `git rev-parse --short HEAD` and
+   `git remote get-url origin` in the active workspace. Use the basename for
+   `<source-repo>` and append `-dirty` if `git status --porcelain` is non-empty.
+   `/tt:note` handles the metadata-line formatting.

@@ -23,7 +23,7 @@ inspectable on disk.
 
 Build the env file from three sources, in order:
 1. **Workspace-detect**: paths, `$USER`, `HF_HOME`, `HF_TOKEN`
-2. **tt:learn note** (`~/.tt-agent/notes/context-<target-slug>-params.md`): required
+2. **tt:learn note** (`~/.tt-agent/notes/learn-<target-slug>-params.md`): required
    env vars, optional vars, numeric constraint relationships, relevant paths.
    This is the authoritative source — extracted from actual source code, not recipe tables.
    If the note doesn't exist yet, invoke `tt:learn("<target> env vars and config params")`

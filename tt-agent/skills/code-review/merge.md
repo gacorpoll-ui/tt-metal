@@ -71,7 +71,7 @@ reproducible.
 
 **Scope**: <scope>    **Files**: <count>    **Commit**: <sha>
 **Reviewers**: <list, with failures noted>
-**Note**: ~/.tt-agent/notes/findings-review-<ts>-<scope>.md
+**Note**: ~/.tt-agent/notes/code-review.md (entry: <YYYY-MM-DD HH:MM>)
 
 ---
 
@@ -112,7 +112,7 @@ If no issues:
 
 **Scope**: <scope>    **Files**: <count>    **Commit**: <sha>
 **Reviewers**: <list>
-**Note**: ~/.tt-agent/notes/findings-review-<ts>-<scope>.md
+**Note**: ~/.tt-agent/notes/code-review.md (entry: <YYYY-MM-DD HH:MM>)
 
 No issues found.
 ```
@@ -129,13 +129,18 @@ The reviewer wire format (bulleted, `## Findings`) and the merged format
 
 ## Note File
 
-Persist the same content (header + all findings in identical format) to:
+Persist the same content (header + all findings in identical format) as a new
+H2 entry prepended to:
 
 ```
-~/.tt-agent/notes/findings-review-<YYYY-MM-DD-HHMMSS>-<scope-slug>.md
+~/.tt-agent/notes/code-review.md
 ```
 
-Seconds precision prevents collisions on back-to-back reviews.
+Entry title format: `Reviewed: <scope-slug> — <findings-summary>`. The
+`<findings-summary>` records the count by severity. Multiple reviews on the
+same scope coexist as separate entries — order in the timeline plus entry
+titles disambiguate. `/tt:note` handles the atomic write + commit; entries
+follow its standard shape.
 
 `<scope-slug>`: short dash-delimited tag — `all-uncommitted`, `branch-vs-main`,
 `staged`, `unstaged`, or `files-<first-file-stem>` for specific files.

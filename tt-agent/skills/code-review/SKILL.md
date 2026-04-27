@@ -42,9 +42,10 @@ select scope → gather diff → capture metadata → dispatch reviewers → mer
 5. **Merge**: Apply `merge.md`. Verify each reviewer returned a well-formed
    output; note failures in the header. Detect duplicates, apply severity
    tiebreak, tag flaggers.
-6. **Note**: Write the full merged plan to
-   `~/.tt-agent/notes/findings-review-<YYYY-MM-DD-HHMMSS>-<scope-slug>.md`.
-   Aggregate `## Learn Notes` from every reviewer into the evidence trail.
+6. **Note**: Invoke `/tt:note` with topic=`code-review`,
+   title=`Reviewed: <scope-slug> — <findings summary>`,
+   body=<merged findings + aggregated `## Learn Notes` evidence trail from
+   every reviewer>.
 7. **Return**: Stream the unified plan with persistent 1..N numbering across severities.
 
 ## Scope Selection
@@ -60,7 +61,8 @@ Claude Code's `AskUserQuestion`, or a simple prompt):
 | all uncommitted (default) | `git diff HEAD` |
 | specific files | `git diff HEAD -- <paths>` |
 
-Scope slugs for the note filename: `staged`, `unstaged`, `branch-vs-main`,
+Scope slugs for entry titles (e.g., `Reviewed: branch-vs-main` or
+`Reviewed: files-vision-mlp`): `staged`, `unstaged`, `branch-vs-main`,
 `all-uncommitted`, `files-<first-file-stem>`.
 
 ## Reviewer Cast

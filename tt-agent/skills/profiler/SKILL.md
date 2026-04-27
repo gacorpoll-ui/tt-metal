@@ -44,55 +44,25 @@ resolve target → compose + dispatch → find CSV → analyze → interpret →
    the recipe documents.
 5. **Interpret**: load `interpretation.md` for columns, bound classes,
    and tags.
-6. **Note**: write `~/.tt-agent/notes/profile-<scope>-<YYYY-MM-DD-HHMMSS>.md`
-   (format below). Return the note path + top-3 ops to the caller.
+6. **Note**: invoke `/tt:note` with topic=`<scope>` (caller's scope, or
+   developer-supplied if standalone), title=`Profile — <summary with dominant
+   metric and headline utilization>`, body=<top ops, bottleneck, CSV path>.
 
 ## Scope Naming
 
-`<scope>` is a short slug — op, test, or kernel name. Examples:
-`matmul-2d`, `bert-tiny-demo`, `flash-attention`.
+`<scope>` is a short slug — op, test, or kernel name. Lowercase, dash-separated.
 
-## Note Format
+## Entry body convention
 
 ```markdown
-# Profile: <scope>
+**Top ops** (device-FW μs):
+| Op | Time | Cores | DRAM% | FLOPs% | Bound |
+|---|---|---|---|---|---|
+| ... | ... | ... | ... | ... | ... |
 
-**Date:** YYYY-MM-DD HH:MM:SS
-**Repo:** tt-metal @ <short-sha>
-**Target:** <test path> -k <filter>
-**CSV:** <absolute path to ops_perf_results_*.csv>
-**Tracy trace:** <absolute path to .tracy file>
-
-## Top Ops by Device FW Duration
-
-| Rank | Op Code | Device FW [ns] | % scope | Cum % | Cores | Math Fidelity | DRAM % | FLOPs % | Abs TFLOPs | Bottleneck tag |
-|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... |
-
-## Per-RISC Breakdown — Top Op
-
-| RISC | Duration [ns] | % of op |
-|---|---|---|
-| BRISC | ... | ... |
-| NCRISC | ... | ... |
-| TRISC0/1/2 | ... | ... |
-
-**overhead_ratio** (top op): <pct>%
-
-## Bottleneck Read
-
-<1-3 sentences naming the bound class per `interpretation.md`: what
-dominates device time, which processor, any obvious under-utilization.
-No prescriptions.>
-
-## Raw tt-perf-report Output
-
-<paste the full rendered report>
+**Bottleneck:** <which op + why>
+**CSV:** `<path>` (full Tracy output)
 ```
-
-`% scope` / `Cum %` answer "is op X THE bottleneck" at a glance (required
-for utilization-typed goals). `DRAM %` / `FLOPs %` / `Abs TFLOPs` /
-overhead_ratio feed bound classification per `interpretation.md`.
 
 ## Caller Contract
 

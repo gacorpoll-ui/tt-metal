@@ -47,7 +47,7 @@ knowledge/          — stable facts and topic knowledge
     tt-metal/       — build, test, env, profiler for tt-metal
     vllm/           — build, server lifecycle, benchmark for vLLM
 
-~/.tt-agent/notes   — shared blackboard (findings, plans, experiments)
+~/.tt-agent/notes   — git-tracked timeline notes (one file per topic — see DESIGN.md § "Notes are git-tracked timelines per topic")
 ```
 
 ## Contributing

@@ -41,29 +41,22 @@ note in `~/.tt-agent/notes/` that the Baseline phase reads.
 
 ## Output
 
-A short note at `~/.tt-agent/notes/prepare-<scope>-<YYYY-MM-DD-HHMMSS>.md`:
+Invoke `/tt:note` with topic=`<scope>`, title=`Prepare — <one-line summary>`,
+body=<body below>. tt-learn (Step 1) has already written its own entry — this
+phase produces two commits, one per entry.
+
+Conventional body:
 
 ```markdown
-# Prepare: <scope>
-
-**Date:** YYYY-MM-DD HH:MM:SS
-**Repo:** tt-metal @ <short-sha>
 **Target:** <op> · test: <test path> -k <filter>
 
-## Research pointer
-<path to `tt:learn` note>
+**Research pointer:** see `learn-<subject>.md` (entry written this timestamp).
+**TL;DR:** <1–2 sentence summary of the research>
 
-## Sibling-implementation diff
-<summary of divergences; "n/a — not reused" if standalone>
-
-## Dim validation
-<actual-vs-derived mismatches; "all match" if clean>
-
-## Mode-branch confirmation
-<if sibling has PREFILL/DECODE split: which branch target inherits; n/a otherwise>
-
-## Doc pointers
-<internal guides, PDFs in workspace, tech_reports/ references>
+**Sibling-implementation diff:** <summary of divergences; "n/a — not reused" if standalone>
+**Dim validation:** <actual-vs-derived mismatches; "all match" if clean>
+**Mode-branch confirmation:** <if sibling has PREFILL/DECODE split: which branch target inherits; n/a otherwise>
+**Doc pointers:** <internal guides, PDFs in workspace, tech_reports/ references>
 ```
 
-The Baseline phase consumes this.
+The Baseline phase reads this entry from `<scope>.md`.

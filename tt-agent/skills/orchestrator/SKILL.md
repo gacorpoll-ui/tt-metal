@@ -38,11 +38,13 @@ analyze → scope → decompose → dispatch → verify → iterate
 2. **Scope**: Identify the target — kernel, op, model, or pipeline. Determine which
    hardware tier is involved (bare-metal kernel, ttnn op, model layer).
 
-3. **Decompose**: Break the request into ordered sub-tasks. Write PLAN.md to
-   `~/.tt-agent/notes`. See `decomposer.md` for standard patterns.
+3. **Decompose**: Break the request into ordered sub-tasks. Prepend a `Plan — v1`
+   entry to `~/.tt-agent/notes/<task-slug>.md`. See `decomposer.md` for standard
+   patterns.
 
 4. **Dispatch**: Execute sub-tasks by invoking the appropriate skills (see table below).
-   Track progress in STATUS.md in `~/.tt-agent/notes`.
+   Prepend `Dispatch —` and `Status —` entries to `<task-slug>.md` as work
+   progresses.
 
 5. **Verify**: After each major step, confirm outputs meet the TT quality bar:
    PCC > 0.999 vs PyTorch reference, CB sizing fits L1, tile alignment correct.
@@ -61,19 +63,28 @@ analyze → scope → decompose → dispatch → verify → iterate
 | Kernel-level diagnosis (hang, crash, RISC-V state) | `/tt:debugger` |
 | Write or run tests for an op/kernel/model | `/tt:tester` |
 | Need codebase context before proceeding | `/tt:learn` |
+| Record a finding or observation | `/tt:note` |
 | Design a new op or kernel | `/tt:designer` (future) |
 | Review code before merging | `/tt:code-review` |
 
 ## Document Protocol
 
-All plans and status are written to `~/.tt-agent/notes`:
+Each high-level task gets one timeline file at `~/.tt-agent/notes/<task-slug>.md`.
+All plan, dispatch, and status updates are entries in this single file — no
+separate plan/status files. Entries are written via `/tt:note`.
 
-| Document | Name pattern | Purpose |
-|---|---|---|
-| Plan | `plan-<task>.md` | Ordered sub-tasks, decision rationale |
-| Status | `status-<task>.md` | Current step, blockers, findings so far |
+Conventional entry kinds for orchestrator:
 
-Each document must include: date, tt-metal commit hash, skills invoked.
+| Entry title prefix | Purpose |
+|---|---|
+| `Plan — <revision>` | Ordered sub-tasks + decision rationale (latest entry carries the active plan) |
+| `Dispatch — <skill> on <scope>` | Pre-dispatch context: target, expected output |
+| `Status — <step>` | Progress, blockers, findings so far (latest entry carries current status) |
+| `Done — <summary>` | Final outcome of the task |
+
+The latest entry (top of file) carries the active plan and current status — a
+single read shows where the task stands. Older entries preserve the history of
+how it got there.
 
 ## Progressive Load Table
 

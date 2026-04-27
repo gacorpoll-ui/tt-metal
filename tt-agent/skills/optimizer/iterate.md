@@ -84,19 +84,14 @@ Invoke `tt:run` to execute the unit test (PCC check runs inside). Invoke
 
 ### 6. Record
 
-- Commit: `opt(<scope>): <one-line hypothesis> — <metric> (<Δ%> vs best)`.
-- Append row to `overview-<scope>.md` (format in `convergence.md`) with
-  utilization columns: `DRAM %`, `FLOPs %`, `Abs TFLOPs`, `Bound`, `Cores`.
-  For parallel workspaces include the workspace letter in the `WS` column.
+- Source-repo commit: `opt(<scope>): <one-line hypothesis> — <metric> (<Δ%> vs best)`.
+- Invoke `/tt:note` with topic=`<scope>`, title=`Iter <N> — <one-line hypothesis>`,
+  body per `convergence.md` § Entry shape. For parallel workspaces, include
+  the workspace letter in the commit cell of the Iterations row.
 - Emit one line to the developer in real time:
 
   ```
   Iter <n> [<ws>] <sha>: <metric> (baseline <B>, Δbest <X%>, best@iter <m>) · <FLOPs%>F / <DRAM%>D / <Bound>
-  ```
-
-  Example:
-  ```
-  Iter 7 [a] abc1234: 8.2ms (baseline 12.1ms, Δbest -3%, best@iter 5) · 44%F / 18%D / overhead
   ```
 
 ### 7. Evaluate

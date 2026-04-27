@@ -34,7 +34,7 @@ artifact: `tt-learn`, `tt-code-review`). Cross-cutting utilities go in Meta.
 | Topic knowledge | `knowledge/<topic>.md` | One file per topic (matmul, ccl, kernels, ...). External references + distilled patterns + traps + optimization guidelines. Promote to `knowledge/<topic>/` when a topic outgrows one file. |
 | Per-repo execution patterns | `knowledge/recipes/<repo>/` | Build, test, env, server lifecycle. Plain markdown, ≤60 lines. |
 | Volatile info (APIs, patterns) | Nowhere — use `tt-learn` | Agent reads fresh from source on demand |
-| Work products (findings, logs) | `~/.tt-agent/notes` | Dated, includes repo name and commit hash |
+| Work products (findings, logs) | `~/.tt-agent/notes` (git-tracked timeline per topic) | Use `/tt:note` to write entries |
 
 **The cardinal rule: never inline volatile content.** Point to source files. Describe
 patterns and intent, not API signatures.
@@ -122,7 +122,7 @@ the note produced:
 ```markdown
 | Phase | What happens | Procedure | Note produced |
 |---|---|---|---|
-| Prepare | Workspace + target research | `skills/run/workspace-detect.md` | `prepare-<scope>-<ts>.md` |
+| Prepare | Workspace + target research | `skills/run/workspace-detect.md` | `Prepare — …` entry in `<scope>.md` |
 | Build | Compile artifacts | `knowledge/recipes/<repo>/build.md` (via tt-run) | — |
 | ...   | ... | ... | ... |
 ```
@@ -131,7 +131,7 @@ Rules for phase tables:
 - Every file referenced must exist on disk (enforced by tests)
 - Repo-specific recipes use `<repo>` placeholder — resolved at runtime after workspace detection
 - After each phase, summarize in 3-5 lines and move on. Loaded knowledge is consumed, not carried forward.
-- Persistent findings go to `~/.tt-agent/notes/`
+- Persistent findings are written via `/tt:note`
 
 ---
 
@@ -147,25 +147,15 @@ Any skill involving code generation must verify:
 
 ---
 
-## Notes Naming
+## Notes
 
-Each skill owns the naming of the notes it produces. Declare the exact filename
-pattern in the skill's `SKILL.md` (or the sub-file that writes the note) — not
-here. Keeping the inventory out of this file prevents drift.
+The note-writing convention (filenames, entry shape, commit subject,
+atomic-write protocol) lives in `/tt:note` (`skills/note/`). Other skills
+invoke `/tt:note` to write entries, the same idiom they use for `/tt:learn`.
 
-### Convention
-
-Note filenames follow `<kind>-<scope>.md`, with a timestamp suffix when multiple
-instances can coexist in a single session:
-
-- `<kind>` is what the file *is* (`context`, `plan`, `findings-review`,
-  `profile`, `experiments`, …). Dash-separated words, all lowercase.
-- `<scope>` is what the file *is about* — topic, task, target, or scope slug.
-- Append `-<YYYY-MM-DD-HHMMSS>` when overwrite-on-rerun is unacceptable
-  (e.g., review findings: one per session, never clobbered).
-
-All notes include, in their body, the date, the repo name, and the commit hash
-at time of writing.
+Skills specify the topic kind their entries belong to (workflow scope,
+orchestrator task, research subject, code-review log) and the body shape for
+their entries. They do not redefine filename or commit conventions.
 
 ---
 

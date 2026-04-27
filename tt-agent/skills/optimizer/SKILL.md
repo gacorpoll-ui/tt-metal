@@ -50,7 +50,7 @@ reset tool is callable:
 - `select:tt_device_job_run,tt_device_job_run_bg,tt_device_job_wait,tt_device_job_kill,tt_device_job_logs` — tt:run dispatches through these.
 
 Mandatory when a CCL hypothesis is on the queue. Record load in the first
-overview-file entry.
+entry of `<scope>.md`.
 
 ## Inputs
 
@@ -67,36 +67,37 @@ overview-file entry.
 
 ## Phase Table
 
-| Phase | What happens | Procedure | Note produced |
+| Phase | What happens | Procedure | Note entry |
 |---|---|---|---|
 | Preflight | Check dev-rule conflicts, preload tools, sweep docs | inline above | — |
-| Prepare | Research target, sibling-diff scan, dim validation, doc sweep | `prepare.md` | `prepare-<scope>-<ts>.md` |
+| Prepare | Research target, sibling-diff scan, dim validation, doc sweep | `prepare.md` | `Prepare — …` entry to `<scope>.md` |
 | Extract* | Capture model inputs, write unit test, verify ±10% | `extract.md` | test path + tensor path |
-| Baseline | Profile the unit test | `tt:profiler` | `profile-<scope>-<ts>.md`, baseline row |
+| Baseline | Profile the unit test | `tt:profiler` | `Baseline iter 0 — …` entry to `<scope>.md` |
 | Spawn* | Clone + branch + build per hypothesis | `workspaces.md` | N workspaces, N branches |
-| Iterate | Hypothesize → implement → build → profile → commit → record | `iterate.md` (+ `convergence.md`, `knowledge/<topic>.md`) | commits, profile notes, overview rows |
-| Review | Review-to-done loop on winning branch | `skills/code-review/review-loop.md` | `findings-review-<ts>-<scope>.md` |
+| Iterate | Hypothesize → implement → build → profile → commit → record | `iterate.md` (+ `convergence.md`, `knowledge/<topic>.md`) | source-repo commits, `Iter <N> — …` entry to `<scope>.md` per attempt |
+| Review | Review-to-done loop on winning branch | `skills/code-review/review-loop.md` | `Reviewed: …` entry to `code-review.md` (caller adds `Reviewed (link) — …` pointer entry to `<scope>.md`) |
+| Findings | Final summary of the optimizer session | inline | `Findings — …` entry to `<scope>.md` |
 
 \* conditional — Extract runs only if no unit test exists; Spawn only for parallelism > 1.
 
-After each phase, summarize in 3-5 lines in the overview file and move on.
+After each phase, summarize in 3-5 lines as a new entry in `<scope>.md` and move on.
 Phase inputs are consumed, not carried forward.
 
 ## Outputs
 
-`~/.tt-agent/notes/`:
+`~/.tt-agent/notes/<scope>.md` — single timeline file for the entire optimizer
+session. **Start here.** The latest entry carries live status (current best,
+trend table, stall counter); older entries preserve the history of every
+attempt, including forensic failures.
 
-| File | Purpose |
-|---|---|
-| `overview-<scope>.md` | **Start here.** Single-glance trajectory + live status. Overwritten every iteration. Format in `convergence.md`. |
-| `profile-<scope>-<ts>.md` | One per iteration, written by `tt:profiler`. |
-| `findings-optimizer-<scope>-<ts>.md` | Final report: summary, winning commit(s), workspace paths, cleanup instructions. |
+Per phase / per iteration: invoke `/tt:note` with topic=`<scope>` and the
+entry body shape from `convergence.md` § Entry shape.
 
-Repo:
+Source repo (tt-metal):
 
 - One commit per iteration on branch `optimizer/<scope>-<YYYY-MM-DD>[-<letter>]`.
-- Commit subject format: see `iterate.md` § Record.
-- Never pushed.
+- Source-repo commit subject format: see `iterate.md` § Record.
+- Source-repo commits are never pushed.
 
 ## Convergence
 
@@ -104,14 +105,14 @@ See `convergence.md`. Summary:
 
 - Continue while best improved ≥ 2% in the last 5 iterations.
 - At 10 iterations without improvement, ask the developer.
-- PCC < 0.999 → immediate abort. Commit kept; overview rolls back to prior best.
+- PCC < 0.999 → immediate abort. Commit kept; the latest entry's snapshot rolls back the `best` row to the prior passing commit.
 
-No hard iteration cap. Developer can interrupt anytime; overview file and
+No hard iteration cap. Developer can interrupt anytime; the timeline file and
 commits are current after every iteration.
 
 ## Caller Contract
 
-- **Developer**: reads `overview-<scope>.md` anytime. On stall prompt,
+- **Developer**: reads `<scope>.md` (latest entry) anytime. On stall prompt,
   responds with direction or stop. At success, cherry-picks or merges
   the winning commit; otherwise deletes branches and workspaces per
   the findings note.

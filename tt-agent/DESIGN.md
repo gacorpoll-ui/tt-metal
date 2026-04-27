@@ -101,9 +101,30 @@ to small teams working on shared problems — not a repo-wide resource. Putting 
 the repo root would pollute the working tree for everyone, and committing them would
 pollute history.
 
-**What didn't change:** Notes are still the shared blackboard. They persist across
-sessions and follow the same naming conventions (`context-<topic>.md`,
-`experiments-<task>.md`, etc.). Always dated with repo name and commit hash.
+---
+
+## Notes are git-tracked timelines per topic
+
+`~/.tt-agent/notes/` is a single git repository, auto-init'd on first write. Each
+topic gets one markdown file. Entries are H2 sections prepended to the top
+(newest-first), tagged with timestamp and `<source-repo>@<short-sha>`. One commit
+per phase or per "anything worth noting"; subject format `<topic>: <entry-title>`.
+
+**Why git-tracked:** Transparency over the agent's process is the source of developer
+trust. Overwrites are lossy by default; git history makes them recoverable. Every
+observable agent action is auditable from `git log` alone.
+
+**Why timeline-per-topic:** Earlier ad-hoc filenames split state across many files
+(overview, trend, findings, profile, …) tied to mixed lifecycles. One file per topic
+— latest entry carries live state, older entries preserved as history — eliminates
+lifecycle bookkeeping.
+
+**Lighter than tolaria-style ADRs:** No formal IDs, fixed multi-section templates,
+or `status: active|superseded` field. Git history is the lifecycle.
+
+The convention (filename rules, atomic-write protocol, cross-topic pointer entries)
+is owned by the `/tt:note` skill (`skills/note/`); other skills invoke it the
+way they invoke `/tt:learn`.
 
 ---
 

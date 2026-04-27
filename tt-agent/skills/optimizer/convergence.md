@@ -42,7 +42,7 @@ Governs when to stop, ask, or abort. Applies to both modes of `iterate.md`.
   `skills/profiler/interpretation.md`). Use when baseline is low-utilization
   — a 30% speedup at 25% FLOPs hasn't fixed the op.
 
-On success: write `findings-optimizer-<scope>-<ts>.md`, invoke
+On success: prepend a `Findings — …` entry to `<scope>.md`, invoke
 `tt:code-review` via `review-loop.md` on the winning branch, report.
 
 ## Bound-ceiling exit (utilization-goal only)
@@ -75,7 +75,7 @@ Last <stall_ask> iterations improved best by less than <threshold>%.
 Recent trials:
 <table of last 5: commit, hypothesis, metric>
 
-Overview file: ~/.tt-agent/notes/overview-<scope>.md
+Timeline: ~/.tt-agent/notes/<scope>.md (latest entry)
 Workspaces: <list>
 
 Options:
@@ -92,77 +92,70 @@ Wait for developer choice. On timeout, keep state and stay idle.
 1. Keep the failing commit — do not revert.
 2. Findings note: failing SHA, diff vs previous-best, exact PCC value,
    note to treat as evidence (not a fix).
-3. Overview `best` row stays at last passing commit. Workspace HEAD is
-   at failing commit for easy inspection.
+3. The latest entry's snapshot keeps the `best` row at the last passing commit.
+   Workspace HEAD is at failing commit for easy inspection.
 
-## Overview file format
+## Entry shape — status first, then change
 
-`~/.tt-agent/notes/overview-<scope>.md` — overwritten every iteration.
+Every entry in `<scope>.md` follows this body shape: `### Status` first
+(carrying the live-state snapshot at this point in the trajectory),
+`### Change this step` below. There is no separate overview file — opening
+`<scope>.md` and reading the latest entry top-to-bottom gives at-a-glance
+state immediately, then what was done.
 
 ```markdown
-# Overview: <scope>
+## <iter or phase title>
+**<YYYY-MM-DD HH:MM>** · `<source-repo>@<short-sha>`
 
-**Session started:** YYYY-MM-DD HH:MM:SS
-**Last updated:** YYYY-MM-DD HH:MM:SS
-**Repo:** tt-metal
-**Baseline commit:** <short-sha>
-**Target branch(es):** optimizer/<scope>-<date>[-a|-b|...]
-**CCACHE_DIR:** <resolved path>
-**Goal:** <absolute | relative | roofline | utilization>
+### Status
 
-## Status
-- Baseline: <ns> · Best: <ns> at iter <m> on branch <letter> (<sha>)
-- Δ baseline: -<pct>% · Utilization (best): <flops%>F / <dram%>D / <bound>
-- Iterations: <n> · Stall counter: <s> / <stall_ask>
+| Best | Baseline | Δ baseline | Iter | Stall | Util (best) | Bound | Goal |
+|---|---|---|---|---|---|---|---|
+| <ns> @ iter <m> ws <letter> `<sha>` | <ns> | −<pct>% | <n> | <s>/<stall_ask> | <flops%>F/<dram%>D | <bound> | <goal kind> |
 
-## Iterations
+#### Iterations (chronological — most recent at top)
 
-Chronological log — one block per iteration. Diff: `cd <workspace> && git show <sha>`.
+| # | Time | Commit (ws) | Metric | PCC | Util | Δbest | Hypothesis |
+|---|---|---|---|---|---|---|---|
+| <N> | HH:MM | `<sha>` (<ws>) | … | … | … | … | … |
+| <N-1> | … | … | … | … | … | … | … |
+| 0 (baseline) | … | … | … | … | … | — | as-is |
 
-### Iter 0 (baseline) — HH:MM:SS · `abc1234`
-Metric: 12.1ms · PCC 1.0000 · 36%F / 11%D / overhead / 64 cores
-
-### Iter 1 — HH:MM:SS · `def5678` [ws a] ← new best
-**Change:** batch 4 noc_async_reads before barrier
-Metric: 11.5ms (Δbest -5%) · PCC 0.9999 · 44%F / 18%D / overhead
-
-### Iter 2 (forensic) — HH:MM:SS · `789abcd` [ws a]
-**Change:** in0_block_w=17 (next K-divisor above 4)
-Result: L1 OOM — 1820 KB CB > 1499 KB budget
-
-### Iter 3 — HH:MM:SS · `xyz0123` [ws a]
-**Change:** in0_block_w=4, per_core_M=8 (coordinated)
-Metric: 11.7ms (+1.7% regression) · PCC 0.9999 · 42%F / 18%D / overhead
-
-## Per-iteration contribution
+#### Per-iteration contribution
 
 | # | Change | Saved | % of baseline | Running total |
 |---|---|---|---|---|
 
-## Parameter sweeps (per knob, when non-monotonic)
+#### Parameter sweeps (per knob, when non-monotonic)
 
 | Knob | Values tried | Best value | Notes |
 |---|---|---|---|
 
-## Op-level timing (context, optional)
+#### Op-level timing (context, optional)
 
 | Op | Baseline | Current | Δ |
 |---|---|---|---|
+
+### Change this step
+
+**Hypothesis:** <one-line>
+**Result:** Metric <ns> (Δbest <pct>) · PCC <p> · <flops%>F/<dram%>D/<bound>
 ```
 
-Rule: anything shown in chat must also land here. Ephemeral chat tables rot.
+Rule: anything shown to the developer in chat must also land in the Status
+section's tables. Each new entry regenerates Status with the trajectory up to
+that point; older entries preserve their snapshots verbatim, which is
+informative — the historical trajectory is recoverable by scrolling. Truncate
+the Iterations table to the last 50 rows once it exceeds 100 (preserve
+baseline and current best); older rows remain accessible via
+`git log -- <scope>.md` and `git show`.
 
-Forensic-failure entries are `### Iter N (forensic)` blocks inline above —
-no separate table. Filter by running `git log --grep "opt(<scope>):
-forensic"`.
-
-Truncate the Iterations log to the last 50 entries once it exceeds 100
-(preserve baseline and current best). Contribution and sweep tables are
-never truncated.
+Forensic-failure rows are inline in the Iterations table
+(`| <N> (forensic) | … | CRASH | — | — | — | <reason> |`). Filter via
+`git log --grep "(forensic)" -- <scope>.md`.
 
 ## Interruption
 
-The overview file and commits are written synchronously per iteration.
-Resume by re-reading `overview-<scope>.md` and the branch HEAD — invoking
-the optimizer
-with the same scope and goal picks up from current best.
+Each iteration writes its entry and commits synchronously. Resume by
+re-reading the latest entry of `<scope>.md` and the branch HEAD — invoking
+the optimizer with the same scope and goal picks up from current best.

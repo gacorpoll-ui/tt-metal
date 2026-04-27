@@ -27,54 +27,53 @@ tt-learn never guesses. It reads code, synthesizes findings, and writes them dow
 ## Pipeline
 
 ```
-check existing → load references → research subagent → return note
+check existing → load references → research subagent → write entry → return entry
 ```
 
-1. **Check existing**: Look for `~/.tt-agent/notes/context-<topic-slug>.md`.
-   If found and no refresh requested, return it immediately.
+1. **Check existing**: Look for an existing entry in `~/.tt-agent/notes/learn-<subject-slug>.md`.
+   If the file exists and no refresh requested, return the latest entry's body
+   immediately.
 
 2. **Load references**: Scan `tt-agent/knowledge/<topic>.md` files (matmul, ccl,
-   kernels, models, operators, sharding, ...) for content relevant to the topic.
+   kernels, models, operators, sharding, ...) for content relevant to the subject.
    These provide starting pointers but are not required — the skill works without
    them.
 
 3. **Dispatch research subagent**: Launch an Agent with `research-prompt.md` as
-   instructions. Pass the topic, any matched reference content, and the refresh flag.
-   The subagent does the actual Grep/Read/deepwiki work and writes the context note.
+   instructions. Pass the subject, any matched reference content, and the
+   refresh flag. The subagent does the actual Grep/Read/deepwiki work and
+   produces the entry body.
 
-4. **Return note**: Return the context note content to the caller so they can use
-   it immediately without reading the file.
+4. **Write entry**: Invoke `/tt:note` with topic=`learn-<subject-slug>`,
+   title=<one-line summary>, body=<the research entry produced in step 3>.
 
-## Note Format
+5. **Return entry**: Return the entry body so the caller can use it immediately.
 
-All notes are written to `~/.tt-agent/notes/context-<topic-slug>.md`:
+## Entry body convention
 
 ```markdown
-# Context: <topic>
+## <one-line summary of the research subject>
+**<timestamp>** · `<source-repo>@<short-sha>`
 
-**Date**: YYYY-MM-DD  **Repo**: tenstorrent/tt-metal  **Commit**: abc1234
+**Core insight:** <1–3 sentences: the single most important thing to know.>
 
-## Core Insight
+**How it works:**
+- <Concise bullet points — only what's needed to act on the subject>
 
-<1-3 sentences: the single most important thing to know.>
-
-## How It Works
-
-- <Concise bullet points — only what's needed to act on the topic>
-
-## Key Files
-
+**Key files:**
 - `path/to/file` — one-line description
 ```
 
-**Target: under 80 lines.** Notes become part of agent context — every line costs.
+**Body target: under 80 lines.** Entries become part of agent context — every
+line costs.
 
 ## Refresh
 
-Notes are assumed fresh for a development session. To force re-research:
+Entries are assumed fresh for a development session. To force re-research:
 - User says "refresh" or "re-learn"
 - Caller passes a refresh hint
-- This skips step 1 and always researches from scratch
+- This skips step 1 and always researches from scratch, writing a new entry on
+  top of the existing timeline.
 
 ## Failure Mode
 

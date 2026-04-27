@@ -54,7 +54,7 @@ at session start:
 
 1. `$CCACHE_DIR` set → use it.
 2. Else → `<parent-of-workspaces>/.ccache/`. Create if missing. Export.
-3. Log the resolved path in `overview-<scope>.md` header.
+3. Log the resolved path in the latest entry's snapshot in `<scope>.md`.
 
 Export `CCACHE_DIR` explicitly to every `tt:run` invocation and every
 dispatched subagent — non-interactive subprocesses and MCP job contexts
@@ -89,7 +89,7 @@ Each spawned workspace re-runs extraction in its own tree (fast — model
 already built). Keep the same extraction across workspaces unless the
 developer says otherwise.
 
-Report tensor paths in `findings-optimizer-<scope>-<ts>.md`.
+Report tensor paths in the `Findings — …` entry of `<scope>.md`.
 
 ## Cleanup reporting
 
