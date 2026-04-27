@@ -337,7 +337,6 @@ def test_max_pool2d_mem_config(device, in_dtype, input_spec, out_memory_config, 
     )
 
 
-@skip_with_llk_assert("Hit LLK_ASSERT for unpacker configuration verification. Issue: #39448")
 @pytest.mark.parametrize("input_spec", parameters["tiled_out_tests"]["input_specs"])
 @pytest.mark.parametrize("in_dtype", parameters["tiled_out_tests"]["in_dtype"])
 @pytest.mark.parametrize("out_dtype", parameters["tiled_out_tests"]["out_dtype"])
