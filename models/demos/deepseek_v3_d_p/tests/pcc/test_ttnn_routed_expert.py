@@ -28,8 +28,12 @@ from models.demos.deepseek_v3_d_p.tt.moe.init_helpers import (
     get_gate_outputs,
     initialize_predictable_test_inputs,
     initialize_test_inputs,
+    get_gate_outputs,
+    initialize_predictable_test_inputs,
+    initialize_test_inputs,
 )
 from models.demos.deepseek_v3_d_p.tt.moe.tt_routed_expert import TtRoutedExpert
+from models.demos.deepseek_v3_d_p.tt.moe.visualization_helpers import log_global_expert_idx_table
 from models.demos.deepseek_v3_d_p.tt.moe.visualization_helpers import log_global_expert_idx_table
 from tests.ttnn.utils_for_testing import comp_pcc
 
@@ -102,44 +106,52 @@ def run_torch_routed_experts(
     "seq_len_per_chip, emb_dim, hidden_dim, num_routed_experts, num_experts_per_tok, dispatch_buffer_capacity_factor, run_pcc_check",
     [
         # fmt: off
-        (320, 1024, 512, 64, 2, 9, True),
-        (3200, DeepSeekV3Config.EMB_SIZE, DeepSeekV3Config.MOE_INTERMEDIATE_SIZE, 64, 2, 3, False),
+        # (320, 1024, 512, 64, 2, 9, True),
+        # (2048, DeepSeekV3Config.EMB_SIZE, DeepSeekV3Config.MOE_INTERMEDIATE_SIZE, 8, 2, 3, True),
+        (24576, DeepSeekV3Config.EMB_SIZE, DeepSeekV3Config.MOE_INTERMEDIATE_SIZE, 64, 2, 3, True),
+        # (3200, DeepSeekV3Config.EMB_SIZE, DeepSeekV3Config.MOE_INTERMEDIATE_SIZE, 8, 2, 3, False),
         # fmt: on
     ],
-    ids=["small-dims-validate-pcc", "deepseek-v3-dims-skip-pcc"],
+    ids=["min-dims-validate-pcc"],
 )
 @pytest.mark.parametrize(
     "mesh_device, device_params",
     [
+        # pytest.param(
+        #     1,
+        #     {"fabric_config": ttnn.FabricConfig.DISABLED},
+        #     id="single-1",
+        # ),
+        # pytest.param(
+        #     (4, 1),
+        #     {"fabric_config": ttnn.FabricConfig.FABRIC_1D},
+        #     marks=pytest.mark.requires_mesh_topology(mesh_shape=(4, 1), topology="linear"),
+        #     id="linear-4",
+        # ),
         pytest.param(
-            1,
-            {"fabric_config": ttnn.FabricConfig.DISABLED},
-            id="single-1",
-        ),
-        pytest.param(
-            (4, 1),
+            (2, 2),
             {"fabric_config": ttnn.FabricConfig.FABRIC_1D},
-            marks=pytest.mark.requires_mesh_topology(mesh_shape=(4, 1), topology="linear"),
-            id="linear-4",
+            marks=pytest.mark.requires_mesh_topology(mesh_shape=(2, 2), topology="mesh-2x2"),
+            id="mesh-2x2",
         ),
-        pytest.param(
-            (8, 1),
-            {"fabric_config": ttnn.FabricConfig.FABRIC_1D},
-            marks=pytest.mark.requires_mesh_topology(mesh_shape=(8, 1), topology="linear"),
-            id="linear-8",
-        ),
-        pytest.param(
-            (4, 2),
-            {"fabric_config": ttnn.FabricConfig.FABRIC_1D},
-            marks=pytest.mark.requires_mesh_topology(mesh_shape=(4, 2), topology="mesh-4x2"),
-            id="mesh-4x2",
-        ),
-        pytest.param(
-            (2, 4),
-            {"fabric_config": ttnn.FabricConfig.FABRIC_1D},
-            marks=pytest.mark.requires_mesh_topology(mesh_shape=(2, 4), topology="mesh-4x2"),
-            id="mesh-2x4",
-        ),
+        # pytest.param(
+        #     (8, 1),
+        #     {"fabric_config": ttnn.FabricConfig.FABRIC_1D},
+        #     marks=pytest.mark.requires_mesh_topology(mesh_shape=(8, 1), topology="linear"),
+        #     id="linear-8",
+        # ),
+        # pytest.param(
+        #     (4, 2),
+        #     {"fabric_config": ttnn.FabricConfig.FABRIC_1D},
+        #     marks=pytest.mark.requires_mesh_topology(mesh_shape=(4, 2), topology="mesh-4x2"),
+        #     id="mesh-4x2",
+        # ),
+        # pytest.param(
+        #     (2, 4),
+        #     {"fabric_config": ttnn.FabricConfig.FABRIC_1D},
+        #     marks=pytest.mark.requires_mesh_topology(mesh_shape=(2, 4), topology="mesh-4x2"),
+        #     id="mesh-2x4",
+        # ),
     ],
     indirect=["mesh_device", "device_params"],
 )

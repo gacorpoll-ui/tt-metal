@@ -450,6 +450,10 @@ def compute_constants(
         seq_len_per_chip % ttnn.TILE_SIZE == 0
     ), f"seq_len_per_chip ({seq_len_per_chip}) must be a multiple of TILE_SIZE ({ttnn.TILE_SIZE})"
 
+    assert (
+        seq_len_per_chip % ttnn.TILE_SIZE == 0
+    ), f"seq_len_per_chip ({seq_len_per_chip}) must be a multiple of TILE_SIZE ({ttnn.TILE_SIZE})"
+
     experts_per_chip = num_routed_experts // num_devices
     metadata_len = 5  # chip, token, topk_idx, routed_expert, weight
 
