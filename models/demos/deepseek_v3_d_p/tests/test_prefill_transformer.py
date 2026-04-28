@@ -32,7 +32,7 @@ from models.demos.deepseek_v3_d_p.tt.moe.init_helpers import create_fabric_route
 from models.demos.deepseek_v3_d_p.tt.moe.tt_moe_gate_prefill import GateComputeMode
 from models.demos.deepseek_v3_d_p.tt.moe.tt_prefill_transformer import TtPrefillTransformer
 from models.demos.deepseek_v3_d_p.utils.kv_cache_utils import init_kvpe_cache
-from models.demos.deepseek_v3_d_p.utils.test_utils import save_intermediate_output
+from models.demos.deepseek_v3_d_p.utils.test_utils import is_main_host, save_intermediate_output
 from models.demos.deepseek_v3_d_p.utils.transformer_helpers import (
     ABC_1K_PATH,
     PROMPTS_PATH,
@@ -172,7 +172,8 @@ def test_prefill_transformer(
     if use_pretrained and weight_cache_path is not None:
         rows, cols = mesh_shape
         effective_cache_path = weight_cache_path / f"{rows}x{cols}"
-        effective_cache_path.mkdir(parents=True, exist_ok=True)
+        if is_main_host():
+            effective_cache_path.mkdir(parents=True, exist_ok=True)
     else:
         effective_cache_path = None
 

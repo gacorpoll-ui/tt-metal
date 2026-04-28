@@ -488,7 +488,8 @@ def weight_cache_path(model_path):
         cache_dir = Path(env_cache) / f"deepseek_v3_d_p_{arch}_{num_devices}dev"
     else:
         cache_dir = model_path / f"tensor_cache_{arch}_{num_devices}dev"
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    if int(os.getenv("TT_MESH_HOST_RANK", "0")) == 0:
+        cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
 

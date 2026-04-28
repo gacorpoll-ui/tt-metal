@@ -12,6 +12,11 @@ from loguru import logger
 import ttnn
 
 
+def is_main_host() -> bool:
+    """True on host rank 0 (or single-host runs where TT_MESH_HOST_RANK is unset)."""
+    return int(os.getenv("TT_MESH_HOST_RANK", "0")) == 0
+
+
 def print_buffers(device, name, buffer_type):
     buffers = ttnn._ttnn.reports.get_buffers(device)
     filtered_buffers = [buf for buf in buffers if buf.buffer_type == buffer_type]
@@ -65,6 +70,9 @@ def save_intermediate_output(
         test_params: Dict with all test parameters (mesh_shape, isl_total, num_layers, etc.)
         output_dir: Output directory (default: /tmp/{name}_outputs or {NAME}_OUTPUT_DIR env var)
     """
+    if not is_main_host():
+        return None
+
     # Get output directory
     if output_dir is None:
         env_var = f"{name.upper()}_OUTPUT_DIR"

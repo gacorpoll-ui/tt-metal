@@ -633,7 +633,12 @@ def check_reference_cache_exists(cache_key: str) -> bool:
 
 
 def save_reference_cache(cache_key: str, ref_snapshots, ref_kvpe_list):
-    """Save reference outputs to cache file."""
+    """Save reference outputs to cache file (rank-0 only on multihost)."""
+    from models.demos.deepseek_v3_d_p.utils.test_utils import is_main_host
+
+    if not is_main_host():
+        return
+
     cache_dir = Path(os.environ.get("TT_DS_PREFILL_HOST_REF_CACHE", "/tmp/deepseek_v3_transformer_ref_cache"))
     cache_path = cache_dir / f"{cache_key}.pt"
     cache_dir.mkdir(parents=True, exist_ok=True)
