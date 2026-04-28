@@ -5,7 +5,8 @@
 #pragma once
 
 #ifdef ENABLE_LLK_ASSERT
-
+// Test:
+//
 #define LLK_ASSERT_BLOCK(block_call) \
     do                               \
     {                                \
