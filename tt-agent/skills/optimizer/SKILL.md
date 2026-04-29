@@ -83,6 +83,11 @@ entry of `<scope>.md`.
 After each phase, summarize in 3-5 lines as a new entry in `<scope>.md` and move on.
 Phase inputs are consumed, not carried forward.
 
+**Gate.** Do not start a phase until the previous phase's note entry has been
+written. The "Note entry" column of the phase table is mandatory, not aspirational —
+verify the entry exists before advancing. The same gate applies inside Iterate
+(see `iterate.md` § 8).
+
 ## Outputs
 
 `~/.tt-agent/notes/<scope>.md` — single timeline file for the entire optimizer

@@ -84,15 +84,18 @@ Invoke `tt:run` to execute the unit test (PCC check runs inside). Invoke
 
 ### 6. Record
 
-- Source-repo commit: `opt(<scope>): <one-line hypothesis> — <metric> (<Δ%> vs best)`.
-- Invoke `/tt:note` with topic=`<scope>`, title=`Iter <N> — <one-line hypothesis>`,
-  body per `convergence.md` § Entry shape. For parallel workspaces, include
-  the workspace letter in the commit cell of the Iterations row.
-- Emit one line to the developer in real time:
+Both artifacts required, in order — skipping `/tt:note` is a discipline failure.
 
-  ```
-  Iter <n> [<ws>] <sha>: <metric> (baseline <B>, Δbest <X%>, best@iter <m>) · <FLOPs%>F / <DRAM%>D / <Bound>
-  ```
+1. **Source-repo commit** with subject `opt(<scope>): <one-line hypothesis> — <metric> (<Δ%> vs best)`.
+2. **Note entry** via `/tt:note` topic=`<scope>`, title=`Iter <N> — <one-line hypothesis>`,
+   body per `convergence.md` § Entry shape. For parallel workspaces, include
+   the workspace letter in the commit cell of the Iterations row.
+
+Then emit one line to the developer in real time:
+
+```
+Iter <n> [<ws>] <sha>: <metric> (baseline <B>, Δbest <X%>, best@iter <m>) · <FLOPs%>F / <DRAM%>D / <Bound>
+```
 
 ### 7. Evaluate
 
@@ -102,6 +105,11 @@ Apply `convergence.md`:
 - Stall → main handles the developer prompt; subagents do not.
 
 ### 8. Next iteration
+
+**Gate.** Read `~/.tt-agent/notes/<scope>.md`; confirm the HEAD entry matches
+the iteration just completed (SHA in body). If absent, invoke `/tt:note` before
+continuing — no exceptions. Source commits without matching notes break the
+audit contract.
 
 Next hypothesis can be informed by all prior trials (self + siblings).
 Read the overview file at each iteration — sibling evidence is signal.
