@@ -30,9 +30,10 @@ inline void _calculate_square_(const int iterations)
     int d = 0;
     for (; d < (iterations & ~7); d += 8)
     {
-        lltt::record<lltt::Exec>(0, 5);
+        lltt::record<lltt::NoExec>(0, 5);
         _calculate_square_sfp_rows_<false>();
         ckernel::math::_incr_counters_<0x0, 0x0, ckernel::math::SFP_ROWS, 0x0>();
+        lltt::replay(0, 5);
         lltt::replay(0, 5);
         lltt::replay(0, 5);
         lltt::replay(0, 5);
