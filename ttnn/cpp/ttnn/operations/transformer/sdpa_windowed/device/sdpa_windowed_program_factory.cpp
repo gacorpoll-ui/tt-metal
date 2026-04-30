@@ -561,13 +561,6 @@ ProgramDescriptor WindowedScaledDotProductAttentionDeviceOperation::WindowedSDPA
         }}},
     });
 
-    // Get buffer addresses
-    uint32_t q_addr = q_buffer->address();
-    uint32_t k_addr = k_buffer->address();
-    uint32_t v_addr = v_buffer->address();
-    uint32_t cu_window_seqlens_addr = cu_window_seqlens_buffer->address();
-    uint32_t out_addr = out0_buffer->address();
-
     // Reader kernel
     KernelDescriptor reader_desc;
     reader_desc.kernel_source =
@@ -632,13 +625,13 @@ ProgramDescriptor WindowedScaledDotProductAttentionDeviceOperation::WindowedSDPA
         log_debug(tt::LogOp, "local_q_start: {}", local_q_start);
         log_debug(tt::LogOp, "local_q_end: {}", local_q_end);
 
-        reader_desc.runtime_args.emplace_back(
+        reader_desc.emplace_runtime_args(
             core,
-            KernelDescriptor::CoreRuntimeArgs{
-                q_addr,
-                k_addr,
-                v_addr,
-                cu_window_seqlens_addr,
+            {
+                q_buffer,
+                k_buffer,
+                v_buffer,
+                cu_window_seqlens_buffer,
                 cu_window_seqlens_eles,
                 i,
                 local_batch_start,
@@ -650,10 +643,10 @@ ProgramDescriptor WindowedScaledDotProductAttentionDeviceOperation::WindowedSDPA
             });
 
         // Writer args
-        writer_desc.runtime_args.emplace_back(
+        writer_desc.emplace_runtime_args(
             core,
-            KernelDescriptor::CoreRuntimeArgs{
-                out_addr,
+            {
+                out0_buffer,
                 i,
                 local_batch_start,
                 local_batch_end,
@@ -664,9 +657,9 @@ ProgramDescriptor WindowedScaledDotProductAttentionDeviceOperation::WindowedSDPA
             });
 
         // Compute args
-        compute_desc.runtime_args.emplace_back(
+        compute_desc.emplace_runtime_args(
             core,
-            KernelDescriptor::CoreRuntimeArgs{
+            {
                 i,
                 local_batch_start,
                 local_batch_end,

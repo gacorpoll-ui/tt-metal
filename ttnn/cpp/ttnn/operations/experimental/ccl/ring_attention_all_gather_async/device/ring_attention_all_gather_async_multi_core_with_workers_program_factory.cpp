@@ -436,47 +436,45 @@ void ring_attention_all_gather_async_multi_core_with_workers_helper(
             tensor_descriptor_args.push_back(input_tile_id_end);    // 6 == input_tile_id_end
         }
 
-        std::vector<uint32_t> reader_forward_rt_args = {
-            static_cast<uint32_t>(dim),  // dim to gather on
-            ring_size,                   // ring_size
-            semaphore.at(1).address(),   // out_ready_semaphore_backward
-        };
-        for (auto tensor_descriptor_arg : tensor_descriptor_args) {
-            reader_forward_rt_args.push_back(tensor_descriptor_arg);
+        KernelDescriptor::RTArgList reader_forward_rt_args;
+        reader_forward_rt_args.push_back(static_cast<uint32_t>(dim));  // dim to gather on
+        reader_forward_rt_args.push_back(ring_size);                   // ring_size
+        reader_forward_rt_args.push_back(
+            static_cast<uint32_t>(semaphore.at(1).address()));  // out_ready_semaphore_backward
+        reader_forward_rt_args.append(tensor_descriptor_args);
+        for (uint32_t input_idx = 0; input_idx < num_inputs; input_idx++) {
+            reader_forward_rt_args.push_back(input_tensor[input_idx].buffer());
         }
         for (uint32_t input_idx = 0; input_idx < num_inputs; input_idx++) {
-            reader_forward_rt_args.push_back(input_tensor[input_idx].buffer()->address());
-        }
-        for (uint32_t input_idx = 0; input_idx < num_inputs; input_idx++) {
-            reader_forward_rt_args.push_back(output_tensor[input_idx].buffer()->address());
+            reader_forward_rt_args.push_back(output_tensor[input_idx].buffer());
         }
         if (fuse_op) {
-            fused_op_signaler_forward->push_all_gather_fused_op_rt_args(reader_forward_rt_args, num_links, link, 1);
+            std::vector<uint32_t> reader_forward_signaler_args;
+            fused_op_signaler_forward->push_all_gather_fused_op_rt_args(
+                reader_forward_signaler_args, num_links, link, 1);
+            reader_forward_rt_args.append(reader_forward_signaler_args);
         }
-        sender_reader_forward_kernel.runtime_args.emplace_back(
-            sender_worker_cores[(link * 2) + 1],
-            KernelDescriptor::CoreRuntimeArgs(reader_forward_rt_args.begin(), reader_forward_rt_args.end()));
+        sender_reader_forward_kernel.emplace_runtime_args(sender_worker_cores[(link * 2) + 1], reader_forward_rt_args);
 
-        std::vector<uint32_t> reader_backward_rt_args = {
-            static_cast<uint32_t>(dim),  // dim to gather on
-            ring_size,                   // ring_size
-            semaphore.at(0).address(),   // out_ready_semaphore_backward
-        };
-        for (auto tensor_descriptor_arg : tensor_descriptor_args) {
-            reader_backward_rt_args.push_back(tensor_descriptor_arg);
+        KernelDescriptor::RTArgList reader_backward_rt_args;
+        reader_backward_rt_args.push_back(static_cast<uint32_t>(dim));  // dim to gather on
+        reader_backward_rt_args.push_back(ring_size);                   // ring_size
+        reader_backward_rt_args.push_back(
+            static_cast<uint32_t>(semaphore.at(0).address()));  // out_ready_semaphore_backward
+        reader_backward_rt_args.append(tensor_descriptor_args);
+        for (uint32_t input_idx = 0; input_idx < num_inputs; input_idx++) {
+            reader_backward_rt_args.push_back(input_tensor[input_idx].buffer());
         }
         for (uint32_t input_idx = 0; input_idx < num_inputs; input_idx++) {
-            reader_backward_rt_args.push_back(input_tensor[input_idx].buffer()->address());
-        }
-        for (uint32_t input_idx = 0; input_idx < num_inputs; input_idx++) {
-            reader_backward_rt_args.push_back(output_tensor[input_idx].buffer()->address());
+            reader_backward_rt_args.push_back(output_tensor[input_idx].buffer());
         }
         if (fuse_op) {
-            fused_op_signaler_backward->push_all_gather_fused_op_rt_args(reader_backward_rt_args, num_links, link, 0);
+            std::vector<uint32_t> reader_backward_signaler_args;
+            fused_op_signaler_backward->push_all_gather_fused_op_rt_args(
+                reader_backward_signaler_args, num_links, link, 0);
+            reader_backward_rt_args.append(reader_backward_signaler_args);
         }
-        sender_reader_backward_kernel.runtime_args.emplace_back(
-            sender_worker_cores[link * 2],
-            KernelDescriptor::CoreRuntimeArgs(reader_backward_rt_args.begin(), reader_backward_rt_args.end()));
+        sender_reader_backward_kernel.emplace_runtime_args(sender_worker_cores[link * 2], reader_backward_rt_args);
 
         const CoreCoord sender_forward_worker_core =
             mesh_device->worker_core_from_logical_core(sender_worker_cores[(link * 2) + 1]);
@@ -484,21 +482,22 @@ void ring_attention_all_gather_async_multi_core_with_workers_helper(
             mesh_device->worker_core_from_logical_core(sender_worker_cores[link * 2]);
 
         // Writer
-        std::vector<uint32_t> writer_forward_rt_args = {
-            static_cast<uint32_t>(dim),    // dim to gather on
-            sender_forward_worker_core.x,  // out_ready_sem_noc0_x
-            sender_forward_worker_core.y,  // out_ready_sem_noc0_y
-            ring_size,                     // ring_size
-            semaphore.at(1).address()      // out_ready_semaphore_backward
-        };
-        for (auto tensor_descriptor_arg : tensor_descriptor_args) {
-            writer_forward_rt_args.push_back(tensor_descriptor_arg);
-        }
+        KernelDescriptor::RTArgList writer_forward_rt_args;
+        writer_forward_rt_args.push_back(static_cast<uint32_t>(dim));                           // dim to gather on
+        writer_forward_rt_args.push_back(static_cast<uint32_t>(sender_forward_worker_core.x));  // out_ready_sem_noc0_x
+        writer_forward_rt_args.push_back(static_cast<uint32_t>(sender_forward_worker_core.y));  // out_ready_sem_noc0_y
+        writer_forward_rt_args.push_back(ring_size);                                            // ring_size
+        writer_forward_rt_args.push_back(
+            static_cast<uint32_t>(semaphore.at(1).address()));  // out_ready_semaphore_backward
+        writer_forward_rt_args.append(tensor_descriptor_args);
         for (uint32_t input_idx = 0; input_idx < num_inputs; input_idx++) {
-            writer_forward_rt_args.push_back(output_tensor[input_idx].buffer()->address());
+            writer_forward_rt_args.push_back(output_tensor[input_idx].buffer());
         }
-        writer_forward_rt_args.push_back(false);
-        writer_forward_rt_args.push_back(backward_device_coord.has_value());
+        writer_forward_rt_args.push_back(0u);
+        writer_forward_rt_args.push_back(static_cast<uint32_t>(backward_device_coord.has_value()));
+        // Fabric/signaler helpers expect std::vector<uint32_t>&; collect their args separately,
+        // then merge so any BufferBinding entries above are preserved.
+        std::vector<uint32_t> writer_forward_extra_args;
         if (backward_device_coord.has_value()) {
             const auto target_fabric_node_id = mesh_device->get_fabric_node_id(target_device_coord);
             const auto backward_fabric_node_id = mesh_device->get_fabric_node_id(backward_device_coord.value());
@@ -508,30 +507,30 @@ void ring_attention_all_gather_async_multi_core_with_workers_helper(
                 link,
                 desc,
                 sender_worker_cores[(link * 2) + 1],
-                writer_forward_rt_args);
+                writer_forward_extra_args);
         }
         if (fuse_op) {
             fused_op_signaler_sender_workers->push_all_gather_fused_op_rt_args(
-                writer_forward_rt_args, num_links, link, 1);
+                writer_forward_extra_args, num_links, link, 1);
         }
-        sender_writer_forward_kernel.runtime_args.emplace_back(
-            sender_worker_cores[(link * 2) + 1],
-            KernelDescriptor::CoreRuntimeArgs(writer_forward_rt_args.begin(), writer_forward_rt_args.end()));
+        writer_forward_rt_args.append(writer_forward_extra_args);
+        sender_writer_forward_kernel.emplace_runtime_args(sender_worker_cores[(link * 2) + 1], writer_forward_rt_args);
 
-        std::vector<uint32_t> writer_backward_rt_args = {
-            static_cast<uint32_t>(dim),     // dim to gather on
-            sender_backward_worker_core.x,  // out_ready_sem_noc0_x
-            sender_backward_worker_core.y,  // out_ready_sem_noc0_y
-            ring_size,                      // ring_size
-            semaphore.at(0).address()       // out_ready_semaphore_backward
-        };
-        for (auto tensor_descriptor_arg : tensor_descriptor_args) {
-            writer_backward_rt_args.push_back(tensor_descriptor_arg);
-        }
+        KernelDescriptor::RTArgList writer_backward_rt_args;
+        writer_backward_rt_args.push_back(static_cast<uint32_t>(dim));  // dim to gather on
+        writer_backward_rt_args.push_back(
+            static_cast<uint32_t>(sender_backward_worker_core.x));  // out_ready_sem_noc0_x
+        writer_backward_rt_args.push_back(
+            static_cast<uint32_t>(sender_backward_worker_core.y));  // out_ready_sem_noc0_y
+        writer_backward_rt_args.push_back(ring_size);               // ring_size
+        writer_backward_rt_args.push_back(
+            static_cast<uint32_t>(semaphore.at(0).address()));  // out_ready_semaphore_backward
+        writer_backward_rt_args.append(tensor_descriptor_args);
         for (uint32_t input_idx = 0; input_idx < num_inputs; input_idx++) {
-            writer_backward_rt_args.push_back(output_tensor[input_idx].buffer()->address());
+            writer_backward_rt_args.push_back(output_tensor[input_idx].buffer());
         }
-        writer_backward_rt_args.push_back(forward_device_coord.has_value());
+        writer_backward_rt_args.push_back(static_cast<uint32_t>(forward_device_coord.has_value()));
+        std::vector<uint32_t> writer_backward_extra_args;
         if (forward_device_coord.has_value()) {
             const auto target_fabric_node_id = mesh_device->get_fabric_node_id(target_device_coord);
             const auto forward_fabric_node_id = mesh_device->get_fabric_node_id(forward_device_coord.value());
@@ -541,15 +540,16 @@ void ring_attention_all_gather_async_multi_core_with_workers_helper(
                 link,
                 desc,
                 sender_worker_cores[link * 2],
-                writer_backward_rt_args);
+                writer_backward_extra_args);
         }
-        writer_backward_rt_args.push_back(false);
+        writer_backward_rt_args.append(writer_backward_extra_args);
+        writer_backward_rt_args.push_back(0u);
         if (fuse_op) {
-            fused_op_signaler_sender_workers->push_all_gather_fused_op_rt_args(writer_backward_rt_args, 1, 0, 0);
+            std::vector<uint32_t> writer_backward_signaler_args;
+            fused_op_signaler_sender_workers->push_all_gather_fused_op_rt_args(writer_backward_signaler_args, 1, 0, 0);
+            writer_backward_rt_args.append(writer_backward_signaler_args);
         }
-        sender_writer_backward_kernel.runtime_args.emplace_back(
-            sender_worker_cores[link * 2],
-            KernelDescriptor::CoreRuntimeArgs(writer_backward_rt_args.begin(), writer_backward_rt_args.end()));
+        sender_writer_backward_kernel.emplace_runtime_args(sender_worker_cores[link * 2], writer_backward_rt_args);
     }
 
     // Kernel descriptors are pushed last, with their runtime args fully populated.

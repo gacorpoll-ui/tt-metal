@@ -894,17 +894,17 @@ tt::tt_metal::ProgramDescriptor ExpRingJointSDPAProgramFactory::create_descripto
         });
     }
 
-    uint32_t q_addr = input_tensor_q.buffer()->address();
-    uint32_t k_addr = input_tensor_k.buffer()->address();
-    uint32_t v_addr = input_tensor_v.buffer()->address();
-    uint32_t gathered_k_addr = gathered_input_tensor_k.buffer()->address();
-    uint32_t gathered_v_addr = gathered_input_tensor_v.buffer()->address();
-    uint32_t joint_q_addr = joint_tensor_q.buffer()->address();
-    uint32_t joint_k_addr = joint_tensor_k.buffer()->address();
-    uint32_t joint_v_addr = joint_tensor_v.buffer()->address();
-    uint32_t out_addr = output_tensor.buffer()->address();
-    uint32_t joint_out_addr = joint_output_tensor.buffer()->address();
-    uint32_t stats_addr = stats_output_tensor.buffer()->address();
+    auto* const q_buf = input_tensor_q.buffer();
+    auto* const k_buf = input_tensor_k.buffer();
+    auto* const v_buf = input_tensor_v.buffer();
+    auto* const gathered_k_buf = gathered_input_tensor_k.buffer();
+    auto* const gathered_v_buf = gathered_input_tensor_v.buffer();
+    auto* const joint_q_buf = joint_tensor_q.buffer();
+    auto* const joint_k_buf = joint_tensor_k.buffer();
+    auto* const joint_v_buf = joint_tensor_v.buffer();
+    auto* const out_buf = output_tensor.buffer();
+    auto* const joint_out_buf = joint_output_tensor.buffer();
+    auto* const stats_buf = stats_output_tensor.buffer();
 
     /**
      * Build chain selection for store-and-forward across cores per (batch, head).
@@ -1485,18 +1485,17 @@ tt::tt_metal::ProgramDescriptor ExpRingJointSDPAProgramFactory::create_descripto
         log_debug(tt::LogOp, "global_q_start: {}", global_q_start);
         log_debug(tt::LogOp, "global_q_end: {}", global_q_end);
 
-        std::vector<uint32_t> reader_args = {
-            q_addr,
-            k_addr,
-            v_addr,
-            gathered_k_addr,
-            gathered_v_addr,
-            joint_q_addr,
-            joint_k_addr,
-            joint_v_addr,
-            global_q_start,
-            global_q_end,
-        };
+        KernelDescriptor::RTArgList reader_args;
+        reader_args.push_back(q_buf);
+        reader_args.push_back(k_buf);
+        reader_args.push_back(v_buf);
+        reader_args.push_back(gathered_k_buf);
+        reader_args.push_back(gathered_v_buf);
+        reader_args.push_back(joint_q_buf);
+        reader_args.push_back(joint_k_buf);
+        reader_args.push_back(joint_v_buf);
+        reader_args.push_back(global_q_start);
+        reader_args.push_back(global_q_end);
         // Append chain runtime args for store-and-forward
         const auto& chain = core_chain_info.at(i);
 
@@ -1553,26 +1552,24 @@ tt::tt_metal::ProgramDescriptor ExpRingJointSDPAProgramFactory::create_descripto
         // Per-link semaphore addresses for chunk-level sync
         reader_args.push_back(args.num_links);
         for (uint32_t lnk = 0; lnk < args.num_links; ++lnk) {
-            reader_args.push_back(args.semaphore[lnk].address());
+            reader_args.push_back(static_cast<uint32_t>(args.semaphore[lnk].address()));
         }
 
         // Inject fused-op synchronization RT args: ring_size, ring_index, direction (3 values)
-        reader_args.push_back(args.ring_size);
+        reader_args.push_back(static_cast<uint32_t>(args.ring_size));
         reader_args.push_back(device_index);
         reader_args.push_back(direction);
 
-        reader_kernel.runtime_args.emplace_back(
-            core, KernelDescriptor::CoreRuntimeArgs(reader_args.begin(), reader_args.end()));
+        reader_kernel.emplace_runtime_args(core, reader_args);
 
         // Writer args
-        std::vector<uint32_t> writer_args = {
-            out_addr,
-            joint_out_addr,
-            stats_addr,
-            global_q_start,
-            global_q_end,
-        };
-        writer_args.push_back(args.ring_size);
+        KernelDescriptor::RTArgList writer_args;
+        writer_args.push_back(out_buf);
+        writer_args.push_back(joint_out_buf);
+        writer_args.push_back(stats_buf);
+        writer_args.push_back(global_q_start);
+        writer_args.push_back(global_q_end);
+        writer_args.push_back(static_cast<uint32_t>(args.ring_size));
         writer_args.push_back(device_index);
         writer_args.push_back(direction);
 
@@ -1588,6 +1585,9 @@ tt::tt_metal::ProgramDescriptor ExpRingJointSDPAProgramFactory::create_descripto
 
             const bool link_in_range = (link < args.num_links) && (link < mux_backward_logical_cores.size()) &&
                                        (link < mux_forward_logical_cores.size());
+            // fabric_mux_connection_rt_args appends to a std::vector<uint32_t>; collect mux args
+            // separately and then merge into the RTArgList so BufferBinding entries above are preserved.
+            std::vector<uint32_t> mux_writer_args;
             if (link_in_range) {
                 const CoreCoord& mux_core =
                     is_backward ? mux_backward_logical_cores[link] : mux_forward_logical_cores[link];
@@ -1602,28 +1602,29 @@ tt::tt_metal::ProgramDescriptor ExpRingJointSDPAProgramFactory::create_descripto
                     desc,
                     termination_master_logical,
                     device,
-                    writer_args);
+                    mux_writer_args);
             } else {
                 // link index out of range or invalid direction — append a disconnected MUX connection
                 // Still need valid semaphore IDs for the 5 semaphore fields
-                writer_args.push_back(0);                                        // mux_connection_valid = false
-                writer_args.push_back(0);                                        // is_termination_master
-                writer_args.push_back(0);                                        // mux_x
-                writer_args.push_back(0);                                        // mux_y
-                writer_args.push_back(0);                                        // channel_base_address
-                writer_args.push_back(0);                                        // connection_info_address
-                writer_args.push_back(0);                                        // connection_handshake_address
-                writer_args.push_back(0);                                        // flow_control_address
-                writer_args.push_back(0);                                        // buffer_index_address
-                writer_args.push_back(0);                                        // channel_credits_stream_id
-                writer_args.push_back(allocate_per_core_semaphore(desc, core));  // termination_sync
-                writer_args.push_back(allocate_per_core_semaphore(desc, core));  // local_fabric_mux_status
-                writer_args.push_back(allocate_per_core_semaphore(desc, core));  // local_flow_control
-                writer_args.push_back(allocate_per_core_semaphore(desc, core));  // local_teardown
-                writer_args.push_back(allocate_per_core_semaphore(desc, core));  // local_buffer_index
-                writer_args.push_back(0);                                        // termination_master_noc_x
-                writer_args.push_back(0);                                        // termination_master_noc_y
+                mux_writer_args.push_back(0);                                        // mux_connection_valid = false
+                mux_writer_args.push_back(0);                                        // is_termination_master
+                mux_writer_args.push_back(0);                                        // mux_x
+                mux_writer_args.push_back(0);                                        // mux_y
+                mux_writer_args.push_back(0);                                        // channel_base_address
+                mux_writer_args.push_back(0);                                        // connection_info_address
+                mux_writer_args.push_back(0);                                        // connection_handshake_address
+                mux_writer_args.push_back(0);                                        // flow_control_address
+                mux_writer_args.push_back(0);                                        // buffer_index_address
+                mux_writer_args.push_back(0);                                        // channel_credits_stream_id
+                mux_writer_args.push_back(allocate_per_core_semaphore(desc, core));  // termination_sync
+                mux_writer_args.push_back(allocate_per_core_semaphore(desc, core));  // local_fabric_mux_status
+                mux_writer_args.push_back(allocate_per_core_semaphore(desc, core));  // local_flow_control
+                mux_writer_args.push_back(allocate_per_core_semaphore(desc, core));  // local_teardown
+                mux_writer_args.push_back(allocate_per_core_semaphore(desc, core));  // local_buffer_index
+                mux_writer_args.push_back(0);                                        // termination_master_noc_x
+                mux_writer_args.push_back(0);                                        // termination_master_noc_y
             }
+            writer_args.append(mux_writer_args);
 
             // MUX writer RT args: out_ready_sem, injector coords, AG params, op signaler
             if (link_in_range) {
@@ -1656,30 +1657,26 @@ tt::tt_metal::ProgramDescriptor ExpRingJointSDPAProgramFactory::create_descripto
                 }
                 writer_args.push_back(static_cast<uint32_t>(injector_physical.x));
                 writer_args.push_back(static_cast<uint32_t>(injector_physical.y));
-                writer_args.push_back(args.num_links);   // num_muxes_in_direction
-                writer_args.push_back(link);             // my_mux_index
+                writer_args.push_back(args.num_links);  // num_muxes_in_direction
+                writer_args.push_back(link);            // my_mux_index
                 writer_args.push_back(ag_output_Wt);
                 writer_args.push_back(ag_output_Ht);
-                writer_args.push_back(gathered_k_addr);
-                writer_args.push_back(gathered_v_addr);
+                writer_args.push_back(gathered_k_buf);
+                writer_args.push_back(gathered_v_buf);
             }
-            writer_fabric_kernel.runtime_args.emplace_back(
-                core, KernelDescriptor::CoreRuntimeArgs(writer_args.begin(), writer_args.end()));
+            writer_fabric_kernel.emplace_runtime_args(core, writer_args);
         } else {
-            writer_kernel.runtime_args.emplace_back(
-                core, KernelDescriptor::CoreRuntimeArgs(writer_args.begin(), writer_args.end()));
+            writer_kernel.emplace_runtime_args(core, writer_args);
         }
 
         // Compute args
-        std::vector<uint32_t> compute_args = {
-            global_q_start,
-            global_q_end,
-        };
-        compute_args.push_back(args.ring_size);
+        KernelDescriptor::RTArgList compute_args;
+        compute_args.push_back(global_q_start);
+        compute_args.push_back(global_q_end);
+        compute_args.push_back(static_cast<uint32_t>(args.ring_size));
         compute_args.push_back(device_index);
         compute_args.push_back(direction);
-        compute_kernel.runtime_args.emplace_back(
-            core, KernelDescriptor::CoreRuntimeArgs(compute_args.begin(), compute_args.end()));
+        compute_kernel.emplace_runtime_args(core, compute_args);
     }
 
     // Push the SDPA kernels into desc before building the fabric MUX kernel so its
@@ -1719,17 +1716,17 @@ tt::tt_metal::ProgramDescriptor ExpRingJointSDPAProgramFactory::create_descripto
                 const auto dst_node_id = mesh_device->get_fabric_node_id(backward_coord.value());
                 auto mux_rt_args = mux_kernel_config.get_fabric_mux_run_time_args(
                     src_node_id, dst_node_id, link, desc, mux_backward_logical_cores[link]);
-                mux_kernel.runtime_args.emplace_back(
-                    mux_backward_logical_cores[link],
-                    KernelDescriptor::CoreRuntimeArgs(mux_rt_args.begin(), mux_rt_args.end()));
+                KernelDescriptor::RTArgList mux_args;
+                mux_args.append(mux_rt_args);
+                mux_kernel.emplace_runtime_args(mux_backward_logical_cores[link], mux_args);
             }
             if (forward_coord.has_value()) {
                 const auto dst_node_id = mesh_device->get_fabric_node_id(forward_coord.value());
                 auto mux_rt_args = mux_kernel_config.get_fabric_mux_run_time_args(
                     src_node_id, dst_node_id, link, desc, mux_forward_logical_cores[link]);
-                mux_kernel.runtime_args.emplace_back(
-                    mux_forward_logical_cores[link],
-                    KernelDescriptor::CoreRuntimeArgs(mux_rt_args.begin(), mux_rt_args.end()));
+                KernelDescriptor::RTArgList mux_args;
+                mux_args.append(mux_rt_args);
+                mux_kernel.emplace_runtime_args(mux_forward_logical_cores[link], mux_args);
             }
         }
 

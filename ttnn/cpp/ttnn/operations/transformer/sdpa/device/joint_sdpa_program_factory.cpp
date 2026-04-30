@@ -589,14 +589,14 @@ ProgramDescriptor JointSDPADeviceOperation::JointSDPAProgramFactory::create_desc
         .math_approx_mode = math_approx_mode,
     };
 
-    uint32_t q_addr = input_tensor_q.buffer()->address();
-    uint32_t k_addr = input_tensor_k.buffer()->address();
-    uint32_t v_addr = input_tensor_v.buffer()->address();
-    uint32_t joint_q_addr = joint_tensor_q.buffer()->address();
-    uint32_t joint_k_addr = joint_tensor_k.buffer()->address();
-    uint32_t joint_v_addr = joint_tensor_v.buffer()->address();
-    uint32_t out_addr = output_tensor.buffer()->address();
-    uint32_t joint_out_addr = joint_output_tensor.buffer()->address();
+    auto* const q_buf = input_tensor_q.buffer();
+    auto* const k_buf = input_tensor_k.buffer();
+    auto* const v_buf = input_tensor_v.buffer();
+    auto* const joint_q_buf = joint_tensor_q.buffer();
+    auto* const joint_k_buf = joint_tensor_k.buffer();
+    auto* const joint_v_buf = joint_tensor_v.buffer();
+    auto* const out_buf = output_tensor.buffer();
+    auto* const joint_out_buf = joint_output_tensor.buffer();
 
     // Set reader rt args
     for (uint32_t i = 0; i < num_cores; ++i) {
@@ -627,40 +627,36 @@ ProgramDescriptor JointSDPADeviceOperation::JointSDPAProgramFactory::create_desc
         log_debug(tt::LogOp, "local_q_start: {}", local_q_start);
         log_debug(tt::LogOp, "local_q_end: {}", local_q_end);
 
-        reader_desc.runtime_args.emplace_back(
+        reader_desc.emplace_runtime_args(
             core,
-            KernelDescriptor::CoreRuntimeArgs{
-                q_addr,
-                k_addr,
-                v_addr,
-                joint_q_addr,
-                joint_k_addr,
-                joint_v_addr,
-                local_batch_start,
-                local_batch_end,
-                local_nh_start,
-                local_nh_end,
-                local_q_start,
-                local_q_end});
+            {q_buf,
+             k_buf,
+             v_buf,
+             joint_q_buf,
+             joint_k_buf,
+             joint_v_buf,
+             local_batch_start,
+             local_batch_end,
+             local_nh_start,
+             local_nh_end,
+             local_q_start,
+             local_q_end});
 
         // Writer args
-        writer_desc.runtime_args.emplace_back(
+        writer_desc.emplace_runtime_args(
             core,
-            KernelDescriptor::CoreRuntimeArgs{
-                out_addr,
-                joint_out_addr,
-                local_batch_start,
-                local_batch_end,
-                local_nh_start,
-                local_nh_end,
-                local_q_start,
-                local_q_end});
+            {out_buf,
+             joint_out_buf,
+             local_batch_start,
+             local_batch_end,
+             local_nh_start,
+             local_nh_end,
+             local_q_start,
+             local_q_end});
 
         // Compute args
-        compute_desc.runtime_args.emplace_back(
-            core,
-            KernelDescriptor::CoreRuntimeArgs{
-                local_batch_start, local_batch_end, local_nh_start, local_nh_end, local_q_start, local_q_end});
+        compute_desc.emplace_runtime_args(
+            core, {local_batch_start, local_batch_end, local_nh_start, local_nh_end, local_q_start, local_q_end});
     }
 
     desc.kernels.push_back(std::move(reader_desc));

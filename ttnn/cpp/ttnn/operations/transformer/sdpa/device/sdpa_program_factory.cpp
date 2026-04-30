@@ -926,12 +926,8 @@ ProgramDescriptor SDPAOperation::SDPAProgramFactory::create_descriptor(
         });
     }
 
-    uint32_t q_addr = q_buffer->address();
-    uint32_t k_addr = k_buffer->address();
-    uint32_t v_addr = v_buffer->address();
     uint32_t mask_addr = attn_mask.has_value() ? mask_buffer->address() : 0;
     uint32_t attention_sink_addr = attention_sink.has_value() ? attention_sink_buffer->address() : 0;
-    uint32_t out_addr = out0_buffer->address();
 
     uint32_t num_phases = 1;
     uint32_t read_offset = 0;
@@ -1466,25 +1462,25 @@ ProgramDescriptor SDPAOperation::SDPAProgramFactory::create_descriptor(
         // Get chain info for this core
         const auto& chain = core_chain_info[i];
 
-        KernelDescriptor::CoreRuntimeArgs reader_args = {
-            q_addr,
-            k_addr,
-            v_addr,
-            mask_addr,
-            is_chunked ? page_table.value().buffer()->address() : 0,
-            attention_sink_addr,
-            flexible_chunked ? operation_attributes.chunk_start_idx_tensor.value().buffer()->address() : 0,
-            i,
-            local_batch_start,
-            local_batch_end,
-            local_nh_start,
-            local_nh_end,
-            local_q_start,
-            local_q_end,
-            num_phases,
-            chunked_q_chunk_offset,
-            read_offset  // read_offset
-        };
+        KernelDescriptor::RTArgList reader_args;
+        reader_args.push_back(q_buffer);
+        reader_args.push_back(k_buffer);
+        reader_args.push_back(v_buffer);
+        reader_args.push_back(mask_addr);
+        reader_args.push_back(is_chunked ? page_table.value().buffer()->address() : 0u);
+        reader_args.push_back(attention_sink_addr);
+        reader_args.push_back(
+            flexible_chunked ? operation_attributes.chunk_start_idx_tensor.value().buffer()->address() : 0u);
+        reader_args.push_back(i);
+        reader_args.push_back(local_batch_start);
+        reader_args.push_back(local_batch_end);
+        reader_args.push_back(local_nh_start);
+        reader_args.push_back(local_nh_end);
+        reader_args.push_back(local_q_start);
+        reader_args.push_back(local_q_end);
+        reader_args.push_back(num_phases);
+        reader_args.push_back(chunked_q_chunk_offset);
+        reader_args.push_back(read_offset);  // read_offset
 
         // Add chain metadata for non-causal case
         if (!is_causal) {
@@ -1504,37 +1500,35 @@ ProgramDescriptor SDPAOperation::SDPAProgramFactory::create_descriptor(
             reader_args.push_back(chain.mcast_sender_wait);
         }
 
-        reader_desc.runtime_args.emplace_back(core, std::move(reader_args));
+        reader_desc.emplace_runtime_args(core, reader_args);
 
-        writer_desc.runtime_args.emplace_back(
+        writer_desc.emplace_runtime_args(
             core,
-            KernelDescriptor::CoreRuntimeArgs{
-                out_addr,
-                i,
-                local_batch_start,
-                local_batch_end,
-                local_nh_start,
-                local_nh_end,
-                local_q_start,
-                local_q_end,
-                num_phases,
-                static_cast<uint32_t>(flexible_chunked ? 1 : 0),
-                chunked_q_chunk_offset,
-                write_offset});  // write_offset
+            {out0_buffer,
+             i,
+             local_batch_start,
+             local_batch_end,
+             local_nh_start,
+             local_nh_end,
+             local_q_start,
+             local_q_end,
+             num_phases,
+             static_cast<uint32_t>(flexible_chunked ? 1 : 0),
+             chunked_q_chunk_offset,
+             write_offset});  // write_offset
 
-        compute_desc.runtime_args.emplace_back(
+        compute_desc.emplace_runtime_args(
             core,
-            KernelDescriptor::CoreRuntimeArgs{
-                i,
-                local_batch_start,
-                local_batch_end,
-                local_nh_start,
-                local_nh_end,
-                local_q_start,
-                local_q_end,
-                num_phases,
-                static_cast<uint32_t>(flexible_chunked ? 1 : 0),
-                chunked_q_chunk_offset});
+            {i,
+             local_batch_start,
+             local_batch_end,
+             local_nh_start,
+             local_nh_end,
+             local_q_start,
+             local_q_end,
+             num_phases,
+             static_cast<uint32_t>(flexible_chunked ? 1 : 0),
+             chunked_q_chunk_offset});
     }
 
     desc.kernels.push_back(std::move(reader_desc));

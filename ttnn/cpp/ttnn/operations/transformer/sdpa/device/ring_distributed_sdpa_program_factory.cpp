@@ -603,11 +603,6 @@ ProgramDescriptor RingDistributedSdpaDeviceOperation::RingDistributedSdpaProgram
         .math_approx_mode = math_approx_mode,
     };
 
-    uint32_t q_addr = q_buffer->address();
-    uint32_t k_addr = k_buffer->address();
-    uint32_t v_addr = v_buffer->address();
-    uint32_t out_addr = out0_buffer->address();
-
     // Set reader rt args
     for (uint32_t i = 0; i < num_cores; ++i) {
         CoreCoord core = {i % grid_size.x, i / grid_size.x};
@@ -635,61 +630,58 @@ ProgramDescriptor RingDistributedSdpaDeviceOperation::RingDistributedSdpaProgram
 
         uint32_t page_table_addr = page_table.has_value() ? page_table->buffer()->address() : 0;
 
-        reader_desc.runtime_args.emplace_back(
+        reader_desc.emplace_runtime_args(
             core,
-            KernelDescriptor::CoreRuntimeArgs{
-                q_addr,
-                k_addr,
-                v_addr,
-                0,  // mask_addr,
-                page_table_addr,
-                0,  // attention_sink_addr,
-                0,  // chunk_start_idx_addr (ring has no chunk_start_idx_tensor)
-                i,
-                local_batch_start,
-                local_batch_end,
-                local_nh_start,
-                local_nh_end,
-                local_q_start,
-                local_q_end,
-                2u,
-                chunked_q_chunk_offset_phase_1,
-                read_offset_phase_1,
-                chunked_q_chunk_offset_phase_2,
-                read_offset_phase_2});
+            {q_buffer,
+             k_buffer,
+             v_buffer,
+             0u,  // mask_addr,
+             page_table_addr,
+             0u,  // attention_sink_addr,
+             0u,  // chunk_start_idx_addr (ring has no chunk_start_idx_tensor)
+             i,
+             local_batch_start,
+             local_batch_end,
+             local_nh_start,
+             local_nh_end,
+             local_q_start,
+             local_q_end,
+             2u,
+             chunked_q_chunk_offset_phase_1,
+             read_offset_phase_1,
+             chunked_q_chunk_offset_phase_2,
+             read_offset_phase_2});
 
-        writer_desc.runtime_args.emplace_back(
+        writer_desc.emplace_runtime_args(
             core,
-            KernelDescriptor::CoreRuntimeArgs{
-                out_addr,
-                i,
-                local_batch_start,
-                local_batch_end,
-                local_nh_start,
-                local_nh_end,
-                local_q_start,
-                local_q_end,
-                2u,
-                0u,  // use_chunk_start_idx_tensor (ring has no chunk_start_idx_tensor)
-                chunked_q_chunk_offset_phase_1,
-                write_offset_phase_1,
-                chunked_q_chunk_offset_phase_2,
-                write_offset_phase_2});
+            {out0_buffer,
+             i,
+             local_batch_start,
+             local_batch_end,
+             local_nh_start,
+             local_nh_end,
+             local_q_start,
+             local_q_end,
+             2u,
+             0u,  // use_chunk_start_idx_tensor (ring has no chunk_start_idx_tensor)
+             chunked_q_chunk_offset_phase_1,
+             write_offset_phase_1,
+             chunked_q_chunk_offset_phase_2,
+             write_offset_phase_2});
 
-        compute_desc.runtime_args.emplace_back(
+        compute_desc.emplace_runtime_args(
             core,
-            KernelDescriptor::CoreRuntimeArgs{
-                i,
-                local_batch_start,
-                local_batch_end,
-                local_nh_start,
-                local_nh_end,
-                local_q_start,
-                local_q_end,
-                2u,
-                0u,  // use_chunk_start_idx_tensor (ring has no chunk_start_idx_tensor)
-                chunked_q_chunk_offset_phase_1,
-                chunked_q_chunk_offset_phase_2});
+            {i,
+             local_batch_start,
+             local_batch_end,
+             local_nh_start,
+             local_nh_end,
+             local_q_start,
+             local_q_end,
+             2u,
+             0u,  // use_chunk_start_idx_tensor (ring has no chunk_start_idx_tensor)
+             chunked_q_chunk_offset_phase_1,
+             chunked_q_chunk_offset_phase_2});
     }
 
     desc.kernels.push_back(std::move(reader_desc));

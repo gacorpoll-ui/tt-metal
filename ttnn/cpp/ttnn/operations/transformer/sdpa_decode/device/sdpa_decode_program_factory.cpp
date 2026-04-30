@@ -789,10 +789,9 @@ ProgramDescriptor SdpaDecodeDeviceOperation::create_descriptor(
     };
 
     // ========== Buffer Addresses for Runtime Args ==========
-    const uint32_t q_addr = q_buffer->address();
-    const uint32_t k_addr = k_buffer->address();
-    const uint32_t v_addr = v_buffer->address();
-    const uint32_t out_addr = out_buffer->address();
+    // Mandatory buffers are passed as Buffer* (auto-registered as BufferBindings for the fast
+    // cache-hit path).  Optional buffers stay as ternary addresses since the variant cannot
+    // deduce a mixed Buffer*/uint32_t result.
     const uint32_t pos_addr = use_cur_pos_tensor ? cur_pos_tensor.value().buffer()->address() : 0;
     const uint32_t page_table_addr = is_paged_attention ? page_table_tensor.value().buffer()->address() : 0;
     const uint32_t attn_mask_addr = use_attention_mask ? attn_mask.value().buffer()->address() : 0;
@@ -872,51 +871,49 @@ ProgramDescriptor SdpaDecodeDeviceOperation::create_descriptor(
         }
         log_debug(tt::LogOp, "reduction_group_base_idx: {}", reduction_group_base_idx);
         // reader runtime args
-        KernelDescriptor::CoreRuntimeArgs reader_rt_args = {
-            q_addr,
-            k_addr,
-            v_addr,
-            pos_addr,
-            page_table_addr,
-            attn_mask_addr,
-            attention_sink_addr,
-            page_table_stick_size,
-            static_cast<uint32_t>(do_reduce),
-            static_cast<uint32_t>(do_output),
-            cur_head,
-            cur_batch,
-            core_num_in_reduce,
-            core_num_in_output,
-            cur_pos,
-            static_cast<uint32_t>(do_k_mcast),
-            mcast_x,
-            mcast_y0,
-            mcast_y1,
-            num_dests,
-        };
-        reader_rt_args.insert(reader_rt_args.end(), output_core_physical_xs.begin(), output_core_physical_xs.end());
-        reader_rt_args.insert(reader_rt_args.end(), output_core_physical_ys.begin(), output_core_physical_ys.end());
+        KernelDescriptor::RTArgList reader_rt_args;
+        reader_rt_args.push_back(q_buffer);
+        reader_rt_args.push_back(k_buffer);
+        reader_rt_args.push_back(v_buffer);
+        reader_rt_args.push_back(pos_addr);
+        reader_rt_args.push_back(page_table_addr);
+        reader_rt_args.push_back(attn_mask_addr);
+        reader_rt_args.push_back(attention_sink_addr);
+        reader_rt_args.push_back(page_table_stick_size);
+        reader_rt_args.push_back(static_cast<uint32_t>(do_reduce));
+        reader_rt_args.push_back(static_cast<uint32_t>(do_output));
+        reader_rt_args.push_back(cur_head);
+        reader_rt_args.push_back(cur_batch);
+        reader_rt_args.push_back(core_num_in_reduce);
+        reader_rt_args.push_back(core_num_in_output);
+        reader_rt_args.push_back(cur_pos);
+        reader_rt_args.push_back(static_cast<uint32_t>(do_k_mcast));
+        reader_rt_args.push_back(mcast_x);
+        reader_rt_args.push_back(mcast_y0);
+        reader_rt_args.push_back(mcast_y1);
+        reader_rt_args.push_back(num_dests);
+        reader_rt_args.append(output_core_physical_xs);
+        reader_rt_args.append(output_core_physical_ys);
 
         // writer runtime args (do_reduce is NOT included — writer doesn't use it)
-        KernelDescriptor::CoreRuntimeArgs writer_rt_args = {
-            out_addr,
-            worker_id_for_reduce,
-            worker_id_for_output,
-            static_cast<uint32_t>(do_reduce),
-            static_cast<uint32_t>(do_output),
-            cur_head,
-            cur_batch,
-            core_num_in_reduce,
-            core_num_in_output,
-            cur_pos,
-            // Tree reduction parameters
-            tree_params.is_root ? 1u : 0u,
-            tree_params.parent_core_in_group,
-            tree_params.send_at_round,
-            tree_params.num_children,
-            tree_params.my_active_rounds,
-            reduction_group_base_idx,
-        };
+        KernelDescriptor::RTArgList writer_rt_args;
+        writer_rt_args.push_back(out_buffer);
+        writer_rt_args.push_back(worker_id_for_reduce);
+        writer_rt_args.push_back(worker_id_for_output);
+        writer_rt_args.push_back(static_cast<uint32_t>(do_reduce));
+        writer_rt_args.push_back(static_cast<uint32_t>(do_output));
+        writer_rt_args.push_back(cur_head);
+        writer_rt_args.push_back(cur_batch);
+        writer_rt_args.push_back(core_num_in_reduce);
+        writer_rt_args.push_back(core_num_in_output);
+        writer_rt_args.push_back(cur_pos);
+        // Tree reduction parameters
+        writer_rt_args.push_back(tree_params.is_root ? 1u : 0u);
+        writer_rt_args.push_back(tree_params.parent_core_in_group);
+        writer_rt_args.push_back(tree_params.send_at_round);
+        writer_rt_args.push_back(tree_params.num_children);
+        writer_rt_args.push_back(tree_params.my_active_rounds);
+        writer_rt_args.push_back(reduction_group_base_idx);
         // Add children_per_round array (MAX_TREE_REDUCTION_ROUNDS elements)
         for (uint32_t children : tree_params.children_per_round) {
             writer_rt_args.push_back(children);
@@ -928,34 +925,33 @@ ProgramDescriptor SdpaDecodeDeviceOperation::create_descriptor(
         for (uint32_t c = 0; c < num_cores_per_head; ++c) {
             writer_rt_args.push_back(reduction_group_core_ys[reduction_group_base_idx + c]);
         }
-        writer_rt_args.insert(writer_rt_args.end(), reduce_core_physical_xs.begin(), reduce_core_physical_xs.end());
-        writer_rt_args.insert(writer_rt_args.end(), reduce_core_physical_ys.begin(), reduce_core_physical_ys.end());
-        writer_rt_args.insert(writer_rt_args.end(), output_core_physical_xs.begin(), output_core_physical_xs.end());
-        writer_rt_args.insert(writer_rt_args.end(), output_core_physical_ys.begin(), output_core_physical_ys.end());
+        writer_rt_args.append(reduce_core_physical_xs);
+        writer_rt_args.append(reduce_core_physical_ys);
+        writer_rt_args.append(output_core_physical_xs);
+        writer_rt_args.append(output_core_physical_ys);
 
         // compute runtime args
-        KernelDescriptor::CoreRuntimeArgs compute_rt_args = {
-            static_cast<uint32_t>(do_reduce),
-            static_cast<uint32_t>(do_output),
-            cur_head,
-            cur_batch,
-            core_num_in_reduce,
-            core_num_in_output,
-            cur_pos,
-            // Tree reduction parameters for compute
-            tree_params.is_root ? 1u : 0u,
-            tree_params.parent_core_in_group,
-            tree_params.send_at_round,
-            tree_params.num_children,
-            tree_params.my_active_rounds,
-        };
+        KernelDescriptor::RTArgList compute_rt_args;
+        compute_rt_args.push_back(static_cast<uint32_t>(do_reduce));
+        compute_rt_args.push_back(static_cast<uint32_t>(do_output));
+        compute_rt_args.push_back(cur_head);
+        compute_rt_args.push_back(cur_batch);
+        compute_rt_args.push_back(core_num_in_reduce);
+        compute_rt_args.push_back(core_num_in_output);
+        compute_rt_args.push_back(cur_pos);
+        // Tree reduction parameters for compute
+        compute_rt_args.push_back(tree_params.is_root ? 1u : 0u);
+        compute_rt_args.push_back(tree_params.parent_core_in_group);
+        compute_rt_args.push_back(tree_params.send_at_round);
+        compute_rt_args.push_back(tree_params.num_children);
+        compute_rt_args.push_back(tree_params.my_active_rounds);
         // Add children_per_round array for compute
         for (uint32_t children : tree_params.children_per_round) {
             compute_rt_args.push_back(children);
         }
-        reader_desc.runtime_args.emplace_back(core, std::move(reader_rt_args));
-        writer_desc.runtime_args.emplace_back(core, std::move(writer_rt_args));
-        compute_desc.runtime_args.emplace_back(core, std::move(compute_rt_args));
+        reader_desc.emplace_runtime_args(core, reader_rt_args);
+        writer_desc.emplace_runtime_args(core, writer_rt_args);
+        compute_desc.emplace_runtime_args(core, compute_rt_args);
     }
     if (num_active_cores < num_cores_available) {
         log_debug(tt::LogOp, "idle cores {}", core_group_idle.size());

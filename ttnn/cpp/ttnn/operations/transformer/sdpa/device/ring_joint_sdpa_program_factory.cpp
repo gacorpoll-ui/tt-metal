@@ -944,17 +944,17 @@ tt::tt_metal::ProgramDescriptor RingJointSDPAProgramFactory::create_descriptor(
         });
     }
 
-    uint32_t q_addr = input_tensor_q.buffer()->address();
-    uint32_t k_addr = input_tensor_k.buffer()->address();
-    uint32_t v_addr = input_tensor_v.buffer()->address();
-    uint32_t gathered_k_addr = gathered_input_tensor_k.buffer()->address();
-    uint32_t gathered_v_addr = gathered_input_tensor_v.buffer()->address();
-    uint32_t joint_q_addr = joint_tensor_q.buffer()->address();
-    uint32_t joint_k_addr = joint_tensor_k.buffer()->address();
-    uint32_t joint_v_addr = joint_tensor_v.buffer()->address();
-    uint32_t out_addr = output_tensor.buffer()->address();
-    uint32_t joint_out_addr = joint_output_tensor.buffer()->address();
-    uint32_t stats_addr = stats_output_tensor.buffer()->address();
+    auto* const q_buf = input_tensor_q.buffer();
+    auto* const k_buf = input_tensor_k.buffer();
+    auto* const v_buf = input_tensor_v.buffer();
+    auto* const gathered_k_buf = gathered_input_tensor_k.buffer();
+    auto* const gathered_v_buf = gathered_input_tensor_v.buffer();
+    auto* const joint_q_buf = joint_tensor_q.buffer();
+    auto* const joint_k_buf = joint_tensor_k.buffer();
+    auto* const joint_v_buf = joint_tensor_v.buffer();
+    auto* const out_buf = output_tensor.buffer();
+    auto* const joint_out_buf = joint_output_tensor.buffer();
+    auto* const stats_buf = stats_output_tensor.buffer();
 
     /**
      * Build chain selection for store-and-forward across cores per (batch, head).
@@ -1528,18 +1528,18 @@ tt::tt_metal::ProgramDescriptor RingJointSDPAProgramFactory::create_descriptor(
         log_debug(tt::LogOp, "global_q_start: {}", global_q_start);
         log_debug(tt::LogOp, "global_q_end: {}", global_q_end);
 
-        std::vector<uint32_t> reader_args = {
-            q_addr,
-            k_addr,
-            v_addr,
-            gathered_k_addr,
-            gathered_v_addr,
-            joint_q_addr,
-            joint_k_addr,
-            joint_v_addr,
-            global_q_start,
-            global_q_end,
-        };
+        KernelDescriptor::RTArgList reader_args;
+        reader_args.push_back(q_buf);
+        reader_args.push_back(k_buf);
+        reader_args.push_back(v_buf);
+        reader_args.push_back(gathered_k_buf);
+        reader_args.push_back(gathered_v_buf);
+        reader_args.push_back(joint_q_buf);
+        reader_args.push_back(joint_k_buf);
+        reader_args.push_back(joint_v_buf);
+        reader_args.push_back(global_q_start);
+        reader_args.push_back(global_q_end);
+
         // Append chain runtime args for store-and-forward
         const auto& head_chain = head_chain_configs.at(i);
         const auto& batch_chain = batch_chain_configs.at(i);
@@ -1575,31 +1575,32 @@ tt::tt_metal::ProgramDescriptor RingJointSDPAProgramFactory::create_descriptor(
         }
 
         // Inject fused-op synchronization RT args (AllGather) here; it will append to reader_args
-        sdpa_fused_op_signaler->push_ring_sdpa_fused_op_rt_args(reader_args);
+        std::vector<uint32_t> reader_signaler_args;
+        sdpa_fused_op_signaler->push_ring_sdpa_fused_op_rt_args(reader_signaler_args);
+        reader_args.append(reader_signaler_args);
 
-        reader_kernel.runtime_args.emplace_back(
-            core, KernelDescriptor::CoreRuntimeArgs(reader_args.begin(), reader_args.end()));
+        reader_kernel.emplace_runtime_args(core, reader_args);
 
         // Writer args
-        std::vector<uint32_t> writer_args = {
-            out_addr,
-            joint_out_addr,
-            stats_addr,
-            global_q_start,
-            global_q_end,
-        };
-        sdpa_fused_op_signaler->push_ring_sdpa_fused_op_rt_args(writer_args);
-        writer_kernel.runtime_args.emplace_back(
-            core, KernelDescriptor::CoreRuntimeArgs(writer_args.begin(), writer_args.end()));
+        KernelDescriptor::RTArgList writer_args;
+        writer_args.push_back(out_buf);
+        writer_args.push_back(joint_out_buf);
+        writer_args.push_back(stats_buf);
+        writer_args.push_back(global_q_start);
+        writer_args.push_back(global_q_end);
+        std::vector<uint32_t> writer_signaler_args;
+        sdpa_fused_op_signaler->push_ring_sdpa_fused_op_rt_args(writer_signaler_args);
+        writer_args.append(writer_signaler_args);
+        writer_kernel.emplace_runtime_args(core, writer_args);
 
         // Compute args
-        std::vector<uint32_t> compute_args = {
-            global_q_start,
-            global_q_end,
-        };
-        sdpa_fused_op_signaler->push_ring_sdpa_fused_op_rt_args(compute_args);
-        compute_kernel.runtime_args.emplace_back(
-            core, KernelDescriptor::CoreRuntimeArgs(compute_args.begin(), compute_args.end()));
+        KernelDescriptor::RTArgList compute_args;
+        compute_args.push_back(global_q_start);
+        compute_args.push_back(global_q_end);
+        std::vector<uint32_t> compute_signaler_args;
+        sdpa_fused_op_signaler->push_ring_sdpa_fused_op_rt_args(compute_signaler_args);
+        compute_args.append(compute_signaler_args);
+        compute_kernel.emplace_runtime_args(core, compute_args);
     }
 
     // Push the SDPA kernels into desc before invoking the all-gather helper so
