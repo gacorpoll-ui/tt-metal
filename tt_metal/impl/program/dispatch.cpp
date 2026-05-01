@@ -2099,7 +2099,8 @@ void assemble_device_commands(
     // Assemble launch message
     LaunchMessageGenerator launch_message_generator;
     DeviceCommandCalculator launch_message_calculator;
-    launch_message_generator.construct_commands(mesh_device, program, launch_message_calculator, constants, sub_device_id);
+    launch_message_generator.construct_commands(
+        mesh_device, program, launch_message_calculator, constants, sub_device_id);
     program_command_sequence.launch_msg_command_sequence =
         HostMemDeviceCommand(launch_message_calculator.write_offset_bytes());
     launch_message_generator.assemble_commands(
