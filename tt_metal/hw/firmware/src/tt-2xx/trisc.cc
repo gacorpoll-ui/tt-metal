@@ -113,6 +113,7 @@ extern "C" uint32_t _start1() {
     configure_csr();
     uint32_t hartid = internal_::get_hw_thread_idx();
     uint32_t neo_id = csr_read<CSR::NEO_ID>();
+    uint32_t trisc_id = csr_read<CSR::TRISC_ID>();
     DPRINT << "hartid: " << hartid << ENDL();
     DEVICE_PRINT("hartid: {}\n", hartid);
     volatile tt_l1_ptr uint8_t* const trisc_run = &((tt_l1_ptr mailboxes_t*)(MEM_MAILBOX_BASE + MEM_L1_UNCACHED_BASE))
@@ -122,9 +123,15 @@ extern "C" uint32_t _start1() {
     if (neo_id == 0) {
         extern uint32_t __ldm_data_start[];
         do_crt1(__ldm_data_start);
+        (*GET_MAILBOX_ADDRESS_DEV(fw_shared_globals_ready))[MaxDMProcessorsPerCoreType + trisc_id] =
+            SHARED_GLOBALS_READY_GO;
     }
     extern uint32_t __ldm_tdata_init[];
     do_thread_crt1(__ldm_tdata_init);
+
+    while ((*GET_MAILBOX_ADDRESS_DEV(fw_shared_globals_ready))[MaxDMProcessorsPerCoreType + trisc_id] !=
+           SHARED_GLOBALS_READY_GO) {
+    }
     // Initialize GPRs to all 0s
 #pragma GCC unroll 0
     for (int i = 0; i < 64; i++) {
@@ -135,7 +142,7 @@ extern "C" uint32_t _start1() {
     *trisc_run = RUN_SYNC_MSG_DONE;
 
     DeviceProfilerInit();
-    //    DPRINT << "TRISC-FW: initialized" << ENDL();
+    DPRINT << "TRISC-FW: initialized" << ENDL();
     DEVICE_PRINT("TRISC-FW: initialized\n");
     while (1) {
         WAYPOINT("W");
