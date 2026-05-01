@@ -74,29 +74,14 @@ bool is_close_packed_vectors(
         argfail);
 }
 
-// Convenience overload: element-wise is_close(rtol, atol) over two equally-sized vectors.
-// Saves callers from repeating the `[rtol, atol](auto a, auto b){ return is_close(a, b, rtol, atol); }` lambda.
-template <typename ValueType>
-bool is_close_vectors(
-    const std::vector<ValueType>& vec_a,
-    const std::vector<ValueType>& vec_b,
-    float rtol,
-    float atol,
-    int* argfail = nullptr) {
-    return is_close_vectors<ValueType>(
-        vec_a,
-        vec_b,
-        std::function<bool(ValueType, ValueType)>(
-            [rtol, atol](ValueType a, ValueType b) { return is_close(a, b, rtol, atol); }),
-        argfail);
-}
-
 // Pearson correlation coefficient between two equally-sized float vectors.
 // Returns 1.0 for empty inputs or zero-variance vectors (degenerate).
-inline double compute_pcc(const std::vector<float>& a, const std::vector<float>& b) {
+inline bool check_pcc(const std::vector<float>& a, const std::vector<float>& b, double min_pcc) {
     TT_FATAL(a.size() == b.size(), "compute_pcc -- a.size()={} == b.size()={}", a.size(), b.size());
+
+    double pcc = 0.0;
     if (a.empty()) {
-        return 1.0;
+        pcc = 1.0;
     }
     const std::size_t n = a.size();
     double sum_a = 0.0, sum_b = 0.0, sum_a2 = 0.0, sum_b2 = 0.0, sum_ab = 0.0;
@@ -111,13 +96,10 @@ inline double compute_pcc(const std::vector<float>& a, const std::vector<float>&
     double denom_a = (n * sum_a2) - (sum_a * sum_a);
     double denom_b = (n * sum_b2) - (sum_b * sum_b);
     if (denom_a == 0.0 || denom_b == 0.0) {
-        return 1.0;
+        pcc = 1.0;
     }
-    return (n * sum_ab - sum_a * sum_b) / std::sqrt(denom_a * denom_b);
-}
+    pcc = (n * sum_ab - sum_a * sum_b) / std::sqrt(denom_a * denom_b);
 
-inline bool check_pcc(const std::vector<float>& a, const std::vector<float>& b, double min_pcc) {
-    double pcc = compute_pcc(a, b);
     if (pcc < min_pcc) {
         log_info(tt::LogTest, "check_pcc: PCC = {} < min_pcc = {}", pcc, min_pcc);
         return false;

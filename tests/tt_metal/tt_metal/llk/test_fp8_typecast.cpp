@@ -99,9 +99,9 @@ static vector<uint32_t> run_fp8_typecast(
 // and offset=-10 yields U(-10, 10).
 //
 // Format-to-float unpackers (fp8_to_floats, bf16_to_floats) live in
-// float8_utils.hpp. Validation reuses tt::test_utils::is_close_vectors
-// (rtol/atol overload) and check_pcc from comparison.hpp. Only the bfp8
-// unpacker is local since it depends on the bfp8-specific tile layout.
+// float8_utils.hpp. Validation reuses tt::test_utils::is_close_vectors with an
+// element-wise is_close(rtol,atol) predicate and check_pcc from comparison.hpp.
+// Only the bfp8 unpacker is local since it depends on the bfp8-specific tile layout.
 
 static vector<float> bfp8_to_floats(const vector<uint32_t>& packed) {
     return unpack_bfp8_tiles_into_float_vec(
@@ -153,7 +153,8 @@ static void check_typecast(
     auto result_vec = run_fp8_typecast(dev, in_fmt, out_fmt, src_vec, num_tiles, fp32_dest_acc_en);
     auto src_floats = unpack_to_floats(in_fmt, src_vec);
     auto dst_floats = unpack_to_floats(out_fmt, result_vec);
-    EXPECT_TRUE(tt::test_utils::is_close_vectors<float>(src_floats, dst_floats, rtol, atol));
+    EXPECT_TRUE(tt::test_utils::is_close_vectors<float>(
+        src_floats, dst_floats, [&](float a, float b) { return tt::test_utils::is_close(a, b, rtol, atol); }));
     EXPECT_TRUE(tt::test_utils::check_pcc(src_floats, dst_floats, min_pcc));
 }
 
