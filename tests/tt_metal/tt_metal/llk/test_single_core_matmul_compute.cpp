@@ -31,6 +31,7 @@
 #include <tt-metalium/tt_backend_api_types.hpp>
 #include "tt_metal/test_utils/comparison.hpp"
 #include "tt_metal/test_utils/df/float32.hpp"
+#include "tt_metal/test_utils/float8_utils.hpp"
 #include "tt_metal/test_utils/packing.hpp"
 #include "tt_metal/test_utils/print_helpers.hpp"
 #include "tt_metal/test_utils/stimulus.hpp"
@@ -189,14 +190,22 @@ void create_CBs_for_fused_matmul(
     }
 }
 
-bool single_tile_matmul(const std::shared_ptr<distributed::MeshDevice>& mesh_device) {
+// Single-tile matmul. Inputs and output formats are programmable; default
+// (Float16_b in, Float16_b out, fp32_dest_acc_en=false) preserves the legacy
+// BF16 test semantics. Pass Fp8_e4m3 for the FP8 enablement variants on
+// Blackhole (see PR #40287/#41142 for the LLK family fix-up).
+bool single_tile_matmul(
+    const std::shared_ptr<distributed::MeshDevice>& mesh_device,
+    tt::DataFormat in_fmt = tt::DataFormat::Float16_b,
+    tt::DataFormat out_fmt = tt::DataFormat::Float16_b,
+    bool fp32_dest_acc_en = false) {
     bool pass = true;
-    // FIXME: Convert to config
     CoreCoord core(0, 0);
     const uint32_t in0_cb_index = 0;
     const uint32_t in1_cb_index = 1;
     const uint32_t out_cb_index = 16;
-    const size_t byte_size = 1 * 2 * 32 * 32;
+    const uint32_t in_tile_size = tt::tile_size(in_fmt);
+    const uint32_t out_tile_size = tt::tile_size(out_fmt);
 
     auto* device = mesh_device->get_devices()[0];
     auto& cq = mesh_device->mesh_command_queue();
@@ -206,34 +215,40 @@ bool single_tile_matmul(const std::shared_ptr<distributed::MeshDevice>& mesh_dev
     ////////////////////////////////////////////////////////////////////////////
     //                      Application Setup
     ////////////////////////////////////////////////////////////////////////////
-    tt::tt_metal::InterleavedBufferConfig dram_config{
-        .device = device, .size = byte_size, .page_size = byte_size, .buffer_type = tt::tt_metal::BufferType::DRAM};
+    tt::tt_metal::InterleavedBufferConfig dram_in_config{
+        .device = device,
+        .size = in_tile_size,
+        .page_size = in_tile_size,
+        .buffer_type = tt::tt_metal::BufferType::DRAM};
+    tt::tt_metal::InterleavedBufferConfig dram_out_config{
+        .device = device,
+        .size = out_tile_size,
+        .page_size = out_tile_size,
+        .buffer_type = tt::tt_metal::BufferType::DRAM};
 
     tt_metal::Program program = tt_metal::CreateProgram();
     workload.add_program(device_range, std::move(program));
     auto& program_ = workload.get_programs().at(device_range);
 
-    auto input0_dram_buffer = CreateBuffer(dram_config);
-    const uint32_t in0_dram_addr = input0_dram_buffer->address();
-    auto input1_dram_buffer = CreateBuffer(dram_config);
-    const uint32_t in1_dram_addr = input1_dram_buffer->address();
-    auto output_dram_buffer = CreateBuffer(dram_config);
-    const uint32_t out_dram_addr = output_dram_buffer->address();
+    auto input0_dram_buffer = CreateBuffer(dram_in_config);
+    auto input1_dram_buffer = CreateBuffer(dram_in_config);
+    auto output_dram_buffer = CreateBuffer(dram_out_config);
 
-    tt_metal::CircularBufferConfig l1_input0_cb_config =
-        tt_metal::CircularBufferConfig(byte_size, {{in0_cb_index, tt::DataFormat::Float16_b}})
-            .set_page_size(in0_cb_index, byte_size);
-    tt_metal::CreateCircularBuffer(program_, core, l1_input0_cb_config);
-
-    tt_metal::CircularBufferConfig l1_input1_cb_config =
-        tt_metal::CircularBufferConfig(byte_size, {{in1_cb_index, tt::DataFormat::Float16_b}})
-            .set_page_size(in1_cb_index, byte_size);
-    tt_metal::CreateCircularBuffer(program_, core, l1_input1_cb_config);
-
-    tt_metal::CircularBufferConfig l1_output_cb_config =
-        tt_metal::CircularBufferConfig(byte_size, {{out_cb_index, tt::DataFormat::Float16_b}})
-            .set_page_size(out_cb_index, byte_size);
-    tt_metal::CreateCircularBuffer(program_, core, l1_output_cb_config);
+    tt_metal::CreateCircularBuffer(
+        program_,
+        core,
+        tt_metal::CircularBufferConfig(in_tile_size, {{in0_cb_index, in_fmt}})
+            .set_page_size(in0_cb_index, in_tile_size));
+    tt_metal::CreateCircularBuffer(
+        program_,
+        core,
+        tt_metal::CircularBufferConfig(in_tile_size, {{in1_cb_index, in_fmt}})
+            .set_page_size(in1_cb_index, in_tile_size));
+    tt_metal::CreateCircularBuffer(
+        program_,
+        core,
+        tt_metal::CircularBufferConfig(out_tile_size, {{out_cb_index, out_fmt}})
+            .set_page_size(out_cb_index, out_tile_size));
 
     auto reader_kernel = tt_metal::CreateKernel(
         program_,
@@ -257,30 +272,49 @@ bool single_tile_matmul(const std::shared_ptr<distributed::MeshDevice>& mesh_dev
         program_,
         "tests/tt_metal/tt_metal/test_kernels/compute/unit_tests/matmul/single_tile_compute.cpp",
         core,
-        tt_metal::ComputeConfig{.compile_args = {in0_cb_index, in1_cb_index, out_cb_index}});
+        tt_metal::ComputeConfig{
+            .fp32_dest_acc_en = fp32_dest_acc_en, .compile_args = {in0_cb_index, in1_cb_index, out_cb_index}});
 
     ////////////////////////////////////////////////////////////////////////////
-    //                      Stimulus Generation
+    //                      Stimulus & Golden Generation
     ////////////////////////////////////////////////////////////////////////////
-    std::vector<uint32_t> packed_input0 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
-        1.0f, 1.0f, byte_size / sizeof(bfloat16), std::chrono::system_clock::now().time_since_epoch().count());
-    std::vector<uint32_t> packed_input1 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
-        1.0f / 32.0f,
-        1.0f / 32.0f,
-        byte_size / sizeof(bfloat16),
-        std::chrono::system_clock::now().time_since_epoch().count());
-    // Setup the weights such that final result is the original input.
+    // Format-dispatched. Both branches produce a flat float `golden_floats`
+    // vector indexed in face-major byte order so the comparison step below
+    // can use a single uniform validation path.
+    std::vector<uint32_t> packed_input0;
+    std::vector<uint32_t> packed_input1;
+    std::vector<float> golden_floats;
+    constexpr int kTileElems = 32 * 32;
 
-    ////////////////////////////////////////////////////////////////////////////
-    //                      Golden Generation
-    ////////////////////////////////////////////////////////////////////////////
-    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
-    auto packed_golden = packed_input0;
+    if (in_fmt == tt::DataFormat::Fp8_e4m3) {
+        auto [in0, in0_floats] = make_fp8_input(/*seed=*/0, /*rng=*/1.0f);
+        auto [in1, in1_floats] = make_fp8_input(/*seed=*/1, /*rng=*/1.0f);
+        packed_input0 = std::move(in0);
+        packed_input1 = std::move(in1);
+        golden_floats.assign(kTileElems, 0.0f);
+        for (int y = 0; y < 32; y++) {
+            for (int x = 0; x < 32; x++) {
+                float acc = 0.0f;
+                for (int z = 0; z < 32; z++) {
+                    acc += in0_floats[byte_tile_face_major_index(z, y)] * in1_floats[byte_tile_face_major_index(x, z)];
+                }
+                golden_floats[byte_tile_face_major_index(x, y)] = acc;
+            }
+        }
+    } else {
+        // BF16 trivial-stimulus path: in0 = 1.0, in1 = 1/32 → output element
+        // is sum of 32 (1.0 * 1/32) = 1.0 everywhere, so golden is constant 1.0.
+        const auto seed = std::chrono::system_clock::now().time_since_epoch().count();
+        packed_input0 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
+            1.0f, 1.0f, in_tile_size / sizeof(bfloat16), seed);
+        packed_input1 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
+            1.0f / 32.0f, 1.0f / 32.0f, in_tile_size / sizeof(bfloat16), seed + 1);
+        golden_floats.assign(out_tile_size / sizeof(bfloat16), 1.0f);
+    }
 
     ////////////////////////////////////////////////////////////////////////////
     //                      Compile and Execute Application
     ////////////////////////////////////////////////////////////////////////////
-
     tt_metal::detail::WriteToBuffer(input0_dram_buffer, packed_input0);
     tt_metal::detail::WriteToBuffer(input1_dram_buffer, packed_input1);
 
@@ -288,22 +322,13 @@ bool single_tile_matmul(const std::shared_ptr<distributed::MeshDevice>& mesh_dev
         program_,
         reader_kernel,
         core,
-        {
-            (uint32_t)in0_dram_addr,
-            (uint32_t)0,  // in_0 dram bank id
-            (uint32_t)in1_dram_addr,
-            (uint32_t)0,
-            (uint32_t)1,  // num_tiles
-        });
+        {(uint32_t)input0_dram_buffer->address(),
+         (uint32_t)0,
+         (uint32_t)input1_dram_buffer->address(),
+         (uint32_t)0,
+         (uint32_t)1});
     tt_metal::SetRuntimeArgs(
-        program_,
-        writer_kernel,
-        core,
-        {
-            (uint32_t)out_dram_addr,
-            (uint32_t)0,
-            (uint32_t)1,  // num_tiles
-        });
+        program_, writer_kernel, core, {(uint32_t)output_dram_buffer->address(), (uint32_t)0, (uint32_t)1});
 
     distributed::EnqueueMeshWorkload(cq, workload, false);
     distributed::Finish(cq);
@@ -313,23 +338,37 @@ bool single_tile_matmul(const std::shared_ptr<distributed::MeshDevice>& mesh_dev
     ////////////////////////////////////////////////////////////////////////////
     std::vector<uint32_t> dest_buffer_data;
     tt_metal::detail::ReadFromBuffer(output_dram_buffer, dest_buffer_data);
-    pass &= is_close_packed_vectors<bfloat16, uint32_t>(
-        dest_buffer_data, packed_golden, [&](const bfloat16& a, const bfloat16& b) { return is_close(a, b, 0.015f); });
+    const bool fp8_out = (out_fmt == tt::DataFormat::Fp8_e4m3);
+    auto dest_floats = fp8_out ? fp8_to_floats(dest_buffer_data) : bf16_to_floats(dest_buffer_data);
+
+    // Tolerances: FP8-narrowing path tracks ~1/8 quantization error; BF16 path
+    // preserves the legacy 0.015 rtol the original test asserted.
+    const float rtol = fp8_out ? 0.125f : 0.015f;
+    const float atol = fp8_out ? 0.125f : 0.001f;
+    pass &= tt::test_utils::is_close_vectors<float>(dest_floats, golden_floats, rtol, atol);
     return pass;
 }
-// blocked matmul has blocking, but still fits within dst, so no spill/reloads or intermediates
+// Single-block matmul: blocking that still fits within Dst (no spill/reload).
+// Inputs and output formats are programmable; defaults preserve the legacy
+// BF16 test semantics.
 bool single_block_matmul(
-    const std::shared_ptr<distributed::MeshDevice>& mesh_device, uint32_t M, uint32_t K, uint32_t N) {
+    const std::shared_ptr<distributed::MeshDevice>& mesh_device,
+    uint32_t M,
+    uint32_t K,
+    uint32_t N,
+    tt::DataFormat in_fmt = tt::DataFormat::Float16_b,
+    tt::DataFormat out_fmt = tt::DataFormat::Float16_b,
+    bool fp32_dest_acc_en = false) {
     bool pass = true;
-    // FIXME: Convert to config
     CoreCoord core(0, 0);
     const uint32_t in0_cb_index = 0;
     const uint32_t in1_cb_index = 1;
     const uint32_t out_cb_index = 16;
-    const size_t cb_page_size = 2 * 32 * 32;
-    const size_t in0_byte_size = M * K * cb_page_size;
-    const size_t in1_byte_size = K * N * cb_page_size;
-    const size_t out_byte_size = M * N * cb_page_size;
+    const size_t in_tile_size = tt::tile_size(in_fmt);
+    const size_t out_tile_size = tt::tile_size(out_fmt);
+    const size_t in0_byte_size = M * K * in_tile_size;
+    const size_t in1_byte_size = K * N * in_tile_size;
+    const size_t out_byte_size = M * N * out_tile_size;
 
     ////////////////////////////////////////////////////////////////////////////
     //                      Application Setup
@@ -345,13 +384,11 @@ bool single_block_matmul(
         .size = in0_byte_size,
         .page_size = in0_byte_size,
         .buffer_type = tt::tt_metal::BufferType::DRAM};
-
     tt::tt_metal::InterleavedBufferConfig dram_config_1{
         .device = device,
         .size = in1_byte_size,
         .page_size = in1_byte_size,
         .buffer_type = tt::tt_metal::BufferType::DRAM};
-
     tt::tt_metal::InterleavedBufferConfig dram_config_out{
         .device = device,
         .size = out_byte_size,
@@ -363,26 +400,24 @@ bool single_block_matmul(
     auto& program_ = workload.get_programs().at(device_range);
 
     auto input0_dram_buffer = CreateBuffer(dram_config_0);
-    const uint32_t in0_dram_addr = input0_dram_buffer->address();
     auto input1_dram_buffer = CreateBuffer(dram_config_1);
-    const uint32_t in1_dram_addr = input1_dram_buffer->address();
     auto output_dram_buffer = CreateBuffer(dram_config_out);
-    const uint32_t out_dram_addr = output_dram_buffer->address();
 
-    tt_metal::CircularBufferConfig l1_input0_cb_config =
-        tt_metal::CircularBufferConfig(in0_byte_size, {{in0_cb_index, tt::DataFormat::Float16_b}})
-            .set_page_size(in0_cb_index, cb_page_size);
-    tt_metal::CreateCircularBuffer(program_, core, l1_input0_cb_config);
-
-    tt_metal::CircularBufferConfig l1_input1_cb_config =
-        tt_metal::CircularBufferConfig(in1_byte_size, {{in1_cb_index, tt::DataFormat::Float16_b}})
-            .set_page_size(in1_cb_index, cb_page_size);
-    tt_metal::CreateCircularBuffer(program_, core, l1_input1_cb_config);
-
-    tt_metal::CircularBufferConfig l1_output_cb_config =
-        tt_metal::CircularBufferConfig(out_byte_size, {{out_cb_index, tt::DataFormat::Float16_b}})
-            .set_page_size(out_cb_index, cb_page_size);
-    tt_metal::CreateCircularBuffer(program_, core, l1_output_cb_config);
+    tt_metal::CreateCircularBuffer(
+        program_,
+        core,
+        tt_metal::CircularBufferConfig(in0_byte_size, {{in0_cb_index, in_fmt}})
+            .set_page_size(in0_cb_index, in_tile_size));
+    tt_metal::CreateCircularBuffer(
+        program_,
+        core,
+        tt_metal::CircularBufferConfig(in1_byte_size, {{in1_cb_index, in_fmt}})
+            .set_page_size(in1_cb_index, in_tile_size));
+    tt_metal::CreateCircularBuffer(
+        program_,
+        core,
+        tt_metal::CircularBufferConfig(out_byte_size, {{out_cb_index, out_fmt}})
+            .set_page_size(out_cb_index, out_tile_size));
 
     auto reader_kernel = tt_metal::CreateKernel(
         program_,
@@ -407,31 +442,59 @@ bool single_block_matmul(
         "tests/tt_metal/tt_metal/test_kernels/compute/unit_tests/matmul/multi_tile_compute.cpp",
         core,
         tt_metal::ComputeConfig{
+            .fp32_dest_acc_en = fp32_dest_acc_en,
             .compile_args = {in0_cb_index, in1_cb_index, out_cb_index, M * K, K * N, M * N, M, N, K}});
 
     ////////////////////////////////////////////////////////////////////////////
-    //                      Stimulus Generation
+    //                      Stimulus & Golden Generation
     ////////////////////////////////////////////////////////////////////////////
-    std::vector<uint32_t> packed_input0 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
-        1.0f, 1.0f, in0_byte_size / sizeof(bfloat16), std::chrono::system_clock::now().time_since_epoch().count());
-    std::vector<uint32_t> packed_input1 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
-        0.03125f,
-        0.03125f,
-        in1_byte_size / sizeof(bfloat16),
-        std::chrono::system_clock::now().time_since_epoch().count());
-    ////////////////////////////////////////////////////////////////////////////
-    //                      Golden Generation
-    ////////////////////////////////////////////////////////////////////////////
-    auto packed_golden = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
-        1.0f * K,
-        1.0f * K,
-        (out_byte_size) / sizeof(bfloat16),
-        std::chrono::system_clock::now().time_since_epoch().count());
+    // Format-dispatched. Both branches produce a flat float `golden_floats`
+    // vector indexed in face-major byte order across all M*N output tiles,
+    // so the comparison step uses a single uniform validation path.
+    std::vector<uint32_t> packed_input0;
+    std::vector<uint32_t> packed_input1;
+    std::vector<float> golden_floats;
+    constexpr int kTileElems = 32 * 32;
+
+    if (in_fmt == tt::DataFormat::Fp8_e4m3) {
+        auto [in0, in0_floats] = make_fp8_input(/*seed=*/0, /*rng=*/1.0f, M * K);
+        auto [in1, in1_floats] = make_fp8_input(/*seed=*/1, /*rng=*/1.0f, K * N);
+        packed_input0 = std::move(in0);
+        packed_input1 = std::move(in1);
+        golden_floats.assign(M * N * kTileElems, 0.0f);
+        for (uint32_t mt = 0; mt < M; mt++) {
+            for (uint32_t nt = 0; nt < N; nt++) {
+                const size_t out_tile_off = (mt * N + nt) * kTileElems;
+                for (int y = 0; y < 32; y++) {
+                    for (int x = 0; x < 32; x++) {
+                        float acc = 0.0f;
+                        for (uint32_t kt = 0; kt < K; kt++) {
+                            const size_t in0_tile_off = (mt * K + kt) * kTileElems;
+                            const size_t in1_tile_off = (kt * N + nt) * kTileElems;
+                            for (int z = 0; z < 32; z++) {
+                                acc += in0_floats[in0_tile_off + byte_tile_face_major_index(z, y)] *
+                                       in1_floats[in1_tile_off + byte_tile_face_major_index(x, z)];
+                            }
+                        }
+                        golden_floats[out_tile_off + byte_tile_face_major_index(x, y)] = acc;
+                    }
+                }
+            }
+        }
+    } else {
+        // BF16 trivial-stimulus path: in0 = 1.0, in1 = 1/32 → per-tile result
+        // is constant 1.0; accumulating K tiles gives constant K everywhere.
+        const auto seed = std::chrono::system_clock::now().time_since_epoch().count();
+        packed_input0 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
+            1.0f, 1.0f, in0_byte_size / sizeof(bfloat16), seed);
+        packed_input1 = generate_packed_uniform_random_vector<uint32_t, bfloat16>(
+            0.03125f, 0.03125f, in1_byte_size / sizeof(bfloat16), seed + 1);
+        golden_floats.assign(out_byte_size / sizeof(bfloat16), 1.0f * K);
+    }
 
     ////////////////////////////////////////////////////////////////////////////
     //                      Compile and Execute Application
     ////////////////////////////////////////////////////////////////////////////
-
     tt_metal::detail::WriteToBuffer(input0_dram_buffer, packed_input0);
     tt_metal::detail::WriteToBuffer(input1_dram_buffer, packed_input1);
 
@@ -439,43 +502,36 @@ bool single_block_matmul(
         program_,
         reader_kernel,
         core,
-        {
-            (uint32_t)in0_dram_addr,
-            (uint32_t)0,
-            (uint32_t)in1_dram_addr,
-            (uint32_t)0,
-            (uint32_t)1,              // num_blocks
-            (uint32_t)M * K,          // in0_block_tile_cnt
-            (uint32_t)K * N,          // in1_block_tile_cnt
-            (uint32_t)in0_byte_size,  // in0_block_size_bytes
-            (uint32_t)in1_byte_size,  // in1_block_size_bytes
-        });
+        {(uint32_t)input0_dram_buffer->address(),
+         (uint32_t)0,
+         (uint32_t)input1_dram_buffer->address(),
+         (uint32_t)0,
+         (uint32_t)1,              // num_blocks
+         (uint32_t)M * K,          // in0_block_tile_cnt
+         (uint32_t)K * N,          // in1_block_tile_cnt
+         (uint32_t)in0_byte_size,  // in0_block_size_bytes
+         (uint32_t)in1_byte_size});
     tt_metal::SetRuntimeArgs(
-        program_,
-        writer_kernel,
-        core,
-        {
-            (uint32_t)out_dram_addr,
-            (uint32_t)0,
-            (uint32_t)M * N,
-        });
+        program_, writer_kernel, core, {(uint32_t)output_dram_buffer->address(), (uint32_t)0, (uint32_t)M * N});
 
     distributed::EnqueueMeshWorkload(cq, workload, false);
     distributed::Finish(cq);
+
     ////////////////////////////////////////////////////////////////////////////
     //                      Comparison Checking
     ////////////////////////////////////////////////////////////////////////////
     std::vector<uint32_t> dest_buffer_data;
     tt_metal::detail::ReadFromBuffer(output_dram_buffer, dest_buffer_data);
-    int failed_index;
-    pass &= is_close_packed_vectors<bfloat16, uint32_t>(
-        dest_buffer_data,
-        packed_golden,
-        [&](const bfloat16& a, const bfloat16& b) { return is_close(a, b, 0.015f); },
-        &failed_index);
-    if (not pass) {
-        log_info(tt::LogTest, "Failed Index={}", failed_index);
-        print_vector_fixed_numel_per_row(unpack_vector<bfloat16, uint32_t>(dest_buffer_data), 32);
+    const bool fp8_out = (out_fmt == tt::DataFormat::Fp8_e4m3);
+    auto dest_floats = fp8_out ? fp8_to_floats(dest_buffer_data) : bf16_to_floats(dest_buffer_data);
+
+    // FP8 with K>1 sees deeper accumulation rounding, so atol/min_pcc loosen.
+    const float rtol = fp8_out ? 0.125f : 0.015f;
+    const float atol = fp8_out ? ((K > 1) ? 0.25f : 0.125f) : 0.001f;
+    pass &= tt::test_utils::is_close_vectors<float>(dest_floats, golden_floats, rtol, atol);
+    if (fp8_out) {
+        const double min_pcc = (K > 1) ? 0.98 : 0.99;
+        pass &= check_pcc(dest_floats, golden_floats, min_pcc);
     }
     return pass;
 }
@@ -656,6 +712,7 @@ bool blocked_matmul(const std::shared_ptr<distributed::MeshDevice>& mesh_device,
     }
     return pass;
 }
+
 }  // namespace unit_tests::compute::matmul
 
 TEST_F(MeshDeviceFixture, TensixTestSingleCoreSingleTileComputeMatmul) {
@@ -677,6 +734,44 @@ TEST_F(MeshDeviceFixture, TensixTestSingleCoreSingleBlockSingleTileNoAccumulatio
     for (unsigned int id = 0; id < num_devices_; id++) {
         ASSERT_TRUE(unit_tests::compute::matmul::single_block_matmul(this->devices_.at(id), 2, 1, 2));
     }
+}
+
+TEST_F(BlackholeSingleCardFixture, TensixTestSingleCoreSingleTileComputeMatmulFp8e4m3) {
+    ASSERT_TRUE(unit_tests::compute::matmul::single_tile_matmul(
+        this->devices_.at(0),
+        tt::DataFormat::Fp8_e4m3,
+        tt::DataFormat::Fp8_e4m3,
+        /*fp32_dest_acc_en=*/true));
+}
+
+TEST_F(BlackholeSingleCardFixture, TensixTestSingleCoreSingleTileComputeMatmulFp8e4m3OutBf16) {
+    ASSERT_TRUE(unit_tests::compute::matmul::single_tile_matmul(
+        this->devices_.at(0),
+        tt::DataFormat::Fp8_e4m3,
+        tt::DataFormat::Float16_b,
+        /*fp32_dest_acc_en=*/true));
+}
+
+TEST_F(BlackholeSingleCardFixture, TensixTestSingleCoreSingleBlockSingleTileComputeMatmulFp8e4m3) {
+    ASSERT_TRUE(unit_tests::compute::matmul::single_block_matmul(
+        this->devices_.at(0),
+        1,
+        1,
+        1,
+        tt::DataFormat::Fp8_e4m3,
+        tt::DataFormat::Fp8_e4m3,
+        /*fp32_dest_acc_en=*/true));
+}
+
+TEST_F(BlackholeSingleCardFixture, TensixTestSingleCoreSingleBlockSingleTileAccumulationComputeMatmulFp8e4m3) {
+    ASSERT_TRUE(unit_tests::compute::matmul::single_block_matmul(
+        this->devices_.at(0),
+        1,
+        2,
+        1,
+        tt::DataFormat::Fp8_e4m3,
+        tt::DataFormat::Fp8_e4m3,
+        /*fp32_dest_acc_en=*/true));
 }
 
 }  // namespace tt::tt_metal
