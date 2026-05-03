@@ -50,6 +50,15 @@ inline bool is_src_fmt_int32_dest_compatible(const DataFormat src_reg_fmt) {
 template <bool EN_32BIT_DEST_FORMAT>
 inline void llk_math_hw_configure(const std::uint32_t srca_operand, const std::uint32_t srcb_operand) {
     const std::uint32_t srca_operand_id = get_operand_id(srca_operand);
+
+    // Math thread sits out unpack-to-dest mode; the unpack-side init has already
+    // programmed the ALU implied-format register for unpack-to-dest.
+    const std::uint32_t srca_dst_fmt = unpack_dst_format[srca_operand_id];
+    if (srca_dst_fmt == (std::uint32_t)DataFormat::Float32 ||
+        srca_dst_fmt == (std::uint32_t)DataFormat::Int32) {
+        return;
+    }
+
     const std::uint32_t srcb_operand_id = get_operand_id(srcb_operand);
 
     const DataFormat srca_format = static_cast<DataFormat>(unpack_dst_format[srca_operand_id]);
@@ -104,6 +113,14 @@ inline void llk_math_set_dvalid() {
  * Blocks on the MATH_PACK semaphore until the packer gets the semaphore.
  */
 inline void llk_math_wait_for_dest_available() {
+    // In unpack-to-dest mode the math thread sits out the per-tile loop;
+    // the dest-bank handshake runs on sems 4/7 inside the unpack/pack LLK
+    // helpers. The MATH_PACK semaphore is unused, so this wait is a no-op.
+    const std::uint32_t dst_format = unpack_dst_format[0];
+    if (dst_format == (std::uint32_t)DataFormat::Float32 ||
+        dst_format == (std::uint32_t)DataFormat::Int32) {
+        return;
+    }
     WAYPOINT("MWDW");
     _llk_math_wait_for_dest_available_();
     WAYPOINT("MWDD");
@@ -116,6 +133,11 @@ inline void llk_math_wait_for_dest_available() {
  */
 template <bool EN_32BIT_DEST>
 inline void llk_math_dest_section_done() {
+    const std::uint32_t dst_format = unpack_dst_format[0];
+    if (dst_format == (std::uint32_t)DataFormat::Float32 ||
+        dst_format == (std::uint32_t)DataFormat::Int32) {
+        return;
+    }
     _llk_math_dest_section_done_<DST_SYNC_MODE, EN_32BIT_DEST>();
 }
 
@@ -123,4 +145,13 @@ inline void llk_math_dest_section_done() {
  * @brief Initializes math–pack synchronization for the destination register.
  * Waits for any previous packs to finish, resets the dest bank id, initializes the MATH_PACK semaphore
  */
-inline void llk_math_pack_sync_init() { _llk_math_pack_sync_init_<DST_SYNC_MODE>(); }
+inline void llk_math_pack_sync_init() {
+    // Operand 0 is the canonical input format. In unpack-to-dest mode the
+    // MATH_PACK semaphore is unused, so skip its init.
+    const std::uint32_t dst_format = unpack_dst_format[0];
+    if (dst_format == (std::uint32_t)DataFormat::Float32 ||
+        dst_format == (std::uint32_t)DataFormat::Int32) {
+        return;
+    }
+    _llk_math_pack_sync_init_<DST_SYNC_MODE>();
+}

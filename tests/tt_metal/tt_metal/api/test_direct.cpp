@@ -293,6 +293,10 @@ struct ReaderDatacopyWriterConfig {
     tt::DataFormat l1_input_data_format = tt::DataFormat::Invalid;
     tt::DataFormat l1_output_data_format = tt::DataFormat::Invalid;
     CoreCoord core;
+    // SyncFull (true) vs SyncHalf (false). No default — every Quasar test must
+    // be explicit. fp32_dest_acc_en is derived from l1_input_data_format inside
+    // reader_datacopy_writer (it's forced true for 32-bit formats anyway).
+    bool dst_full_sync_en;
 };
 /// @brief Does Dram --> Reader --> CB --> Datacopy --> CB --> Writer --> Dram on a single core
 /// @param device
@@ -329,7 +333,8 @@ bool reader_datacopy_writer(
     KernelHandle compute_kernel;
     uint32_t num_threads = 1;
     if (MetalContext::instance().get_cluster().arch() == ARCH::QUASAR) {
-        num_threads = test_config.num_tiles == 1 ? 1 : 4;
+        // num_threads = test_config.num_tiles == 1 ? 1 : 4;
+        num_threads = 1;
     }
 
     tt_metal::experimental::dfb::DataflowBufferConfig l1_input_dfb_config = {
@@ -377,12 +382,26 @@ bool reader_datacopy_writer(
                 .num_threads_per_cluster = num_threads, .compile_args = {l1_output_dfb, /*use_dfbs=*/true}});
 
         uint32_t per_core_tile_cnt = test_config.num_tiles / num_threads;
+
+        std::vector<UnpackToDestMode> unpack_to_dest_mode;
+        if (test_config.l1_input_data_format == tt::DataFormat::Float32) {
+            unpack_to_dest_mode.assign(64, UnpackToDestMode::UnpackToDestFp32);
+        }
+        // 32-bit input formats require 32-bit dest mode; otherwise the unpacker
+        // would write 32-bit data into a 16-bit dest. Derived, not user-supplied.
+        const bool fp32_dest_acc_en =
+            (test_config.l1_input_data_format == tt::DataFormat::Float32) ||
+            (test_config.l1_input_data_format == tt::DataFormat::Int32);
         compute_kernel = tt_metal::experimental::quasar::CreateKernel(
             program_,
             "tests/tt_metal/tt_metal/test_kernels/compute/eltwise_copy.cpp",
             test_config.core,
             tt_metal::experimental::quasar::QuasarComputeConfig{
-                .num_threads_per_cluster = num_threads, .compile_args = {uint(per_core_tile_cnt), /*use_dfbs=*/true}});
+                .num_threads_per_cluster = num_threads,
+                .fp32_dest_acc_en = fp32_dest_acc_en,
+                .dst_full_sync_en = test_config.dst_full_sync_en,
+                .unpack_to_dest_mode = std::move(unpack_to_dest_mode),
+                .compile_args = {uint(per_core_tile_cnt), /*use_dfbs=*/true}});
 
     } else {
         reader_kernel = tt_metal::CreateKernel(
@@ -515,6 +534,70 @@ TEST_F(MeshDeviceFixture, TensixSingleCoreDirectDramReaderDatacopyWriter) {
             ASSERT_TRUE(unit_tests::dram::direct::reader_datacopy_writer(devices_.at(id), test_config));
         }
         test_config.num_tiles = 8;
+        ASSERT_TRUE(unit_tests::dram::direct::reader_datacopy_writer(devices_.at(id), test_config));
+    }
+}
+
+TEST_F(MeshDeviceFixture, TensixSingleCoreDirectDramReaderDatacopyToDestWriter_Int32_SyncFull) {
+    unit_tests::dram::direct::ReaderDatacopyWriterConfig test_config = {
+        .num_tiles = 4,
+        .tile_byte_size = 4 * 32 * 32,
+        .l1_input_data_format = tt::DataFormat::Int32,
+        .l1_output_data_format = tt::DataFormat::Int32,
+        .core = CoreCoord(0, 0),
+        .dst_full_sync_en = true};
+    for (unsigned int id = 0; id < num_devices_; id++) {
+        if (devices_.at(id)->arch() != ARCH::QUASAR) {
+            GTEST_SKIP() << "Unpack-to-dest is Quasar-only";
+        }
+        ASSERT_TRUE(unit_tests::dram::direct::reader_datacopy_writer(devices_.at(id), test_config));
+    }
+}
+
+TEST_F(MeshDeviceFixture, TensixSingleCoreDirectDramReaderDatacopyToDestWriter_Int32_SyncHalf) {
+    unit_tests::dram::direct::ReaderDatacopyWriterConfig test_config = {
+        .num_tiles = 4,
+        .tile_byte_size = 4 * 32 * 32,
+        .l1_input_data_format = tt::DataFormat::Int32,
+        .l1_output_data_format = tt::DataFormat::Int32,
+        .core = CoreCoord(0, 0),
+        .dst_full_sync_en = false};
+    for (unsigned int id = 0; id < num_devices_; id++) {
+        if (devices_.at(id)->arch() != ARCH::QUASAR) {
+            GTEST_SKIP() << "Unpack-to-dest is Quasar-only";
+        }
+        ASSERT_TRUE(unit_tests::dram::direct::reader_datacopy_writer(devices_.at(id), test_config));
+    }
+}
+
+TEST_F(MeshDeviceFixture, TensixSingleCoreDirectDramReaderDatacopyToDestWriter_Float32_SyncFull) {
+    unit_tests::dram::direct::ReaderDatacopyWriterConfig test_config = {
+        .num_tiles = 4,
+        .tile_byte_size = 4 * 32 * 32,
+        .l1_input_data_format = tt::DataFormat::Float32,
+        .l1_output_data_format = tt::DataFormat::Float32,
+        .core = CoreCoord(0, 0),
+        .dst_full_sync_en = true};
+    for (unsigned int id = 0; id < num_devices_; id++) {
+        if (devices_.at(id)->arch() != ARCH::QUASAR) {
+            GTEST_SKIP() << "Unpack-to-dest is Quasar-only";
+        }
+        ASSERT_TRUE(unit_tests::dram::direct::reader_datacopy_writer(devices_.at(id), test_config));
+    }
+}
+
+TEST_F(MeshDeviceFixture, TensixSingleCoreDirectDramReaderDatacopyToDestWriter_Float32_SyncHalf) {
+    unit_tests::dram::direct::ReaderDatacopyWriterConfig test_config = {
+        .num_tiles = 4,
+        .tile_byte_size = 4 * 32 * 32,
+        .l1_input_data_format = tt::DataFormat::Float32,
+        .l1_output_data_format = tt::DataFormat::Float32,
+        .core = CoreCoord(0, 0),
+        .dst_full_sync_en = false};
+    for (unsigned int id = 0; id < num_devices_; id++) {
+        if (devices_.at(id)->arch() != ARCH::QUASAR) {
+            GTEST_SKIP() << "Unpack-to-dest is Quasar-only";
+        }
         ASSERT_TRUE(unit_tests::dram::direct::reader_datacopy_writer(devices_.at(id), test_config));
     }
 }

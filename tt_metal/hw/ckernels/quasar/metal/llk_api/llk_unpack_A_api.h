@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "llk_sync.h"
 #include "llk_unpack_unary_operand.h"
 #include "llk_unpack_common_api.h"
 #include "experimental/dataflow_buffer.h"
@@ -26,6 +27,34 @@ template <bool TRANSPOSE_EN, bool IS_32b_DEST_EN>
 inline void llk_unpack_A_init(const std::uint32_t operand) {
     const std::uint32_t operand_id = get_operand_id(operand);
 
+    // Runtime format check: 32-bit dst format routes through unpack-to-dest.
+    // Math thread sits out while unpacker writes to dest directly, the packer
+    // reads it via a dedicated sem-4/7 handshake (initialized below).
+    const std::uint32_t dst_format = unpack_dst_format[operand_id];
+    if (dst_format == (std::uint32_t)DataFormat::Float32 ||
+        dst_format == (std::uint32_t)DataFormat::Int32) {
+        // Program ALU implied-format register (FP32 vs Int32 from src format).
+        if (static_cast<DataFormat>(unpack_src_format[operand_id]) == DataFormat::Int32) {
+            _llk_unpack_to_dest_hw_configure_<false /*EN_FP32*/, true /*EN_INT32*/>();
+        } else {
+            _llk_unpack_to_dest_hw_configure_<true /*EN_FP32*/, false /*EN_INT32*/>();
+        }
+        // Unpacker MOP for UNP_DEST 
+        _llk_unpack_unary_operand_init_<p_unpacr::UNP_DEST, false /*TRANSPOSE_EN*/, IS_32b_DEST_EN>(operand_id);
+        
+        // Init the two-semaphore unpack <-> pack handshake.
+        // Sem UNPACK_TO_DEST_UNPACK ("filled banks"): max=N, init=0, empty until unpacker posts.
+        // Sem UNPACK_TO_DEST_PACK   ("free banks"):   max=N, init=N, all banks free at start.
+        constexpr std::uint32_t N = (DST_SYNC_MODE == DstSync::SyncFull) ? 1 : 2;
+        _llk_sync_init_(UNPACK_TO_DEST_UNPACK_SEMAPHORE, N, 0);
+        _llk_sync_init_(UNPACK_TO_DEST_PACK_SEMAPHORE,   N, N);
+        if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {
+            _reset_dest_register_offset_();
+            _set_dest_section_base_<ckernel::unpack::TRISC_ID>(_get_dest_buffer_base_());
+        }
+        return;
+    }
+
     _llk_unpack_unary_operand_init_<p_unpacr::UNP_A, TRANSPOSE_EN, IS_32b_DEST_EN>(operand_id);
 }
 
@@ -46,7 +75,6 @@ inline void llk_unpack_A_init(
     const std::uint32_t operand = 0) {
     const std::uint32_t operand_id = get_operand_id(operand);
 
-    static_assert(unpack_to_dest == false, "unpack_to_dest is not yet supported on Quasar");
     static_assert(acc_to_dest == false, "acc_to_dest is not yet supported on Quasar");
     static_assert(BType == BroadcastType::NONE, "Only BroadcastType::NONE is supported on Quasar right now");
 
@@ -77,6 +105,28 @@ inline void llk_unpack_A(const std::uint32_t operand, const std::uint32_t tile_i
     const std::uint32_t l1_tile_index =
         local_dfb_interface.tc_slots[local_dfb_interface.tc_idx].rd_entry_idx + tile_index;
 
+
+    const std::uint32_t dst_format = unpack_dst_format[operand_id];
+    if (dst_format == (std::uint32_t)DataFormat::Float32 ||
+        dst_format == (std::uint32_t)DataFormat::Int32) {
+        
+        // Block until at least one dest bank is free (PACK sem > 0), then claim it.
+        _llk_sync_wait_<p_stall::STALL_UNPACK>(UNPACK_TO_DEST_PACK_SEMAPHORE, p_stall::STALL_ON_ZERO);
+        _llk_sync_get_(UNPACK_TO_DEST_PACK_SEMAPHORE);
+      
+        _llk_unpack_unary_operand_<p_unpacr::UNP_DEST>(l1_tile_index);
+
+        // Drain UNPACK0 before posting "tile filled" or the post races ahead of the writes.
+        _llk_sync_post_<p_stall::UNPACK0>(UNPACK_TO_DEST_UNPACK_SEMAPHORE);
+        if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {
+            _update_dest_register_offset_<true /*EN_32BIT_DEST*/>();
+            const std::uint32_t base_addr = _get_dest_buffer_base_();
+            TTI_STALLWAIT(p_stall::STALL_CFG, 0, 0, p_stall::UNPACK0);
+            _set_dest_section_base_<ckernel::unpack::TRISC_ID>(base_addr);
+        }
+        return;
+    }
+
     WAYPOINT("UPAW");
     _llk_unpack_unary_operand_<p_unpacr::UNP_A>(l1_tile_index);
     WAYPOINT("UPAD");
@@ -98,7 +148,6 @@ inline void llk_unpack_A(const std::uint32_t operand, const std::uint32_t tile_i
     const std::uint32_t l1_tile_index =
         g_dfb_interface[operand_id].tc_slots[g_dfb_interface[operand_id].tc_idx].rd_entry_idx + tile_index;
 
-    static_assert(unpack_to_dest == false, "unpack_to_dest is not yet supported on Quasar");
     static_assert(acc_to_dest == false, "acc_to_dest is not yet supported on Quasar");
     static_assert(BType == BroadcastType::NONE, "Only BroadcastType::NONE is supported on Quasar right now");
 
