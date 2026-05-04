@@ -2096,12 +2096,9 @@ class EltwiseBinaryGolden(FidelityMasking):
             if op == MathOperation.Elwmul:
                 # Special handling for Elwmul with fidelity iteration
                 result = None
-                orig_t1, orig_t2 = t1, t2
                 for fidelity_iter in range(fidelity_iter_count + 1):
-                    if fidelity_iter > 0:
-                        t1, t2 = operand1, operand2
                     masked_t1, masked_t2 = self._apply_fidelity_masking(
-                        math_format_for_fidelity, orig_t1, orig_t2, fidelity_iter
+                        math_format_for_fidelity, t1, t2, fidelity_iter
                     )
                     phase_result = self.ops[op](masked_t1, masked_t2)
                     if fidelity_iter == 0:
