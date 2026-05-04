@@ -2050,49 +2050,48 @@ class EltwiseBinaryGolden(FidelityMasking):
             num_total_tiles = t1.numel() // tile_size
             num_blocks = num_total_tiles // num_tiles_per_accumulation
 
-<<<<<<< HEAD
-            t1_tiles = t1.view(num_total_tiles, tile_size)
-            t2_tiles = t2.view(num_total_tiles, tile_size)
-
-            accumulated = []
-            for block in range(num_blocks):
-                block_acc = None
-                for tile in range(num_tiles_per_accumulation):
-                    idx = block * num_tiles_per_accumulation + tile
-                    tile_result_f32 = self._compute_eltwise(
-                        op,
-                        t1_tiles[idx],
-                        t2_tiles[idx],
-                        math_format_for_fidelity,
-                        math_fidelity,
-                        keep_float32=True,
+            if op == MathOperation.Elwmul:
+                # Special handling for Elwmul with fidelity iteration
+                result = None
+                orig_t1, orig_t2 = t1, t2
+                for fidelity_iter in range(fidelity_iter_count + 1):
+                    if fidelity_iter > 0:
+                        t1, t2 = operand1, operand2
+                    masked_t1, masked_t2 = self._apply_fidelity_masking(
+                        math_format_for_fidelity, orig_t1, orig_t2, fidelity_iter
                     )
-                    if block_acc is None:
-                        block_acc = tile_result_f32.to(torch.bfloat16)
+                    phase_result = self.ops[op](masked_t1, masked_t2)
+                    if fidelity_iter == 0:
+                        result = phase_result
                     else:
-                        # Add in better precision and then convert to lower precision.
-                        block_acc = (block_acc.to(torch.float32) + tile_result_f32).to(
-                            torch.bfloat16
-                        )
-                accumulated.append(block_acc)
+                        result += phase_result
+            else:
+                t1_tiles = t1.view(num_total_tiles, tile_size)
+                t2_tiles = t2.view(num_total_tiles, tile_size)
 
-            result = torch.cat(accumulated)
-=======
-        if op == MathOperation.Elwmul:
-            result = None
-            orig_t1, orig_t2 = t1, t2
-            for fidelity_iter in range(fidelity_iter_count + 1):
-                if fidelity_iter > 0:
-                    t1, t2 = operand1, operand2
-                masked_t1, masked_t2 = self._apply_fidelity_masking(
-                    math_format_for_fidelity, orig_t1, orig_t2, fidelity_iter
-                )
-                phase_result = self.ops[op](masked_t1, masked_t2)
-                if fidelity_iter == 0:
-                    result = phase_result
-                else:
-                    result += phase_result
->>>>>>> 2a90aa262f (Fix failing tests)
+                accumulated = []
+                for block in range(num_blocks):
+                    block_acc = None
+                    for tile in range(num_tiles_per_accumulation):
+                        idx = block * num_tiles_per_accumulation + tile
+                        tile_result_f32 = self._compute_eltwise(
+                            op,
+                            t1_tiles[idx],
+                            t2_tiles[idx],
+                            math_format_for_fidelity,
+                            math_fidelity,
+                            keep_float32=True,
+                        )
+                        if block_acc is None:
+                            block_acc = tile_result_f32.to(torch.bfloat16)
+                        else:
+                            # Add in better precision and then convert to lower precision.
+                            block_acc = (block_acc.to(torch.float32) + tile_result_f32).to(
+                                torch.bfloat16
+                            )
+                    accumulated.append(block_acc)
+
+                result = torch.cat(accumulated)
         else:
             result = self._compute_eltwise(
                 op,
