@@ -1,0 +1,20 @@
+# Big-Mesh DDP Configuration for 4 Nodes
+# Topology: Single unified mesh spanning 4 hosts
+# Total devices: 128
+# All ranks share mesh_id: 0 with different mesh_host_rank values
+
+# --- Meshes ---------------------------------------------------------------
+
+mesh_descriptors {
+  name: "BigMesh"
+  arch: BLACKHOLE
+  device_topology { dims: [ 128, 1 ] }
+  host_topology   { dims: [ 4, 1 ] }
+  channels {
+    count: 2
+    policy: RELAXED
+  }
+}
+
+# --- Instantiation ----------------------------------------------------------
+top_level_instance { mesh { mesh_descriptor: "BigMesh" mesh_id: 0 } }
