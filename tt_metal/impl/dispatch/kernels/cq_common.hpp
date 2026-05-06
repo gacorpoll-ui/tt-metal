@@ -39,6 +39,18 @@ uint32_t round_up_pow2(uint32_t v, uint32_t pow2_size) { return (v + (pow2_size 
 FORCE_INLINE
 uint32_t div_up(uint32_t n, uint32_t d) { return (n + d - 1) / d; }
 
+// TODO: I don't think this is very efficient, but it's only temporary until I figure out a better init methodology.
+template <typename T>
+FORCE_INLINE volatile tt_l1_ptr T* copy_struct_to_l1(uint32_t dst_addr, const T& src) {
+    static_assert(sizeof(T) % sizeof(uint32_t) == 0);
+    auto* dst = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(dst_addr);
+    const auto* src_words = reinterpret_cast<const uint32_t*>(&src);
+    for (uint32_t i = 0; i < sizeof(T) / sizeof(uint32_t); ++i) {
+        dst[i] = src_words[i];
+    }
+    return reinterpret_cast<volatile tt_l1_ptr T*>(dst_addr);
+}
+
 FORCE_INLINE
 uint32_t wrap_ge(uint32_t a, uint32_t b) {
     // Careful below: have to take the signed diff for 2s complement to handle the wrap

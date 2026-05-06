@@ -18,6 +18,7 @@
 #include "tt_metal/impl/dispatch/kernels/cq_common.hpp"
 #include "tt_metal/impl/dispatch/kernels/cq_relay.hpp"
 #include "tt_metal/impl/dispatch/kernels/realtime_profiler.hpp"
+#include "tt_metal/api/tt-metalium/experimental/dispatch_telemetry.hpp"
 
 // The command queue write interface controls writes to the completion region, host owns the completion region read
 // interface Data requests from device and event states are written to the completion region
@@ -154,6 +155,56 @@ using RelayClientType =
 
 RelayClientType relay_client;
 
+constexpr uint32_t dispatch_telemetry_base = MEM_DISPATCH_TELEMETRY_REGION_BASE;
+constexpr uint32_t dispatch_s_telemetry_base = dispatch_telemetry_base + sizeof(tt::tt_metal::DispatchTelemetry);
+
+using DispatchTelemetry = tt::tt_metal::DispatchTelemetry;
+using DispatchSTelemetry = tt::tt_metal::DispatchSTelemetry;
+
+
+FORCE_INLINE
+volatile tt_l1_ptr DispatchTelemetry* get_dispatch_telemetry_ptr() {
+    return reinterpret_cast<volatile tt_l1_ptr DispatchTelemetry*>(dispatch_telemetry_base);
+}
+
+FORCE_INLINE
+volatile tt_l1_ptr DispatchSTelemetry* get_dispatch_s_telemetry_ptr() {
+    if constexpr (!dispatch_s_enabled) {
+        DEVICE_PRINT("dispatch should only manage dispatch_s telemetry if dispatch_s is disabled");
+        ASSERT(0);
+        return nullptr;
+    }
+    return reinterpret_cast<volatile tt_l1_ptr DispatchSTelemetry*>(dispatch_s_telemetry_base);
+}
+
+// TODO: Move inits to host
+FORCE_INLINE
+void init_dispatch_telemetry() {
+    const DispatchTelemetry telemetry{};
+    copy_struct_to_l1(dispatch_telemetry_base, telemetry);
+    // get telemtry and print all values
+    DEVICE_PRINT("dispatch telemetry: version {}\n", get_dispatch_telemetry_ptr()->version);
+    DEVICE_PRINT("dispatch telemetry: magic_constant {}\n", get_dispatch_telemetry_ptr()->magic_constant);
+    DEVICE_PRINT("dispatch telemetry: blocked_count {}\n", get_dispatch_telemetry_ptr()->blocked_count);
+    DEVICE_PRINT("dispatch telemetry: unblocked_count {}\n", get_dispatch_telemetry_ptr()->unblocked_count);
+}
+
+FORCE_INLINE
+void init_dispatch_s_telemetry() {
+    if constexpr (!dispatch_s_enabled) {
+        DEVICE_PRINT("dispatch should only manage dispatch_s telemetry if dispatch_s is disabled");
+        ASSERT(0);
+    }
+    const DispatchSTelemetry telemetry{};
+    copy_struct_to_l1(dispatch_s_telemetry_base, telemetry);
+    // get telemtry and print all values
+    DEVICE_PRINT("dispatch_s telemetry: version {}\n", get_dispatch_s_telemetry_ptr()->version);
+    DEVICE_PRINT("dispatch_s telemetry: magic_constant {}\n", get_dispatch_s_telemetry_ptr()->magic_constant);
+    DEVICE_PRINT("dispatch_s telemetry: last_go_message_cycle {}\n", get_dispatch_s_telemetry_ptr()->last_go_message_cycle);
+    DEVICE_PRINT("dispatch_s telemetry: accumulated_program_cycles {}\n", get_dispatch_s_telemetry_ptr()->accumulated_program_cycles);
+    DEVICE_PRINT("dispatch_s telemetry: current_cycle {}\n", get_dispatch_s_telemetry_ptr()->current_cycle);
+}
+
 // Release policies are TU-local so we can use the local relay_client instance
 struct NocReleasePolicy {
     template <uint8_t noc_idx, uint32_t noc_xy, uint32_t sem_id>
@@ -245,9 +296,11 @@ void completion_queue_reserve_back(uint32_t num_pages) {
     uint32_t completion_rd_ptr;
     uint32_t completion_rd_toggle;
     uint32_t available_space;
+    get_dispatch_telemetry_ptr()->blocked_count++;
+    // DEVICE_PRINT("dispatch telemetry: blocked_count {}\n", get_dispatch_telemetry_ptr()->blocked_count);
     do {
         invalidate_l1_cache();
-        completion_rd_ptr_and_toggle = *get_cq_completion_read_ptr();
+        completion_rd_ptr_and_toggle = *get_cq_completion_read_ptr(); // TODO: blocking
         completion_rd_ptr = completion_rd_ptr_and_toggle & 0x7fffffff;
         completion_rd_toggle = completion_rd_ptr_and_toggle >> 31;
         // Toggles not equal means write ptr has wrapped but read ptr has not
@@ -258,8 +311,9 @@ void completion_queue_reserve_back(uint32_t num_pages) {
             completion_rd_toggle != cq_write_interface.completion_fifo_wr_toggle
                 ? completion_rd_ptr - cq_write_interface.completion_fifo_wr_ptr
                 : (completion_queue_size_16B - (cq_write_interface.completion_fifo_wr_ptr - completion_rd_ptr));
-    } while (data_size_16B > available_space);
-
+    } while (data_size_16B > available_space); // TODO: blocking
+    get_dispatch_telemetry_ptr()->unblocked_count++;
+    // DEVICE_PRINT("dispatch telemetry: unblocked_count {}\n", get_dispatch_telemetry_ptr()->unblocked_count);
     WAYPOINT("QRBD");
 }
 
@@ -328,7 +382,7 @@ void process_write_host_h() {
             uint32_t available_data = dispatch_cb_reader.wait_for_available_data_and_release_old_pages(data_ptr);
             uint32_t xfer_size = (length > available_data) ? available_data : length;
             uint32_t npages = (xfer_size + completion_queue_page_size - 1) / completion_queue_page_size;
-            completion_queue_reserve_back(npages);
+            completion_queue_reserve_back(npages); // TODO: blocking
             uint32_t completion_queue_write_addr = cq_write_interface.completion_fifo_wr_ptr << 4;
             // completion_queue_write_addr will never be equal to completion_queue_end_addr due to
             // completion_queue_push_back wrap logic so we don't need to handle this case explicitly to avoid 0 sized
@@ -1182,7 +1236,7 @@ re_run_command:
             // DPRINT << "cmd_write_linear_h_host\n";
             // DEVICE_PRINT("cmd_write_linear_h_host\n");
             if (is_h_variant) {
-                process_write_host_h();
+                process_write_host_h(); // TODO: blocking
             } else {
                 process_write_host_d();
             }
@@ -1364,7 +1418,7 @@ static inline bool process_cmd_h(uint32_t& cmd_ptr) {
         case CQ_DISPATCH_CMD_WRITE_LINEAR_H_HOST:
             // DPRINT << "dispatch_h linear_h_host\n";
             // DEVICE_PRINT("dispatch_h linear_h_host\n");
-            process_write_host_h();
+            process_write_host_h(); // TODO: blocking
             break;
 
         case CQ_DISPATCH_CMD_EXEC_BUF_END:
@@ -1477,6 +1531,11 @@ void kernel_main() {
     to_dev_id = get_arg_val<uint32_t>(OFFSETOF_TO_DEV_ID);
     router_direction = get_arg_val<uint32_t>(OFFSETOF_ROUTER_DIRECTION);
 
+    init_dispatch_telemetry();
+    if constexpr (!dispatch_s_enabled) {
+        init_dispatch_s_telemetry();
+    }
+
     // Initialize local state of any additional nocs used instead of the default
     static_assert(my_noc_index != upstream_noc_index);
     if constexpr (my_noc_index != upstream_noc_index) {
@@ -1550,12 +1609,12 @@ void kernel_main() {
     *get_dispatch_progress_ptr() = dispatch_progress;
 
     while (!done) {
-        dispatch_cb_reader.wait_for_available_data_and_release_old_pages(cmd_ptr);
+        dispatch_cb_reader.wait_for_available_data_and_release_old_pages(cmd_ptr); // TODO: blocking
 
         DeviceZoneScopedN("CQ-DISPATCH");
         IDLE_ERISC_HEARTBEAT_AND_RETURN(heartbeat);
 
-        done = is_d_variant ? process_cmd_d(cmd_ptr, l1_cache) : process_cmd_h(cmd_ptr);
+        done = is_d_variant ? process_cmd_d(cmd_ptr, l1_cache) : process_cmd_h(cmd_ptr); // TODO: blocking
 
         // Increment dispatch progress counter and write to L1 memory
         dispatch_progress++;

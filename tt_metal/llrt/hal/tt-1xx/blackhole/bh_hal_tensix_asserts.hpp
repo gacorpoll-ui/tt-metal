@@ -11,6 +11,7 @@
 #include "hostdev/dev_msgs.h"
 #include "noc/noc_parameters.h"
 #include "hostdevcommon/fabric_common.h"
+#include "tt_metal/api/tt-metalium/experimental/dispatch_telemetry.hpp"
 
 // Validate assumptions on mailbox layout on host compile
 // Constexpr definitions allow for printing of breaking values at compile time
@@ -41,3 +42,14 @@ static_assert(MEM_TENSIX_FABRIC_CONNECTIONS_BASE % 16 == 0, "Tensix fabric conne
 static_assert(MEM_TENSIX_FABRIC_CONNECTIONS_SIZE % 16 == 0, "Tensix fabric connections size must be 16-byte aligned");
 static_assert(
     MEM_TENSIX_FABRIC_CONNECTIONS_BASE - MEM_TENSIX_ROUTING_TABLE_BASE == sizeof(tt::tt_fabric::routing_l1_info_t));
+
+static_assert(MEM_DISPATCH_TELEMETRY_REGION_SIZE >= sizeof(tt::tt_metal::PrefetchTelemetry),
+    "Dispatch telemetry region size must be large enough to hold the prefetch telemetry structure");
+static_assert(MEM_DISPATCH_TELEMETRY_REGION_SIZE >= sizeof(tt::tt_metal::DispatchTelemetry) + sizeof(tt::tt_metal::DispatchSTelemetry),
+    "Dispatch telemetry region size must be large enough to hold both dispatch telemetry structures");
+static_assert(MEM_IERISC_DISPATCH_TELEMETRY_REGION_SIZE >= sizeof(tt::tt_metal::PrefetchTelemetry),
+    "IERISC dispatch telemetry region size must be large enough to hold the prefetch telemetry structure");
+static_assert(MEM_IERISC_DISPATCH_TELEMETRY_REGION_SIZE >= sizeof(tt::tt_metal::DispatchTelemetry),
+    "IERISC dispatch telemetry region size must be large enough to hold the dispatch telemetry structure");
+static_assert(MEM_IERISC_DISPATCH_TELEMETRY_REGION_SIZE >= sizeof(tt::tt_metal::DispatchSTelemetry),
+    "IERISC dispatch telemetry region size must be large enough to hold the dispatch_s telemetry structure");
