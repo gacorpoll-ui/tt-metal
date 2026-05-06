@@ -55,7 +55,10 @@ This test suite now includes tests using the new device 2.0 experimental NOC API
 - **Structured Arguments**: Source and destination arguments are defined using structured `noc_traits_t` types
 
 ### Device 2.0 Kernels:
-- `requestor_2_0.cpp`: Implements the requestor (master/receiver) functionality using the experimental NOC API with async read operations
-- `requestor.cpp`: Original requestor kernel for comparison
-
 Both API versions run the same test cases but use different underlying implementations. The device 2.0 tests serve as a validation and performance comparison for the new experimental API.
+
+## Quasar Tests
+These tests run on the Quasar architecture via `QuasarMeshDeviceSingleCardFixture` and require the Quasar simulator.
+
+1. **TensixDataMovementOneFromOneReadSizes** (Test ID: 916) - Quasar variant of One from One Read Sizes.
+2. **TensixDataMovementOneFromOneReadDirectedIdeal** (Test ID: 917) - Quasar variant of One from One Read Directed Ideal.
