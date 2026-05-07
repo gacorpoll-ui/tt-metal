@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <cstdint>
 
 #include <tt-logger/tt-logger.hpp>
 #include <fmt/format.h>
@@ -530,6 +531,18 @@ PhysicalMultiMeshGraph build_physical_multi_mesh_adjacency_graph(
     // O(|PSD|) pass inside find_all_in_psd).
     AdjacencyGraph<tt::tt_metal::AsicID> flat_graph(build_flat_adjacency_map_from_psd(physical_system_descriptor));
 
+    // Dense 0..N-1 indices for ASICs in this PSD (fast bitsets for disjoint packing).
+    std::unordered_map<tt::tt_metal::AsicID, std::uint32_t> asic_to_dense_index;
+    {
+        const auto& flat_nodes = flat_graph.get_nodes();
+        asic_to_dense_index.reserve(flat_nodes.size() * 2);
+        for (std::uint32_t i = 0; i < flat_nodes.size(); ++i) {
+            asic_to_dense_index.emplace(flat_nodes[i], i);
+        }
+    }
+    const std::uint32_t cluster_asic_count = static_cast<std::uint32_t>(flat_graph.get_nodes().size());
+    const std::size_t used_asic_word_count = (static_cast<std::size_t>(cluster_asic_count) + 63u) / 64u;
+
     log_info(tt::LogFabric, "Getting valid groupings map from MGD and PGD");
 
     // Get valid groupings map from MGD and PGD
@@ -551,6 +564,7 @@ PhysicalMultiMeshGraph build_physical_multi_mesh_adjacency_graph(
     std::unordered_map<std::string, std::unordered_set<GroupKey>> mesh_type_to_index;
     std::unordered_map<std::string, std::size_t> mesh_type_num_instances;
     std::unordered_map<std::string, PhysicalMultiMeshGraph> mesh_type_to_physical_graph;
+    std::unordered_map<MeshId, std::vector<std::unordered_set<tt::tt_metal::AsicID>>> mesh_id_to_placed_groupings;
 
     // Break each mesh down to a physical multi-mesh graph
     for (const auto& [mesh_name, groupings] : valid_groupings_map.at("MESH")) {
@@ -568,22 +582,27 @@ PhysicalMultiMeshGraph build_physical_multi_mesh_adjacency_graph(
             mesh_type_to_index[mesh_name].insert(index);
         }
 
-        // Build a physical multi-mesh graph for this mesh
+        // Build a physical multi-mesh graph for this mesh; keep the same per-mesh-instance ASIC sets keyed by logical
+        // MeshId (instance local_id) for later lookups without mesh descriptor name.
         mesh_type_to_physical_graph[mesh_name] = build_hierarchical_from_flat_graph(flat_graph, placed_groupings);
+        for (::tt::tt_fabric::GlobalNodeId gid : mesh_graph_descriptor.instances_by_name(mesh_name)) {
+            const auto& inst = mesh_graph_descriptor.get_instance(gid);
+            if (inst.kind != ::tt::tt_fabric::NodeKind::Mesh) {
+                continue;
+            }
+            mesh_id_to_placed_groupings[MeshId(inst.local_id)] = placed_groupings;
+        }
     }
 
     // For each mesh shape that's in the MGD
     const auto [mgd_intermesh_mesh_level, _] = get_requested_intermesh_from_mgd(mesh_graph_descriptor);
     std::unordered_map<std::string, AdjacencyGraph<MeshId>> mesh_to_logical_graph;
+    std::unordered_map<std::string, std::vector<std::vector<std::uint32_t>>> mesh_to_solution_dense_asic_indices;
+    std::unordered_map<std::string, std::vector<MappingResult<MeshId, MeshId>>> mesh_to_mesh_level_solutions;
     for (const auto& mesh_name : mesh_graph_descriptor.get_all_mesh_names()) {
         // Build the mesh-level subgraph for this mesh
         mesh_to_logical_graph[mesh_name] = build_mgd_mesh_level_subgraph_for_mesh_descriptor_name(
             mesh_graph_descriptor, mesh_name, mgd_intermesh_mesh_level);
-        log_info(
-            tt::LogFabric,
-            "MGD mesh-level FABRIC subgraph for descriptor '{}': {} MeshId nodes",
-            mesh_name,
-            mesh_to_logical_graph[mesh_name].get_nodes().size());
 
         const auto physical_it = mesh_type_to_physical_graph.find(mesh_name);
         if (physical_it == mesh_type_to_physical_graph.end()) {
@@ -595,35 +614,168 @@ PhysicalMultiMeshGraph build_physical_multi_mesh_adjacency_graph(
         }
         const AdjacencyGraph<MeshId>& physical_mesh_level = physical_it->second.mesh_level_graph_;
 
-        // print the logical and physical mesh-level graphs
-        mesh_to_logical_graph[mesh_name].print_adjacency_map("Logical Mesh-Level Graph");
-        physical_mesh_level.print_adjacency_map("Physical Mesh-Level Graph");
-
+        // Solve for all solutions for this sub mesh
         MappingConstraints<MeshId, MeshId> mesh_level_constraints;
-        const auto mesh_level_solutions = solve_topology_mapping_n(
+        auto mesh_level_solutions = solve_topology_mapping_n(
             mesh_to_logical_graph[mesh_name],
             physical_mesh_level,
             mesh_level_constraints,
-            10,
+            1000,
             ConnectionValidationMode::STRICT,
             true,
             TopologyMappingSolverEngine::Sat);
+
+        // Record solution ASIC unions as sorted unique dense indices (bitset-friendly disjoint search).
+        std::vector<std::vector<std::uint32_t>> solution_dense_sets;
+        solution_dense_sets.reserve(mesh_level_solutions.size());
+        MeshId placed_groupings_lookup_mesh_id{0};
+        bool found_mesh_instance = false;
+        for (::tt::tt_fabric::GlobalNodeId gid : mesh_graph_descriptor.instances_by_name(mesh_name)) {
+            const auto& inst = mesh_graph_descriptor.get_instance(gid);
+            if (inst.kind != ::tt::tt_fabric::NodeKind::Mesh) {
+                continue;
+            }
+            placed_groupings_lookup_mesh_id = MeshId(inst.local_id);
+            found_mesh_instance = true;
+            break;
+        }
+        TT_FATAL(found_mesh_instance, "No mesh instances for descriptor '{}' in MGD", mesh_name);
+        const auto& placed_groupings_for_mesh = mesh_id_to_placed_groupings.at(placed_groupings_lookup_mesh_id);
+        for (const auto& solution : mesh_level_solutions) {
+            std::vector<std::uint32_t> dense;
+            for (const auto& [logical_mesh_id, physical_mesh_id] : solution.target_to_global) {
+                TT_FATAL(
+                    physical_mesh_id.get() < placed_groupings_for_mesh.size(),
+                    "Physical mesh index {} out of range for placed_groupings (logical MeshId {})",
+                    physical_mesh_id.get(),
+                    logical_mesh_id.get());
+                const auto& asics = placed_groupings_for_mesh[physical_mesh_id.get()];
+                for (const auto& asic : asics) {
+                    auto di = asic_to_dense_index.find(asic);
+                    TT_FATAL(
+                        di != asic_to_dense_index.end(),
+                        "ASIC from placement not found in PSD flat graph (dense index)");
+                    dense.push_back(di->second);
+                }
+            }
+            std::sort(dense.begin(), dense.end());
+            dense.erase(std::unique(dense.begin(), dense.end()), dense.end());
+            solution_dense_sets.push_back(std::move(dense));
+        }
+        mesh_to_solution_dense_asic_indices[mesh_name] = std::move(solution_dense_sets);
+        mesh_to_mesh_level_solutions[mesh_name] = std::move(mesh_level_solutions);
     }
 
-    // TODO: Find all non-intersecting solutions for each mesh together in one host
+    // Cartesian product: one solution index per mesh name; pairwise-disjoint union of ASIC sets (dense indices).
+    std::vector<std::string> mesh_order;
+    mesh_order.reserve(mesh_to_solution_dense_asic_indices.size());
+    for (const auto& [name, sets] : mesh_to_solution_dense_asic_indices) {
+        if (!sets.empty()) {
+            mesh_order.push_back(name);
+        }
+    }
+    // MRV: fewer candidate solutions first → cheaper pruning (runtime).
+    std::stable_sort(mesh_order.begin(), mesh_order.end(), [&](const std::string& a, const std::string& b) {
+        return mesh_to_solution_dense_asic_indices.at(a).size() < mesh_to_solution_dense_asic_indices.at(b).size();
+    });
 
-    // TODO: Return one of them as the result
+    std::vector<std::uint64_t> used_asic_bits(used_asic_word_count, 0);
+    auto bit_is_set = [](const std::vector<std::uint64_t>& words, std::uint32_t i) -> bool {
+        return (words[i >> 6] >> (i & 63)) & 1u;
+    };
+    auto bit_set = [](std::vector<std::uint64_t>& words, std::uint32_t i) {
+        words[i >> 6] |= (std::uint64_t{1} << (i & 63));
+    };
+    auto bit_clear = [](std::vector<std::uint64_t>& words, std::uint32_t i) {
+        words[i >> 6] &= ~(std::uint64_t{1} << (i & 63));
+    };
+    auto disjoint_dense =
+        [&bit_is_set](const std::vector<std::uint32_t>& cand, const std::vector<std::uint64_t>& occupied) -> bool {
+        // cand is sorted unique; test smaller side vs bitset (occupied is cluster-sized).
+        for (std::uint32_t idx : cand) {
+            if (bit_is_set(occupied, idx)) {
+                return false;
+            }
+        }
+        return true;
+    };
 
-    // FIXME: Think about returning more than one physical multi-mesh graph? Maybe a vector of them and solve for many
-    // of them.
+    std::vector<size_t> first_disjoint_choice(mesh_order.size(), 0);
+
+    std::function<bool(size_t)> enumerate = [&](size_t depth) -> bool {
+        if (depth == mesh_order.size()) {
+            return true;
+        }
+        const auto& sol_sets = mesh_to_solution_dense_asic_indices.at(mesh_order[depth]);
+        for (size_t si = 0; si < sol_sets.size(); ++si) {
+            const auto& cand = sol_sets[si];
+            if (!disjoint_dense(cand, used_asic_bits)) {
+                continue;
+            }
+            for (std::uint32_t idx : cand) {
+                bit_set(used_asic_bits, idx);
+            }
+            first_disjoint_choice[depth] = si;
+            if (enumerate(depth + 1)) {
+                return true;
+            }
+            for (std::uint32_t idx : cand) {
+                bit_clear(used_asic_bits, idx);
+            }
+        }
+        return false;
+    };
+
+    bool found_disjoint_combination = false;
+    if (!mesh_order.empty()) {
+        found_disjoint_combination = enumerate(0);
+        log_info(
+            tt::LogFabric,
+            "Mesh-level pairwise-disjoint ASIC combination: {}",
+            found_disjoint_combination ? "found" : "none");
+    }
 
     PhysicalMultiMeshGraph result;
+    if (found_disjoint_combination) {
+        MeshId max_logical{0};
+        for (size_t j = 0; j < mesh_order.size(); ++j) {
+            const auto& mapping =
+                mesh_to_mesh_level_solutions.at(mesh_order[j]).at(first_disjoint_choice[j]).target_to_global;
+            for (const auto& [logical_mesh_id, _] : mapping) {
+                if (logical_mesh_id.get() > max_logical.get()) {
+                    max_logical = logical_mesh_id;
+                }
+            }
+        }
 
-    // FIXME: This should not be emtpy graph if this does nto return, need to find a better fallback
-    // if (all_mesh_groupings.empty()) {
-    //    log_warning(tt::LogFabric, "No mesh groupings found in PSD - returning empty graph");
-    //    return result;
-    //}
+        std::vector<std::unordered_set<tt::tt_metal::AsicID>> combined_mesh_groupings(max_logical.get() + 1);
+        for (size_t j = 0; j < mesh_order.size(); ++j) {
+            const std::string& mesh_name = mesh_order[j];
+            const MappingResult<MeshId, MeshId>& picked =
+                mesh_to_mesh_level_solutions.at(mesh_name).at(first_disjoint_choice[j]);
+            TT_FATAL(!picked.target_to_global.empty(), "Empty mesh-level mapping for mesh descriptor '{}'", mesh_name);
+            // placed_groupings rows are indexed by physical_mesh_id (within this descriptor's PSD placement).
+            // physical_mesh_id is not globally unique across descriptors, so the map stays keyed by logical MeshId;
+            // every logical id in this solved subgraph shares the same placement vector — fetch once per mapping.
+            const auto& placed_groupings_for_mesh =
+                mesh_id_to_placed_groupings.at(picked.target_to_global.begin()->first);
+            for (const auto& [logical_mesh_id, physical_mesh_id] : picked.target_to_global) {
+                TT_FATAL(
+                    physical_mesh_id.get() < placed_groupings_for_mesh.size(),
+                    "Physical mesh index {} out of range for placed_groupings (logical MeshId {})",
+                    physical_mesh_id.get(),
+                    logical_mesh_id.get());
+                const auto& asics = placed_groupings_for_mesh[physical_mesh_id.get()];
+                auto& slot = combined_mesh_groupings[logical_mesh_id.get()];
+                slot.insert(asics.begin(), asics.end());
+            }
+        }
+        result = build_hierarchical_from_flat_graph(flat_graph, combined_mesh_groupings);
+    }
+
+    if (all_mesh_groupings.empty()) {
+        TT_THROW("PSD too complex to solve for mesh groupings");
+    }
 
     return result;
 }
