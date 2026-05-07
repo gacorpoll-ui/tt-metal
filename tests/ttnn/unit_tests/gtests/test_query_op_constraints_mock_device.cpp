@@ -565,4 +565,124 @@ TEST_F(QueryOpConstraintsMockMode, ReluWithAllocatorStateExtraction) {
     experimental::override_mock_allocator_state(device_.get(), state_before);
 }
 
+// ============================================================================
+// Coexistence: mock allocator probed while a real silicon device is open in
+// the same process. Validates the production scenario from issue #38445 — a
+// graph-planning component (forge / tt-mlir) probing mock allocator state
+// while another component drives real-device inference.
+// ============================================================================
+
+class MockAllocatorCoexistence : public ::testing::Test {
+protected:
+    std::unique_ptr<MetalEnv> silicon_env_;
+    std::shared_ptr<distributed::MeshDevice> real_device_;
+    std::unique_ptr<MetalEnv> mock_env_;
+    std::shared_ptr<distributed::MeshDevice> mock_device_;
+
+    void SetUp() override {
+        silicon_env_ = std::make_unique<MetalEnv>();
+        real_device_ =
+            silicon_env_->create_mesh_device(distributed::MeshDeviceConfig(silicon_env_->get_system_mesh().shape()));
+        ASSERT_GT(real_device_->num_devices(), 0u);
+
+        mock_env_ = std::make_unique<MetalEnv>(
+            MetalEnvDescriptor(experimental::get_mock_cluster_desc_name(tt::ARCH::WORMHOLE_B0, 1)));
+        mock_device_ =
+            mock_env_->create_mesh_device(distributed::MeshDeviceConfig(mock_env_->get_system_mesh().shape()));
+        ASSERT_EQ(mock_device_->num_devices(), 1u);
+    }
+
+    void TearDown() override {
+        // MetalEnv-owned mesh devices destroy their MetalContext on close(); drop tensors
+        // and buffers before close() in test bodies, then close() and reset() here.
+        if (mock_device_) {
+            mock_device_->close();
+            mock_device_.reset();
+        }
+        mock_env_.reset();
+        if (real_device_) {
+            real_device_->close();
+            real_device_.reset();
+        }
+        silicon_env_.reset();
+    }
+};
+
+TEST_F(MockAllocatorCoexistence, GetMockAllocatorWhileRealDeviceOpen) {
+    // Mock device should expose MockAllocator
+    auto* mock_alloc = experimental::get_mock_allocator(mock_device_.get());
+    ASSERT_NE(mock_alloc, nullptr);
+
+    // Real device should NOT expose MockAllocator
+    auto* real_alloc = experimental::get_mock_allocator(real_device_.get());
+    EXPECT_EQ(real_alloc, nullptr);
+}
+
+TEST_F(MockAllocatorCoexistence, ExtractStateOnMockWhileRealDeviceOpen) {
+    auto state = experimental::extract_mock_allocator_state(mock_device_.get());
+
+    // Fresh mock device — no L1 allocations
+    auto l1_regions = state.get_allocated_regions(BufferType::L1);
+    EXPECT_EQ(l1_regions.size(), 0u);
+
+    // Real device still queryable
+    EXPECT_GT(real_device_->num_devices(), 0u);
+}
+
+TEST_F(MockAllocatorCoexistence, CheckpointRestoreWhileRealDeviceOpen) {
+    const auto spec = ttnn::TensorSpec(
+        ttnn::Shape(Array4D{1, 1, 32, 64}),
+        TensorLayout(DataType::BFLOAT16, PageConfig(Layout::TILE), ttnn::L1_MEMORY_CONFIG));
+
+    // Empty checkpoint while real device is open
+    auto empty_state = experimental::extract_mock_allocator_state(mock_device_.get());
+
+    // Allocate on mock under graph capture
+    AllocatorState state_with_tensor;
+    {
+        auto capture = ttnn::graph::ScopedGraphCapture(ttnn::graph::GraphProcessor::RunMode::NORMAL);
+        auto tensor = create_device_tensor(spec, mock_device_.get());
+        state_with_tensor = experimental::extract_mock_allocator_state(mock_device_.get());
+        EXPECT_GT(state_with_tensor.total_allocated_size(), 0u);
+    }
+
+    // Tensor destructed; mock allocator clean
+    auto stats_clean = mock_device_->allocator()->get_statistics(BufferType::L1);
+    EXPECT_EQ(stats_clean.total_allocated_bytes, 0u);
+
+    // Restore allocated state — mock allocator shows occupied memory
+    experimental::override_mock_allocator_state(mock_device_.get(), state_with_tensor);
+    auto stats_restored = mock_device_->allocator()->get_statistics(BufferType::L1);
+    EXPECT_GT(stats_restored.total_allocated_bytes, 0u);
+
+    // Restore empty
+    experimental::override_mock_allocator_state(mock_device_.get(), empty_state);
+    auto stats_empty = mock_device_->allocator()->get_statistics(BufferType::L1);
+    EXPECT_EQ(stats_empty.total_allocated_bytes, 0u);
+
+    // Real device should still be open and reachable
+    EXPECT_GT(real_device_->num_devices(), 0u);
+}
+
+TEST_F(MockAllocatorCoexistence, GraphCaptureOnMockDoesNotAffectRealDevice) {
+    const auto spec = ttnn::TensorSpec(
+        ttnn::Shape(Array4D{1, 1, 64, 128}),
+        TensorLayout(DataType::BFLOAT16, PageConfig(Layout::TILE), ttnn::L1_MEMORY_CONFIG));
+
+    auto real_stats_before = real_device_->allocator()->get_statistics(BufferType::L1);
+
+    {
+        auto capture = ttnn::graph::ScopedGraphCapture(ttnn::graph::GraphProcessor::RunMode::NORMAL);
+        auto tensor = create_device_tensor(spec, mock_device_.get());
+        EXPECT_TRUE(tensor.is_allocated());
+        // Mock allocator advanced
+        auto mock_state = experimental::extract_mock_allocator_state(mock_device_.get());
+        EXPECT_GT(mock_state.total_allocated_size(), 0u);
+    }
+
+    // Real device's allocator state untouched by mock activity
+    auto real_stats_after = real_device_->allocator()->get_statistics(BufferType::L1);
+    EXPECT_EQ(real_stats_after.total_allocated_bytes, real_stats_before.total_allocated_bytes);
+}
+
 }  // namespace tt::tt_metal
