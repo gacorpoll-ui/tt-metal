@@ -495,31 +495,52 @@ PhysicalMultiMeshGraph build_physical_multi_mesh_adjacency_graph(
         !valid_groupings_map.at("MESH").empty(),
         "Internal error: Physical grouping descriptor was not able to find mesh groupings");
 
-    // Collect all mesh groupings from all instances into a single vector
-    std::vector<GroupingInfo> all_mesh_grouping_infos;
-    for (const auto& [instance_name, groupings] : valid_groupings_map.at("MESH")) {
-        for (const auto& grouping : groupings) {
-            log_info(tt::LogFabric, "Found mesh grouping from PGD file: {}", grouping.name);
-            all_mesh_grouping_infos.push_back(grouping);
-        }
-    }
+    using GroupKey = size_t;
 
     // Find all possible mappings of mesh groupings to the PSD
-    std::vector<std::string> errors;
-    auto all_mesh_groupings = physical_grouping_descriptor.find_all_in_psd(
-        all_mesh_grouping_infos, physical_system_descriptor, flat_graph, errors);
+    std::vector<std::unordered_set<tt::tt_metal::AsicID>> groupings_by_index;
+    std::unordered_map<std::string, std::unordered_set<GroupKey>> mesh_type_to_index;
+    std::unordered_map<std::string, std::size_t> mesh_type_num_instances;
+    std::unordered_map<std::string, PhysicalMultiMeshGraph> mesh_type_to_graph;
 
-    log_info(
-        tt::LogFabric, "Found {} mesh grouping mappings in PSD (errors: {})", all_mesh_groupings.size(), errors.size());
+    // Break each mesh down to a physical multi-mesh graph
+    for (const auto& [mesh_name, groupings] : valid_groupings_map.at("MESH")) {
+        // Find all possible mappings of mesh groupings to the PSD
+        const auto placed_groupings =
+            physical_grouping_descriptor.find_all_in_psd(groupings, physical_system_descriptor);
 
-    PhysicalMultiMeshGraph result;
-    if (all_mesh_groupings.empty()) {
-        log_warning(tt::LogFabric, "No mesh groupings found in PSD - returning empty graph");
-        return result;
+        // Count the number of instances of this mesh
+        mesh_type_num_instances[mesh_name] = mesh_graph_descriptor.instances_by_name(mesh_name).size();
+
+        // Add the groupings to the index
+        for (const auto& placed_grouping : placed_groupings) {
+            const GroupKey index = groupings_by_index.size();
+            groupings_by_index.push_back(placed_grouping);
+            mesh_type_to_index[mesh_name].insert(index);
+        }
+
+        // Build a physical multi-mesh graph for this mesh
+        mesh_type_to_graph[mesh_name] = build_hierarchical_from_flat_graph(flat_graph, placed_groupings);
     }
 
-    // Build hierarchical structure from the same flat graph; mesh groupings drive mesh partitioning
-    result = build_hierarchical_from_flat_graph(flat_graph, all_mesh_groupings);
+    // TODO: Find that section of the adjacency graph corresponding to that mesh
+
+    // TODO: Do mappings on each of them and solve all solutions for that mesh
+
+    // TODO: Find all non-intersecting solutions for each mesh together in one host
+
+    // TODO: Return one of them as the result
+
+    // FIXME: Think about returning more than one physical multi-mesh graph? Maybe a vector of them and solve for many
+    // of them.
+
+    PhysicalMultiMeshGraph result;
+
+    // FIXME: This should not be emtpy graph if this does nto return, need to find a better fallback
+    // if (all_mesh_groupings.empty()) {
+    //    log_warning(tt::LogFabric, "No mesh groupings found in PSD - returning empty graph");
+    //    return result;
+    //}
 
     return result;
 }
