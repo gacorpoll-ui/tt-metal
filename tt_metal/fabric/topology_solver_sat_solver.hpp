@@ -12,6 +12,9 @@ namespace tt::tt_fabric::detail {
 
 /**
  * Thin IPASIR-style wrapper around Kissat (positive DIMACS literals; 0 ends a clause).
+ *
+ * Kissat rejects kissat_add after kissat_solve (see kissat_require (!GET (searches), ...) in kissat_add).
+ * Multi-model enumeration must use a fresh solver per batch or a non-Kissat incremental backend.
  */
 struct TopologySatSolver {
     kissat* k = nullptr;
