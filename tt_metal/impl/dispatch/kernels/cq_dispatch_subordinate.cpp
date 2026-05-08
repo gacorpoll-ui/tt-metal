@@ -18,7 +18,6 @@
 #include "tt_metal/impl/dispatch/kernels/realtime_profiler.hpp"
 #include "hostdevcommon/profiler_common.h"
 #include "hostdev/dev_msgs.h"
-#include "tt_metal/api/tt-metalium/experimental/dispatch_telemetry.hpp"
 
 // dispatch_s has a customized command buffer allocation for NOC 1.
 // Cmd Buf 0 is used for regular writes.
@@ -87,21 +86,6 @@ static uint32_t worker_count_update_for_dispatch_d[max_num_worker_sems] = {0};
 static uint32_t go_signal_noc_data[max_num_go_signal_noc_data_entries];
 
 static uint32_t num_worker_sems = 1;
-
-#if defined(COMPILE_FOR_IDLE_ERISC) && defined(MEM_IERISC_DISPATCH_TELEMETRY_REGION_BASE)
-constexpr uint32_t dispatch_s_telemetry_base = MEM_IERISC_DISPATCH_TELEMETRY_REGION_BASE;
-#else
-constexpr uint32_t dispatch_s_telemetry_base =
-    MEM_DISPATCH_TELEMETRY_REGION_BASE + sizeof(tt::tt_metal::DispatchTelemetry);
-#endif
-
-using DispatchSTelemetry = tt::tt_metal::DispatchSTelemetry;
-
-FORCE_INLINE
-volatile tt_l1_ptr DispatchSTelemetry* init_dispatch_s_telemetry() {
-    const DispatchSTelemetry telemetry{};
-    return copy_struct_to_l1(dispatch_s_telemetry_base, telemetry);
-}
 
 FORCE_INLINE
 void dispatch_s_wr_reg_cmd_buf_init() {
@@ -425,7 +409,6 @@ void kernel_main() {
     set_l1_data_cache<true>();
     DPRINT << "dispatch_s : start" << ENDL();
     DEVICE_PRINT("dispatch_s : start\n");
-    [[maybe_unused]] auto* dispatch_s_telemetry = init_dispatch_s_telemetry();
     // Initialize customized command buffers.
     dispatch_s_wr_reg_cmd_buf_init();
     dispatch_s_atomic_cmd_buf_init();

@@ -51,11 +51,9 @@ static_assert(
 
 static_assert(MEM_DISPATCH_TELEMETRY_REGION_SIZE >= sizeof(tt::tt_metal::PrefetchTelemetry),
     "Dispatch telemetry region size must be large enough to hold the prefetch telemetry structure");
-static_assert(MEM_DISPATCH_TELEMETRY_REGION_SIZE >= sizeof(tt::tt_metal::DispatchTelemetry) + sizeof(tt::tt_metal::DispatchSTelemetry),
-    "Dispatch telemetry region size must be large enough to hold both dispatch telemetry structures");
+static_assert(MEM_DISPATCH_TELEMETRY_REGION_SIZE >= sizeof(tt::tt_metal::DispatchTelemetry),
+    "Dispatch telemetry region size must be large enough to hold the dispatch telemetry structure");
 static_assert(MEM_IERISC_DISPATCH_TELEMETRY_REGION_SIZE >= sizeof(tt::tt_metal::PrefetchTelemetry),
     "IERISC dispatch telemetry region size must be large enough to hold the prefetch telemetry structure");
 static_assert(MEM_IERISC_DISPATCH_TELEMETRY_REGION_SIZE >= sizeof(tt::tt_metal::DispatchTelemetry),
     "IERISC dispatch telemetry region size must be large enough to hold the dispatch telemetry structure");
-static_assert(MEM_IERISC_DISPATCH_TELEMETRY_REGION_SIZE >= sizeof(tt::tt_metal::DispatchSTelemetry),
-    "IERISC dispatch telemetry region size must be large enough to hold the dispatch_s telemetry structure");

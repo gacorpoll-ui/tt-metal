@@ -156,25 +156,12 @@ using RelayClientType =
 RelayClientType relay_client;
 
 constexpr uint32_t dispatch_telemetry_base = MEM_DISPATCH_TELEMETRY_REGION_BASE;
-constexpr uint32_t dispatch_s_telemetry_base = dispatch_telemetry_base + sizeof(tt::tt_metal::DispatchTelemetry);
 
 using DispatchTelemetry = tt::tt_metal::DispatchTelemetry;
-using DispatchSTelemetry = tt::tt_metal::DispatchSTelemetry;
-
 
 FORCE_INLINE
 volatile tt_l1_ptr DispatchTelemetry* get_dispatch_telemetry_ptr() {
     return reinterpret_cast<volatile tt_l1_ptr DispatchTelemetry*>(dispatch_telemetry_base);
-}
-
-FORCE_INLINE
-volatile tt_l1_ptr DispatchSTelemetry* get_dispatch_s_telemetry_ptr() {
-    if constexpr (!dispatch_s_enabled) {
-        DEVICE_PRINT("dispatch should only manage dispatch_s telemetry if dispatch_s is disabled");
-        ASSERT(0);
-        return nullptr;
-    }
-    return reinterpret_cast<volatile tt_l1_ptr DispatchSTelemetry*>(dispatch_s_telemetry_base);
 }
 
 // TODO: Move inits to host
@@ -187,22 +174,6 @@ void init_dispatch_telemetry() {
     DEVICE_PRINT("dispatch telemetry: magic_constant {}\n", get_dispatch_telemetry_ptr()->magic_constant);
     DEVICE_PRINT("dispatch telemetry: blocked_count {}\n", get_dispatch_telemetry_ptr()->blocked_count);
     DEVICE_PRINT("dispatch telemetry: unblocked_count {}\n", get_dispatch_telemetry_ptr()->unblocked_count);
-}
-
-FORCE_INLINE
-void init_dispatch_s_telemetry() {
-    if constexpr (!dispatch_s_enabled) {
-        DEVICE_PRINT("dispatch should only manage dispatch_s telemetry if dispatch_s is disabled");
-        ASSERT(0);
-    }
-    const DispatchSTelemetry telemetry{};
-    copy_struct_to_l1(dispatch_s_telemetry_base, telemetry);
-    // get telemtry and print all values
-    DEVICE_PRINT("dispatch_s telemetry: version {}\n", get_dispatch_s_telemetry_ptr()->version);
-    DEVICE_PRINT("dispatch_s telemetry: magic_constant {}\n", get_dispatch_s_telemetry_ptr()->magic_constant);
-    DEVICE_PRINT("dispatch_s telemetry: last_go_message_cycle {}\n", get_dispatch_s_telemetry_ptr()->last_go_message_cycle);
-    DEVICE_PRINT("dispatch_s telemetry: accumulated_program_cycles {}\n", get_dispatch_s_telemetry_ptr()->accumulated_program_cycles);
-    DEVICE_PRINT("dispatch_s telemetry: current_cycle {}\n", get_dispatch_s_telemetry_ptr()->current_cycle);
 }
 
 // Release policies are TU-local so we can use the local relay_client instance
@@ -1532,9 +1503,6 @@ void kernel_main() {
     router_direction = get_arg_val<uint32_t>(OFFSETOF_ROUTER_DIRECTION);
 
     init_dispatch_telemetry();
-    if constexpr (!dispatch_s_enabled) {
-        init_dispatch_s_telemetry();
-    }
 
     // Initialize local state of any additional nocs used instead of the default
     static_assert(my_noc_index != upstream_noc_index);
