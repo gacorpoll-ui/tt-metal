@@ -50,11 +50,6 @@ def run_layernorm_mix_precision_tests(test_id, in_dtype, gamma_dtype, in0_mem_co
             gamma = torch.rand(test_shape[3]) * 2 - 1
             beta = torch.rand(test_shape[3]) * 2.0 - 1.1
 
-        # Build gamma_t/beta_t with torch2tt_tensor so the ttnn tensors keep their original
-        # logical width and only tile padding is added. Can't use pad_by_zero here because it
-        # zero-pads in torch before constructing the ttnn tensors, expanding the ***logical***
-        # width to the tile boundary, producing gamma and beta whose logical widths don't match
-        # the input's logical width.
         gamma_t = torch2tt_tensor(gamma, device, tt_memory_config=in0_mem_config, tt_dtype=gamma_dtype)
         beta_t = torch2tt_tensor(beta, device, tt_memory_config=in0_mem_config, tt_dtype=gamma_dtype)
 
