@@ -1728,12 +1728,15 @@ void sdpa_inner_loop(
     const uint32_t cb_out,
     const LightweightMaskContext& lw_mask = {},
     const bool is_causal = false,
-    const bool is_balanced = false,
+    const bool skip_first_half_q = false,
     const bool use_zigzag_balancing = false,
-    const bool is_last_ring_iter = true) {
+    const bool is_last_ring_iter = true,
+    const uint32_t causal_q_chunk_boundary = 0) {
     constexpr uint32_t dst_size = compute_kernel_lib::DEST_AUTO_LIMIT;
     uint32_t KV_chunks_processed_in_iter = 0;
     const uint32_t q_per_core = iter_q_end - iter_q_start;
+    const uint32_t effective_causal_q_chunk_boundary =
+        causal_q_chunk_boundary == 0 ? q_num_chunks / 2 : causal_q_chunk_boundary;
 
     for (uint32_t q_iter = iter_q_start; q_iter < iter_q_end; ++q_iter) {
         uint32_t q_start_tile = 0;    // First tile of Q chunk (tile units, both STANDARD and RING)
@@ -1763,7 +1766,7 @@ void sdpa_inner_loop(
                 q_start_tile = q_chunk * Sq_chunk_t;
                 causal_k_limit = (q_start_tile + Sq_chunk_t + Sk_chunk_t - 1) / Sk_chunk_t;
             }
-            if (is_balanced && (q_chunk < q_num_chunks / 2)) {
+            if (skip_first_half_q && (q_chunk < effective_causal_q_chunk_boundary)) {
                 continue;
             }
         }  // If ring attention
@@ -2264,7 +2267,7 @@ void sdpa_standard(
         cb_out,
         lw_mask,
         is_causal,
-        false,  // is_balanced (not used)
+        false,  // skip_first_half_q (not used)
         use_zigzag_balancing);
 }
 
@@ -2457,7 +2460,8 @@ void sdpa_ring(
     const bool is_causal_ring_iter,
     const bool skip_first_half_q,
     const bool is_last_ring_iter,
-    const bool use_zigzag_balancing = false) {
+    const bool use_zigzag_balancing = false,
+    const uint32_t causal_q_chunk_boundary = 0) {
     sdpa_inner_loop<
         RING,
         cb_qk_im,
@@ -2535,7 +2539,8 @@ void sdpa_ring(
         is_causal_ring_iter,
         skip_first_half_q,
         use_zigzag_balancing,
-        is_last_ring_iter);
+        is_last_ring_iter,
+        causal_q_chunk_boundary);
 }
 
 /**

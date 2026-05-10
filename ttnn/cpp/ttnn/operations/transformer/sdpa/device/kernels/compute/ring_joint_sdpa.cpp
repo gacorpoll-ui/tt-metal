@@ -53,8 +53,7 @@ void kernel_main() {
     constexpr uint32_t joint_l_partial_col = get_compile_time_arg_val(35);
     constexpr bool uniform_dataformat = get_compile_time_arg_val(36) == 1;
     constexpr bool is_causal = get_compile_time_arg_val(37) == 1;
-    constexpr bool is_balanced = get_compile_time_arg_val(38) == 1;
-    constexpr bool use_zigzag_balancing = get_compile_time_arg_val(39) == 1;
+    constexpr bool use_zigzag_balancing = get_compile_time_arg_val(38) == 1;
 
     // Lightweight mask: all mask tiles live in cb_mask_in.
     // Layout: [neginf(0)] [causal_diag?(1)] [global_n_partial?] [joint_l_partial?]
@@ -141,11 +140,11 @@ void kernel_main() {
         {cb_sum_B, cb_max_B, cb_out_im_B},  // cur
     };
 
-    const uint32_t last_active_ring_iter = find_last_active_ring_iter(
-        fused_op_indexer.seq, local_padded_Nt, logical_n / tt::constants::TILE_HEIGHT, L, is_causal, is_balanced);
+    const uint32_t last_active_ring_iter =
+        find_last_active_ring_iter(fused_op_indexer.seq, local_padded_Nt, logical_n / tt::constants::TILE_HEIGHT, L);
 
     uint32_t ring_index = fused_op_indexer.seq.ring_index;
-    uint32_t half_sequence = num_q_chunks / 2;
+    const uint32_t causal_q_chunk_boundary = num_local_q_chunks / 2;
     for (uint32_t ring_iter = 0; ring_iter < ring_size; ++ring_iter) {
         uint32_t ring_id = fused_op_indexer.get_next_ring_id_and_sync();
         const bool do_joint_kv = ring_id == ring_size - 1;
@@ -156,8 +155,7 @@ void kernel_main() {
         const uint32_t ring_iter_kv_end_tile = ring_iter_kv_start_tile + num_local_k_chunks * Sk_chunk_t;
         const uint32_t global_n_tile_id = logical_n / tt::constants::TILE_HEIGHT;
         const bool ring_iter_processes_KV_chunks = ring_iter_kv_start_tile <= global_n_tile_id;
-        const bool ring_iter_does_work = (ring_iter_processes_KV_chunks || (do_joint_kv && L != 0)) &&
-                                         !(is_causal && ring_index < ring_id && !is_balanced);
+        const bool ring_iter_does_work = ring_iter_processes_KV_chunks || (do_joint_kv && L != 0);
 
         if (!ring_iter_does_work) {
             continue;
@@ -193,7 +191,7 @@ void kernel_main() {
         lw_mask.joint_l_partial_tile_idx = joint_l_partial_tile_idx;
         // Straddle mask fires only on the rix>rid halved-range iters that would otherwise exclude
         // the straddle chunk. Must agree with the K-loop extension condition below.
-        const bool ring_iter_needs_straddle_mask = has_straddle && is_causal && is_balanced && (ring_index > ring_id);
+        const bool ring_iter_needs_straddle_mask = has_straddle && use_zigzag_balancing && (ring_index > ring_id);
         lw_mask.straddle_num_padded_tiles = ring_iter_needs_straddle_mask ? straddle_num_padded_tiles : 0;
         lw_mask.straddle_mask_chunk_id = straddle_chunk_id;
         if (ring_iter_needs_global_n_mask) {
@@ -210,16 +208,16 @@ void kernel_main() {
         //   rix > rid (Case 3): only sender's L half is sent — halve KV count, or extend to
         //     include the straddle chunk when it crosses the coarse-half boundary (its
         //     late-half columns are -inf-masked via lw_mask.straddle_*).
-        //   rix < rid && balanced (Case 2): skip first-half (L) Q-chunks.
+        //   rix < rid (Case 2): skip first-half (L) Q-chunks.
         uint32_t iter_num_kv_chunks = num_kv_chunks;
-        if (is_causal && is_balanced && ring_index > ring_id) {
+        if (use_zigzag_balancing && ring_index > ring_id) {
             if constexpr (has_straddle) {
                 iter_num_kv_chunks = straddle_chunk_id + 1;
             } else {
                 iter_num_kv_chunks /= 2;
             }
         }
-        const bool skip_first_half_q = (ring_index >= ring_id ? false : is_balanced);
+        const bool skip_first_half_q = use_zigzag_balancing && ring_index < ring_id;
 
         if constexpr (use_streaming_compute) {
             sdpa_ring_v2<
@@ -254,7 +252,7 @@ void kernel_main() {
                 cb_signal,
                 needs_lightweight_mask,
                 is_causal,
-                is_balanced>(
+                use_zigzag_balancing>(
                 global_q_start,
                 global_q_end,
                 iter_num_kv_chunks,
@@ -275,7 +273,8 @@ void kernel_main() {
                 q_per_core,
                 lw_mask,
                 skip_first_half_q,
-                use_zigzag_balancing);
+                use_zigzag_balancing,
+                causal_q_chunk_boundary);
         } else {
             sdpa_ring<
                 cb_qk_im,
@@ -341,7 +340,8 @@ void kernel_main() {
                 lw_mask.is_causal,
                 skip_first_half_q,
                 is_last_ring_iter,
-                use_zigzag_balancing);
+                use_zigzag_balancing,
+                causal_q_chunk_boundary);
         }
     }
 }

@@ -129,7 +129,6 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
 
     log_debug(tt::LogOp, "device index: {}", device_index);
     log_debug(tt::LogOp, "is_causal: {}", args.is_causal);
-    log_debug(tt::LogOp, "is_balanced: {}", args.is_balanced);
 
     auto scale = args.scale;
     if (not scale.has_value()) {
@@ -274,13 +273,24 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
         num_cores,
         mesh_device->compute_with_storage_grid_size().x * mesh_device->compute_with_storage_grid_size().y);
 
+    // Enable per-head zigzag for causal load balancing.
+    const bool enable_zigzag_balancing = args.is_causal;
+
     /**
      * This parallelization scheme is efficient because it divides the global work,
      * the total number of Q chunks across all batches and heads, evenly across the cores.
      *
+     * For causal zigzag with an even per-head Q chunk count, distribute work in
+     * two-chunk units. Each unit is one light/heavy zigzag pair, so every active
+     * core starts at the same skip parity. That lets skipped causal Q chunks skip
+     * K/V traffic entirely while keeping K multicast participants synchronized.
      */
     const uint32_t all_heads_num_q_chunks = B * NH * num_q_chunks;
-    const uint32_t max_q_per_core = tt::div_up(all_heads_num_q_chunks, num_cores);
+    const bool pair_aligned_zigzag_distribution = enable_zigzag_balancing && (num_q_chunks % 2 == 0);
+    const uint32_t q_distribution_units =
+        pair_aligned_zigzag_distribution ? (all_heads_num_q_chunks / 2) : all_heads_num_q_chunks;
+    const uint32_t max_q_per_core = pair_aligned_zigzag_distribution ? (2 * tt::div_up(q_distribution_units, num_cores))
+                                                                     : tt::div_up(q_distribution_units, num_cores);
 
     const uint32_t q_buffer_factor = (max_q_per_core > 1) ? 2 : 1;
 
@@ -413,14 +423,9 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
     // log scale
     log_debug(tt::LogOp, "scale: {}", scale_union.f);
 
-    // Enable per-head zigzag for load balancing in balanced causal mode.
-    // The remap itself handles odd chunk counts, so work can stay distributed
-    // as contiguous flat Q ranges across cores.
-    const bool enable_zigzag_balancing = args.is_balanced && args.is_causal;
-
     // Cores actually issuing Q reads. When the flat q-chunk distribution is smaller
     // than the grid the trailing cores get zero work.
-    const uint32_t num_active_cores = std::min(num_cores, all_heads_num_q_chunks);
+    const uint32_t num_active_cores = std::min(num_cores, q_distribution_units);
 
     std::vector<uint32_t> reader_compile_time_args = {
         B,
@@ -445,7 +450,6 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
         args.all_gather_operation_attributes.ring_size,
         qk_out_subblock_h,
         args.is_causal,
-        args.is_balanced,
         static_cast<uint32_t>(enable_zigzag_balancing),
         static_cast<uint32_t>(use_streaming_compute),
         num_active_cores,  // num_q_readers for get_barrier_read_threshold
@@ -533,7 +537,6 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
         joint_l_partial_col,
         (std::uint32_t)use_streaming_compute,
         args.is_causal,
-        args.is_balanced,
         static_cast<uint32_t>(enable_zigzag_balancing),
         (std::uint32_t)out_out_subblock_h,
     };
@@ -592,7 +595,6 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
         joint_l_partial_col,
         (std::uint32_t)uniform_dataformat,
         args.is_causal,
-        args.is_balanced,
         static_cast<uint32_t>(enable_zigzag_balancing)};
 
     std::map<std::string, std::string> defines;
@@ -854,17 +856,16 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
     const uint32_t total_heads = B * NH;
     std::vector<std::vector<HeadSegmentRef>> head_segments(total_heads);
 
-    // Evenly distribute flat global q chunks across cores
-    const uint32_t total_q_chunks = B * NH * num_q_chunks;
-
+    // Evenly distribute flat global q chunks across cores. In pair-aligned zigzag
+    // mode the distribution unit is a two-Q-chunk light/heavy pair.
     if (enable_zigzag_balancing) {
         log_debug(tt::LogOp, "Enabling zigzag balancing with num_q_chunks: {}", num_q_chunks);
     }
-    const uint32_t cores_doing_extra_work = (num_cores == 0) ? 0 : total_q_chunks % num_cores;
-    const uint32_t base_chunks_per_core = (num_cores == 0) ? 0 : total_q_chunks / num_cores;
-    const uint32_t extra_chunks_per_core = (num_cores == 0) ? 0 : 1;
+    const uint32_t cores_doing_extra_work = (num_cores == 0) ? 0 : q_distribution_units % num_cores;
+    const uint32_t base_units_per_core = (num_cores == 0) ? 0 : q_distribution_units / num_cores;
+    const uint32_t extra_units_per_core = (num_cores == 0) ? 0 : 1;
 
-    uint32_t next_global_chunk = 0;
+    uint32_t next_distribution_unit = 0;
 
     auto decode_flat_chunk = [&](uint32_t flat_chunk_index) {
         const uint32_t head_span = num_q_chunks;
@@ -877,21 +878,24 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
 
     for (uint32_t i = 0; i < num_cores; ++i) {
         CoreCoord core = {i % grid_size.x, i / grid_size.x};
-        uint32_t chunk_count = base_chunks_per_core + ((i < cores_doing_extra_work) ? extra_chunks_per_core : 0);
-        if (next_global_chunk >= total_q_chunks) {
-            chunk_count = 0;
-        } else if (chunk_count > total_q_chunks - next_global_chunk) {
-            chunk_count = total_q_chunks - next_global_chunk;
+        uint32_t unit_count = base_units_per_core + ((i < cores_doing_extra_work) ? extra_units_per_core : 0);
+        if (next_distribution_unit >= q_distribution_units) {
+            unit_count = 0;
+        } else if (unit_count > q_distribution_units - next_distribution_unit) {
+            unit_count = q_distribution_units - next_distribution_unit;
         }
+        const uint32_t chunk_count = pair_aligned_zigzag_distribution ? (unit_count * 2) : unit_count;
+        const uint32_t global_chunk_start =
+            pair_aligned_zigzag_distribution ? (next_distribution_unit * 2) : next_distribution_unit;
 
         auto& work = core_work.at(i);
         work.logical_core = core;
         work.physical_core = device->worker_core_from_logical_core(core);
-        work.global_q_start = next_global_chunk;
+        work.global_q_start = global_chunk_start;
         work.global_q_count = chunk_count;
 
         uint32_t remaining = chunk_count;
-        uint32_t flat_chunk = next_global_chunk;
+        uint32_t flat_chunk = global_chunk_start;
         while (remaining > 0) {
             auto [batch_idx, head_idx, q_chunk_idx] = decode_flat_chunk(flat_chunk);
             uint32_t chunk_capacity_in_head = num_q_chunks - q_chunk_idx;
@@ -916,7 +920,7 @@ RingJointSDPAProgramFactory::cached_program_t RingJointSDPAProgramFactory::creat
             flat_chunk += chunk_take;
         }
 
-        next_global_chunk += chunk_count;
+        next_distribution_unit += unit_count;
     }
 
     // Helper: build a linear chain from sorted (core_idx, q_chunk_count) pairs.

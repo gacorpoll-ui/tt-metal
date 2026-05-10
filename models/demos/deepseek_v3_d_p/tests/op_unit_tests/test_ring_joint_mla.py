@@ -210,13 +210,12 @@ def run_ring_joint_sdpa(
         padded_K = torch.cat([K, torch.zeros(b, nhk, padded_seq_len - base_seq_len, head_dim_k)], dim=2)
         padded_V = torch.cat([V, torch.zeros(b, nhv, padded_seq_len - base_seq_len, head_dim_v)], dim=2)
 
-        # Apply balanced reordering if requested
+        # Apply zigzag layout if requested.
         chunk_order = None
-        if is_balanced and skip_check == False:
-            # Do not reorder if skipping pcc check
+        if is_balanced:
             rp_factor = submesh.shape[rp_axis]
             chunk_order = create_balanced_chunk_order(rp_factor)
-            logger.info(f"Balanced reordering: rp_factor={rp_factor}, num_chunks={2*rp_factor}, order={chunk_order}")
+            logger.info(f"Zigzag layout: rp_factor={rp_factor}, num_chunks={2*rp_factor}, order={chunk_order}")
 
             padded_Q = reorder_tensor_chunks(padded_Q, chunk_order, seq_dim=2)
             padded_K = reorder_tensor_chunks(padded_K, chunk_order, seq_dim=2)
@@ -240,7 +239,7 @@ def run_ring_joint_sdpa(
         logger.debug(f"padded_K: {padded_K.shape}")
         logger.debug(f"padded_V: {padded_V.shape}")
         if is_balanced:
-            logger.debug(f"Balanced reordering applied with chunk order: {chunk_order}")
+            logger.debug(f"Zigzag layout applied with chunk order: {chunk_order}")
 
     sdpa_input_shard_dims = [None, None]
     sdpa_input_shard_dims[rp_axis] = 2  # sequence dim
@@ -365,7 +364,6 @@ def run_ring_joint_sdpa(
                 ccl_core_grid_offset=ccl_core_grid_offset,
                 use_column_major_ccl=True,
                 is_causal=is_causal,
-                is_balanced=is_balanced,
             )
             tt_out_list.append(tt_out)
 
@@ -512,7 +510,7 @@ def run_ring_joint_sdpa(
         "rpxup",
     ],
 )
-@pytest.mark.parametrize("is_balanced", [False, True], ids=["no_balancing", "balanced"])
+@pytest.mark.parametrize("is_balanced", [True], ids=["zigzag"])
 @pytest.mark.timeout(0)
 def test_mla_sdpa(
     mesh_device,
@@ -808,7 +806,6 @@ def run_ring_joint_sdpa_perf(
             ccl_core_grid_offset=ccl_core_grid_offset,
             use_column_major_ccl=True,
             is_causal=is_causal,
-            is_balanced=is_balanced,
         )
 
     # Step 1: Compile run (caches kernels)
@@ -883,7 +880,7 @@ def run_ring_joint_sdpa_perf(
     [[0, 1]],
     ids=["rpxup"],
 )
-@pytest.mark.parametrize("is_balanced", [False, True], ids=["no_balancing", "balanced"])
+@pytest.mark.parametrize("is_balanced", [True], ids=["zigzag"])
 @pytest.mark.timeout(0)
 def test_mla_sdpa_perf(
     mesh_device,

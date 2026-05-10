@@ -339,11 +339,10 @@ void kernel_main() {
     constexpr uint32_t joint_l_partial_col = get_compile_time_arg_val(23);
     constexpr bool use_streaming_compute = get_compile_time_arg_val(24) == 1;
     constexpr uint32_t is_causal = get_compile_time_arg_val(25) == 1;
-    constexpr uint32_t is_balanced = get_compile_time_arg_val(26) == 1;
-    constexpr bool use_zigzag_balancing = get_compile_time_arg_val(27) == 1;
-    constexpr uint32_t out_subblock_h = get_compile_time_arg_val(28);
+    constexpr bool use_zigzag_balancing = get_compile_time_arg_val(26) == 1;
+    constexpr uint32_t out_subblock_h = get_compile_time_arg_val(27);
 
-    constexpr auto out_args = TensorAccessorArgs<29>();
+    constexpr auto out_args = TensorAccessorArgs<28>();
     constexpr auto joint_out_args = TensorAccessorArgs<out_args.next_compile_time_args_offset()>();
     constexpr auto stats_args = TensorAccessorArgs<joint_out_args.next_compile_time_args_offset()>();
 
@@ -411,11 +410,11 @@ void kernel_main() {
         generate_lightweight_mask_tiles<global_n_partial_col, joint_l_partial_col, cb_mask_in, is_causal>();
     }
 
-    const uint32_t last_active_ring_iter = find_last_active_ring_iter(
-        fused_op_receiver.seq, local_padded_Nt, logical_n / tt::constants::TILE_HEIGHT, L, is_causal, is_balanced);
+    const uint32_t last_active_ring_iter =
+        find_last_active_ring_iter(fused_op_receiver.seq, local_padded_Nt, logical_n / tt::constants::TILE_HEIGHT, L);
 
     uint32_t ring_index = fused_op_receiver.seq.ring_index;
-    uint32_t half_sequence = num_q_chunks / 2;
+    const uint32_t causal_q_chunk_boundary = num_local_q_chunks / 2;
 
     // Deferred save: stash params for save_accumulators_with_trid and call it
     // during the next Q chunk's K-loop window to avoid DRAM bank contention.
@@ -436,8 +435,7 @@ void kernel_main() {
         const uint32_t ring_iter_kv_end_tile = ring_iter_kv_start_tile + num_local_k_chunks * Sk_chunk_t;
         const uint32_t global_n_tile_id = logical_n / tt::constants::TILE_HEIGHT;
         const bool ring_iter_processes_KV_chunks = ring_iter_kv_start_tile <= global_n_tile_id;
-        const bool ring_iter_does_work = (ring_iter_processes_KV_chunks || (do_joint_kv && L != 0)) &&
-                                         !(is_causal && ring_index < ring_id && !is_balanced);
+        const bool ring_iter_does_work = ring_iter_processes_KV_chunks || (do_joint_kv && L != 0);
         if (!ring_iter_does_work) {
             continue;
         }
@@ -584,17 +582,18 @@ void kernel_main() {
                 const uint32_t nq = (global_q_chunk % (NH * num_q_chunks)) / num_q_chunks;
                 const uint32_t q_chunk = global_q_chunk % num_q_chunks;
 
-                const bool balanced_skip_q = q_chunk < half_sequence && is_balanced && ring_index < ring_id;
+                const bool causal_skip_q =
+                    q_chunk < causal_q_chunk_boundary && use_zigzag_balancing && ring_index < ring_id;
 
                 const auto qi =
                     get_q_chunk_info(q_chunk, nb, nq, num_local_q_chunks, Sq_chunk_t, vDHt, Lt, local_padded_Nt);
                 const uint32_t end_seq_tile = get_end_seq_tile(qi, ring_id, Lt, local_padded_Nt);
 
                 // 1. Complete restore for all Q chunks to keep the prefetch pipeline in sync.
-                // For balanced-skip non-last-ring-iter Q chunks, barrier without pushing —
+                // For causal-zigzag skipped non-last-ring-iter Q chunks, barrier without pushing —
                 // compute skips these Q chunks entirely and doesn't need staging data.
                 if (!single_q_chunk && ring_iter > 0) {
-                    if (balanced_skip_q && !is_last_ring_iter) {
+                    if (causal_skip_q && !is_last_ring_iter) {
                         noc_async_read_barrier();
                     } else {
                         complete_restore(cb_prev_out, out_num_tiles, cb_max_in, cb_sum_in, Sq_chunk_t);
@@ -615,12 +614,12 @@ void kernel_main() {
 
                 // 3. Prefetch next Q chunk's accumulators from DRAM.
                 // Skip the intra-ring prefetch when this Q is on the normalize-only path
-                // (balanced_skip_q + is_last_ring_iter): normalize produces cb_out incrementally
+                // (causal_skip_q + is_last_ring_iter): normalize produces cb_out incrementally
                 // and blocks on cb_out space; cb_out can't drain until the writer reaches
                 // write_out below. A cb_reserve_back(cb_prev_out) here would block until
                 // normalize finishes, creating a cycle with cb_out. Deferred prefetch below
                 // runs after write_out to break the cycle.
-                const bool defer_prefetch = balanced_skip_q && is_last_ring_iter;
+                const bool defer_prefetch = causal_skip_q && is_last_ring_iter;
                 if (!single_q_chunk && ring_iter > 0 && !defer_prefetch) {
                     prefetch_intra_ring(q_index + 1);
                 }
@@ -635,11 +634,11 @@ void kernel_main() {
                     flush_deferred_save();
                 }
 
-                // Balanced causal skip: on non-last ring iters, compute pops staging and
+                // Causal zigzag skip: on non-last ring iters, compute pops staging and
                 // doesn't push the K-loop signal. Writer skips signal wait + save + write.
                 // On the last ring iter, compute runs normalize-only and pushes the signal;
                 // fall through to signal wait + write (no save — no ping-pong state to save).
-                if (balanced_skip_q && !is_last_ring_iter) {
+                if (causal_skip_q && !is_last_ring_iter) {
                     continue;
                 }
 
@@ -703,7 +702,7 @@ void kernel_main() {
                 // Other iterations will just skip the computation with subsequent KV chunks
                 bool causality = (ring_iter == 0 ? is_causal : false);
 
-                if (q_chunk < half_sequence && is_balanced && ring_index < ring_id) {
+                if (q_chunk < causal_q_chunk_boundary && use_zigzag_balancing && ring_index < ring_id) {
                     continue;
                 }
 

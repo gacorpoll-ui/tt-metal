@@ -276,7 +276,6 @@ ttsl::hash::hash_t RingJointSDPADeviceOperation::compute_program_hash(
         args.joint_strategy,
         args.scale,
         args.is_causal,
-        args.is_balanced,
         args.logical_n,
         args.ring_size,
         args.compute_kernel_config,
@@ -362,7 +361,6 @@ RingJointSDPAResult ring_joint_scaled_dot_product_attention(
     const CoreCoord ccl_core_grid_offset,
     std::optional<tt::tt_metal::SubDeviceId> subdevice_id,
     const bool is_causal,
-    const bool is_balanced,
     const std::optional<float> scale,
     const std::optional<DeviceComputeKernelConfig> compute_kernel_config,
     const ttnn::ccl::CoreAllocationStrategy core_allocation_strategy) {
@@ -413,7 +411,6 @@ RingJointSDPAResult ring_joint_scaled_dot_product_attention(
         joint_strategy,
         scale,
         is_causal,
-        is_balanced,
         logical_n,
         num_devices,
         tt::tt_metal::operation::DEFAULT_OUTPUT_MEMORY_CONFIG,
