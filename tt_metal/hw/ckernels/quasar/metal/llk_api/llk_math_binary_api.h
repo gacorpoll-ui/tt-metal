@@ -71,7 +71,6 @@ inline void llk_math_eltwise_binary_init_with_operands(
     const std::uint32_t operand_A, const std::uint32_t operand_B, bool acc_to_dest = false) {
     const std::uint32_t operandA_id = get_operand_id(operand_A);
     const std::uint32_t operandB_id = get_operand_id(operand_B);
-    const ckernel::TensorShape tensor_shape_A = get_operand_tensor_shape(operandA_id);
     const DataFormat srcA_format = static_cast<DataFormat>(get_operand_dst_format(operandA_id));
     const DataFormat srcB_format = static_cast<DataFormat>(get_operand_dst_format(operandB_id));    
 
