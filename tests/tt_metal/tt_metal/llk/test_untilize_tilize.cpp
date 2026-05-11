@@ -634,6 +634,15 @@ static void run_quasar_tilize_untilize_test(
         }
     }
 
+    // For Float32 input, need UnpackToDestFp32 so unpack_dst_format[0]
+    // is reported as Float32 (otherwise the JIT downconverts to fp16 by default
+    // and llk_math_hw_configure / llk_unpack_tilize_init never take the 32-bit
+    // unpack-to-dest branch). 
+    std::vector<UnpackToDestMode> unpack_to_dest_mode;
+    if (data_format == tt::DataFormat::Float32) {
+        unpack_to_dest_mode.assign(64, UnpackToDestMode::UnpackToDestFp32);
+    }
+
     KernelHandle compute = CreateKernel(
         program,
         compute_kernel,
@@ -642,6 +651,7 @@ static void run_quasar_tilize_untilize_test(
             .num_threads_per_cluster = 1,
             .fp32_dest_acc_en = fp32_dest_acc_en,
             .dst_full_sync_en = dst_full_sync_en,
+            .unpack_to_dest_mode = std::move(unpack_to_dest_mode),
             .compile_args = compute_args});
 
     tt_metal::experimental::dfb::BindDataflowBufferToProducerConsumerKernels(program, l1_input_dfb, reader, compute);
@@ -661,6 +671,11 @@ static void run_quasar_tilize_untilize_test(
         src_vec.resize(src_dram_buffer_size / sizeof(uint32_t));
         for (uint32_t i = 0; i < src_vec.size(); i++) {
             src_vec[i] = std::bit_cast<uint32_t>(static_cast<float>(i));
+        }
+    } else if (is_tilize && data_format == tt::DataFormat::Int32) {
+        src_vec.resize(src_dram_buffer_size / sizeof(uint32_t));
+        for (uint32_t i = 0; i < src_vec.size(); i++) {
+            src_vec[i] = static_cast<uint32_t>(i);
         }
     } else {
         src_vec = create_arange_vector_of_bfloat16(src_dram_buffer_size, false);
@@ -702,9 +717,11 @@ static void run_quasar_tilize_untilize_test(
             }
         }
         golden = std::move(golden_int32);
-    } else if (fp32_dest_acc_en && data_format != tt::DataFormat::Float32) {
+    } else if (fp32_dest_acc_en && data_format != tt::DataFormat::Float32 &&
+               data_format != tt::DataFormat::Int32) {
         // For fp32_dest_acc_en with 16-bit float input: expand golden from bfloat16 to float32
         // For Float32 input: golden is already 32-bit, no expansion needed
+        // For Int32 input: golden is already 32-bit per element; expansion would corrupt it
         vector<bfloat16> golden_unpacked = unpack_vector<bfloat16, uint32_t>(golden);
         golden.resize(golden.size() * 2);
         for (auto i = 0; i < golden_unpacked.size(); i++) {
@@ -789,6 +806,50 @@ TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarComputeUnpackTilize) {
             }
         }
     }
+}
+
+TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarComputeUnpackTilizeToDest_Float32_SyncHalf) {
+    run_quasar_tilize_untilize_test(
+        this->devices_.at(0)->get_devices()[0],
+        /*num_tiles_r=*/1,
+        /*num_tiles_c=*/1,
+        QuasarTestMode::TILIZE,
+        /*dst_full_sync_en=*/false,
+        /*fp32_dest_acc_en=*/true,
+        tt::DataFormat::Float32);
+}
+
+TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarComputeUnpackTilizeToDest_Float32_SyncFull) {
+    run_quasar_tilize_untilize_test(
+        this->devices_.at(0)->get_devices()[0],
+        /*num_tiles_r=*/1,
+        /*num_tiles_c=*/1,
+        QuasarTestMode::TILIZE,
+        /*dst_full_sync_en=*/true,
+        /*fp32_dest_acc_en=*/true,
+        tt::DataFormat::Float32);
+}
+
+TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarComputeUnpackTilizeToDest_Int32_SyncHalf) {
+    run_quasar_tilize_untilize_test(
+        this->devices_.at(0)->get_devices()[0],
+        /*num_tiles_r=*/1,
+        /*num_tiles_c=*/1,
+        QuasarTestMode::TILIZE,
+        /*dst_full_sync_en=*/false,
+        /*fp32_dest_acc_en=*/true,
+        tt::DataFormat::Int32);
+}
+
+TEST_F(QuasarMeshDeviceSingleCardFixture, QuasarComputeUnpackTilizeToDest_Int32_SyncFull) {
+    run_quasar_tilize_untilize_test(
+        this->devices_.at(0)->get_devices()[0],
+        /*num_tiles_r=*/1,
+        /*num_tiles_c=*/1,
+        QuasarTestMode::TILIZE,
+        /*dst_full_sync_en=*/true,
+        /*fp32_dest_acc_en=*/true,
+        tt::DataFormat::Int32);
 }
 
 // Pack Untilize Int8 -> Int32 dest -> Int32 (via pack_untilize_block)
