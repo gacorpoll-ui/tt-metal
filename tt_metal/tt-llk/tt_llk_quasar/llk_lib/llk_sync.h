@@ -10,52 +10,94 @@
 using namespace ckernel;
 using namespace ckernel::trisc;
 
-// Thread-agnostic semaphore primitives for LLK-level producer/consumer
-// handshakes. Each helper is a thin wrapper over the underlying TT instruction
-// (SEMINIT / SEMWAIT / SEMGET / SEMPOST) with a single semaphore-index argument
-// in the 0..31 range; the producer/consumer role is assigned at the call site.
-//
-// Usage notes:
-//  - `sem_index` is the integer semaphore id (e.g. semaphore::UNPACK_MATH = 4),
-//    NOT the one-hot bitmask form (e.g. p_stall::SEMAPHORE_4 = 0x10).
-//  - `_llk_sync_wait_` blocks until the semaphore satisfies the given condition
-//    (typically p_stall::STALL_ON_ZERO or p_stall::STALL_ON_MAX). The stall
-//    resource (e.g. STALL_UNPACK, STALL_TDMA) is a template parameter.
-//  - `_llk_sync_get_` and `_llk_sync_post_` accept an optional pre-stall
-//    resource via the template parameter, matching `t6_semaphore_get/post`.
+/**
+ * @file llk_sync.h
+ * @brief Thread-agnostic semaphore primitives for LLK-level producer/consumer
+ *        handshakes.
+ *
+ * Each helper is a thin wrapper over the underlying TT instruction
+ * (SEMINIT / SEMWAIT / SEMGET / SEMPOST) with a single semaphore-index
+ * argument in the in range [0, 31] range. The producer/consumer role is assigned at the
+ * call site.
+ *
+ * Usage notes:
+ *  - `sem_index` is the integer semaphore id (e.g. `semaphore::UNPACK_MATH = 4`),
+ *    not the one-hot bitmask form (e.g. `p_stall::SEMAPHORE_4 = 0x10`).
+ *  - `_llk_sync_wait_` blocks until the semaphore satisfies the given condition
+ *    (typically `p_stall::STALL_ON_ZERO` or `p_stall::STALL_ON_MAX`). The stall
+ *    resource (e.g. `STALL_UNPACK`) is a template parameter.
+ *  - `_llk_sync_get_` and `_llk_sync_post_` accept optional pre-stall resources
+ *    via template parameters, matching `t6_semaphore_get` / `t6_semaphore_post`.
+ */
 
-// Initialize semaphore `sem_index` with the given max value and initial value.
+/**
+ * @brief Initialize semaphore `sem_index` with the given max and initial values.
+ *
+ * @param sem_index Semaphore id in range [0, 31].
+ * @param max       Maximum value the semaphore can hold.
+ * @param init      Initial value of the semaphore.
+ */
 inline void _llk_sync_init_(std::uint8_t sem_index, std::uint32_t max, std::uint32_t init)
 {
     TTI_SEMINIT(max, init, 0, semaphore::t6_sem(sem_index));
 }
 
-// Block on semaphore `sem_index` until it satisfies `condition`
-// (p_stall::STALL_ON_ZERO or p_stall::STALL_ON_MAX). `StallRes` is the resource
-// the calling thread holds while blocked (e.g. p_stall::STALL_UNPACK).
+/**
+ * @brief Block on semaphore `sem_index` until it satisfies `condition`.
+ *
+ * @tparam StallRes  Resource the calling thread holds while blocked
+ *                   (e.g. p_stall::STALL_UNPACK).
+ * @param sem_index  Semaphore id in range [0, 31].
+ * @param condition  Wait predicate, typically p_stall::STALL_ON_ZERO
+ *                   (wait > 0) or p_stall::STALL_ON_MAX (wait < max).
+ */
 template <std::uint32_t StallRes>
 inline void _llk_sync_wait_(std::uint8_t sem_index, std::uint32_t condition)
 {
     TTI_SEMWAIT(StallRes, condition, 0, semaphore::t6_sem(sem_index));
 }
 
-// Decrement semaphore `sem_index`. Optionally stall on up to 3 resources first.
+/**
+ * @brief Decrement semaphore `sem_index`. Optionally stall on up to three
+ *        resources first (matches `t6_semaphore_get`).
+ *
+ * @tparam WaitRes0  Optional first pre-stall resource (default: p_stall::NOTHING).
+ * @tparam WaitRes1  Optional second pre-stall resource.
+ * @tparam WaitRes2  Optional third pre-stall resource.
+ * @param sem_index  Semaphore id in range [0, 31].
+ */
 template <std::uint32_t WaitRes0 = p_stall::NOTHING, std::uint32_t WaitRes1 = p_stall::NOTHING, std::uint32_t WaitRes2 = p_stall::NOTHING>
 inline void _llk_sync_get_(std::uint8_t sem_index)
 {
     t6_semaphore_get<WaitRes0, WaitRes1, WaitRes2>(sem_index);
 }
 
-// Increment semaphore `sem_index`. Optionally stall on up to 3 resources first.
+/**
+ * @brief Increment semaphore `sem_index`. Optionally stall on up to three
+ *        resources first (matches `t6_semaphore_post`).
+ *
+ * @tparam WaitRes0  Optional first pre-stall resource (default: p_stall::NOTHING).
+ * @tparam WaitRes1  Optional second pre-stall resource.
+ * @tparam WaitRes2  Optional third pre-stall resource.
+ * @param sem_index  Semaphore id in range [0, 31].
+ */
 template <std::uint32_t WaitRes0 = p_stall::NOTHING, std::uint32_t WaitRes1 = p_stall::NOTHING, std::uint32_t WaitRes2 = p_stall::NOTHING>
 inline void _llk_sync_post_(std::uint8_t sem_index)
 {
     t6_semaphore_post<WaitRes0, WaitRes1, WaitRes2>(sem_index);
 }
 
-// Stall the next CFG write until the listed resources (e.g. p_stall::PACK0,
-// p_stall::UNPACK0, p_stall::MATH) have drained. Use before reprogramming CFG
-// state that in-flight PACR/UNPACR/MATH instructions still depend on.
+/**
+ * @brief Stall the next CFG write until the listed resources have drained.
+ *
+ * Use before reprogramming CFG state that in-flight PACR/UNPACR/MATH
+ * instructions still depend on.
+ *
+ * @tparam DrainRes0  Primary resource to drain (e.g. p_stall::PACK0,
+ *                    p_stall::UNPACK0, p_stall::MATH).
+ * @tparam DrainRes1  Optional second drain resource.
+ * @tparam DrainRes2  Optional third drain resource.
+ */
 template <std::uint32_t DrainRes0, std::uint32_t DrainRes1 = p_stall::NOTHING, std::uint32_t DrainRes2 = p_stall::NOTHING>
 inline void _llk_stall_cfg_on_()
 {
@@ -63,7 +105,7 @@ inline void _llk_stall_cfg_on_()
 }
 
 /**
- * @brief Advance the calling thread's dest-bank section in SyncHalf mode.
+ * @brief Advance the calling thread's dest bank section in SyncHalf mode.
  *
  * Each thread (math, pack, unpack) keeps its own view of which dest bank it is
  * currently operating on. After a thread has finished with one bank and handed
@@ -81,7 +123,7 @@ inline void _llk_stall_cfg_on_()
  * @tparam DrainRes1      Optional second drain resource.
  * @tparam DrainRes2      Optional third drain resource.
  *
- * @note The caller must gate this on DST_SYNC_MODE == DstSync::SyncHalf;
+ * @note The caller must gate this on DST_SYNC_MODE == DstSync::SyncHalf
  *       the bank-toggle is a no-op in SyncFull mode.
  */
 template <std::uint8_t TRISC_ID, bool EN_32BIT_DEST, std::uint32_t DrainRes0, std::uint32_t DrainRes1 = p_stall::NOTHING, std::uint32_t DrainRes2 = p_stall::NOTHING>
