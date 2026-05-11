@@ -63,3 +63,11 @@ inline void llk_unpack_hw_configure(const std::uint32_t unpA_operand, const std:
 inline void llk_unpack_hw_configure(const std::uint32_t unpA_operand) {
     llk_unpack_hw_configure(unpA_operand, unpA_operand);
 }
+
+/**
+ * @brief Issues a dummy SrcB dvalid so the math thread can satisfy its SRCB_VLD
+ * stall in transpose-dest. Used by the transpose_wh_dest compute API.
+ */
+inline void llk_unpack_set_srcb_dummy_valid() {
+    _llk_unpack_set_srcB_dummy_valid_();
+}
