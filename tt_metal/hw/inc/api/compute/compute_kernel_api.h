@@ -20,10 +20,10 @@
 #include "llk_math_common_api.h"
 #include "llk_math_matmul_api.h"
 #include "llk_math_unary_datacopy_api.h"
+#include "llk_math_binary_sfpu_api.h"
 #ifndef ARCH_QUASAR
 #include "llk_math_binary_api.h"
 #include "llk_math_unary_sfpu_api.h"
-#include "llk_math_binary_sfpu_api.h"
 #include "llk_math_reduce_api.h"
 #endif
 #define MATH(x) x
@@ -34,10 +34,12 @@
 #ifdef TRISC_PACK
 #include "llk_pack_api.h"
 #include "llk_io_pack.h"
+#ifndef ARCH_QUASAR
 #include "llk_math_eltwise_unary_sfpu_silu.h"
 #include "llk_math_eltwise_unary_sfpu_tanh.h"
 #include "llk_math_eltwise_unary_sfpu_sigmoid.h"
 #include "llk_math_eltwise_unary_sfpu_activations.h"
+#endif
 #define PACK(x) x
 #else
 #define PACK(x)
