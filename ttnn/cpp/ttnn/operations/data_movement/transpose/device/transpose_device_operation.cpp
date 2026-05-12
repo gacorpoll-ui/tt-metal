@@ -3,6 +3,7 @@
 
 #include "transpose_device_operation.hpp"
 #include "transpose_utils.hpp"
+#include "ttnn/device_operation.hpp"
 #include "ttnn/operations/data_movement/common/common.hpp"
 #include "ttnn/tensor/tensor_ops.hpp"
 
