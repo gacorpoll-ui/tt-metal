@@ -7,7 +7,9 @@
 
 #include <cstdint>
 
+#include "api/compute/add_int_sfpu.h"
 #include "api/compute/binary_max_min.h"
+#include "api/compute/eltwise_binary_sfpu.h"
 #include "api/compute/cb_api.h"
 #include "api/compute/compute_kernel_api.h"
 #include "api/compute/eltwise_unary/eltwise_unary.h"
@@ -37,23 +39,42 @@ ALWI void sfpu_reduce_pack_mask_clear() { PACK((llk_pack_reduce_mask_clear())); 
 
 // Cross-tile MAX fold along the reduce axis. MIN is dispatched to reduce_sfpu_{h,w}_neg.cpp
 // where it is computed as -MAX(-x), so only the MAX variant is needed here.
-template <DataFormat format>
+template <ckernel::PoolType pool_type, DataFormat format>
 ALWI void sfpu_reduce_max_fold_init() {
     static_assert(format == DataFormat::Int32 || format == DataFormat::Float32, "reduce_sfpu max fold: Int32 or Float32");
-    if constexpr (format == DataFormat::Int32) {
-        binary_max_int32_tile_init();
-    } else {
-        binary_max_tile_init();
+    if constexpr (pool_type == ckernel::PoolType::MAX) {
+        if constexpr (format == DataFormat::Int32) {
+            binary_max_int32_tile_init();
+        } else {
+            binary_max_tile_init();
+        }
     }
+    else if constexpr (pool_type == ckernel::PoolType::SUM) {
+        if constexpr (format == DataFormat::Int32) {
+            add_int_tile_init();
+        } else {
+            add_binary_tile_init();
+        }
+    }
+
 }
 
-template <DataFormat format>
+template <ckernel::PoolType pool_type, DataFormat format>
 ALWI void sfpu_reduce_max_fold_tile(uint32_t a, uint32_t b, uint32_t out) {
     static_assert(format == DataFormat::Int32 || format == DataFormat::Float32, "reduce_sfpu max fold: Int32 or Float32");
-    if constexpr (format == DataFormat::Int32) {
-        binary_max_int32_tile(a, b, out);
-    } else {
-        binary_max_tile(a, b, out);
+    if constexpr (pool_type == ckernel::PoolType::MAX) {
+        if constexpr (format == DataFormat::Int32) {
+            binary_max_int32_tile(a, b, out);
+        } else {
+            binary_max_tile(a, b, out);
+        }
+    }
+    else if constexpr (pool_type == ckernel::PoolType::SUM) {
+        if constexpr (format == DataFormat::Int32) {
+            add_int_tile<format>(a, b, out);
+        } else {
+            add_binary_tile(a, b, out);
+        }
     }
 }
 
@@ -94,7 +115,7 @@ ALWI void reduce_sfpu(
     // =============================================================================
     // Static Assertions (compile-time validation)
     // =============================================================================
-    static_assert(pool_type == ckernel::PoolType::MAX, "reduce_sfpu: MAX only; MIN dispatches to reduce_sfpu_{h,w}_neg.cpp");
+    static_assert(pool_type == ckernel::PoolType::MAX || pool_type == ckernel::PoolType::SUM, "reduce_sfpu: MAX,SUM only; MIN dispatches to reduce_sfpu_{h,w}_neg.cpp");
     static_assert(
         reduce_dim == ckernel::ReduceDim::REDUCE_ROW || reduce_dim == ckernel::ReduceDim::REDUCE_COL,
         "reduce_sfpu: REDUCE_ROW or REDUCE_COL only");
@@ -144,7 +165,7 @@ ALWI void reduce_sfpu(
                 tile_regs_acquire();
 
                 if (needs_cross_tile_fold) {
-                    detail::sfpu_reduce_max_fold_init<format>();
+                    detail::sfpu_reduce_max_fold_init<pool_type, format>();
                 }
 
                 for (uint32_t ht = 0; ht < Ht; ++ht) {
@@ -154,7 +175,7 @@ ALWI void reduce_sfpu(
                             copy_tile(input_cb_id, 0, k);  // init acc[k] with first row's tile
                         } else {
                             copy_tile(input_cb_id, 0, col_work_dst);
-                            detail::sfpu_reduce_max_fold_tile<format>(k, col_work_dst, k);
+                            detail::sfpu_reduce_max_fold_tile<pool_type, format>(k, col_work_dst, k);
                         }
                         cb_pop_front(input_cb_id, onetile);
                     }
@@ -192,7 +213,7 @@ ALWI void reduce_sfpu(
                 tile_regs_acquire();
 
                 if (needs_cross_tile_fold) {
-                    detail::sfpu_reduce_max_fold_init<format>();
+                    detail::sfpu_reduce_max_fold_init<pool_type, format>();
                 }
 
                 cb_wait_front(input_cb_id, onetile);
@@ -202,7 +223,7 @@ ALWI void reduce_sfpu(
                 for (uint32_t wt = 1; wt < Wt; ++wt) {
                     cb_wait_front(input_cb_id, onetile);
                     copy_tile(input_cb_id, 0, next_dst_idx);
-                    detail::sfpu_reduce_max_fold_tile<format>(dst_idx, next_dst_idx, dst_idx);
+                    detail::sfpu_reduce_max_fold_tile<pool_type, format>(dst_idx, next_dst_idx, dst_idx);
                     cb_pop_front(input_cb_id, onetile);
                 }
 

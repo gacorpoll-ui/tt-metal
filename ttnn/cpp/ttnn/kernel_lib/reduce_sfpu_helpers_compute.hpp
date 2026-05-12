@@ -29,6 +29,7 @@
  * - Packer reduce mask setup (sfpu_reduce does not configure it; this helper does)
  *
  * Within-tile reduction uses SFPU `sfpu_reduce`; cross-tile folds along the reduce axis use
+ * `binary_max_int32_tile` / `binary_min_int32_tile` / `add_int_tile` (MAX / MIN / SUM).
  * `binary_max[_int32]_tile` only (selected by `format`). MIN is not folded here; host launches
  * `reduce_sfpu_{h,w}_neg.cpp` which implements MIN as -MAX(-x) and reuses the same MAX fold.
  *
@@ -62,7 +63,7 @@ namespace compute_kernel_lib {
 /**
  * @brief SFPU reduce along one tile axis (templates match host REDUCE_* defines).
  *
- * @tparam pool_type   PoolType::MAX (MIN is dispatched via reduce_sfpu_{h,w}_neg.cpp).
+ * @tparam pool_type   PoolType::MAX (MIN is dispatched via reduce_sfpu_{h,w}_neg.cpp), or PoolType::SUM
  * @tparam reduce_dim  ReduceDim::REDUCE_ROW (W) or ReduceDim::REDUCE_COL (H).
  * @tparam format      DataFormat::Int32 or DataFormat::Float32.
  *
