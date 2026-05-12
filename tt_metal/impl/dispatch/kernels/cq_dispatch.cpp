@@ -18,6 +18,7 @@
 #include "tt_metal/impl/dispatch/kernels/cq_common.hpp"
 #include "tt_metal/impl/dispatch/kernels/cq_relay.hpp"
 #include "tt_metal/impl/dispatch/kernels/realtime_profiler.hpp"
+#include "tt_metal/impl/dispatch/kernels/telemetry.hpp"
 #include "tt_metal/api/tt-metalium/experimental/dispatch_telemetry.hpp"
 
 // The command queue write interface controls writes to the completion region, host owns the completion region read
@@ -165,46 +166,7 @@ volatile tt_l1_ptr DispatchTelemetry* get_dispatch_telemetry_ptr() {
     return reinterpret_cast<volatile tt_l1_ptr DispatchTelemetry*>(dispatch_telemetry_base);
 }
 
-template <bool enabled>
-class DispatchTelemetryBlockGuardImpl;
-
-template <>
-class DispatchTelemetryBlockGuardImpl<true> {
-public:
-    FORCE_INLINE DispatchTelemetryBlockGuardImpl() = default;
-
-    FORCE_INLINE ~DispatchTelemetryBlockGuardImpl() {
-        if (blocked_) {
-            get_dispatch_telemetry_ptr()->unblocked_count++;
-        }
-    }
-
-    DispatchTelemetryBlockGuardImpl(const DispatchTelemetryBlockGuardImpl&) = delete;
-    DispatchTelemetryBlockGuardImpl& operator=(const DispatchTelemetryBlockGuardImpl&) = delete;
-    DispatchTelemetryBlockGuardImpl(DispatchTelemetryBlockGuardImpl&& other) = delete;
-    DispatchTelemetryBlockGuardImpl& operator=(DispatchTelemetryBlockGuardImpl&& other) = delete;
-
-    FORCE_INLINE void mark_blocked() {
-        if (!blocked_) {
-            get_dispatch_telemetry_ptr()->blocked_count++;
-            blocked_ = true;
-        }
-    }
-
-private:
-    bool blocked_ {false};
-};
-
-template <>
-class DispatchTelemetryBlockGuardImpl<false> {
-public:
-    // FORCE_INLINE should allow the compiler to erase this guard when telemetry is disabled.
-    FORCE_INLINE DispatchTelemetryBlockGuardImpl() = default;
-    FORCE_INLINE ~DispatchTelemetryBlockGuardImpl() = default;
-    FORCE_INLINE void mark_blocked() {}
-};
-
-using DispatchTelemetryBlockGuard = DispatchTelemetryBlockGuardImpl<telemetry_enabled>;
+using DispatchTelemetryBlockGuard = TelemetryBlockGuard<DispatchTelemetry, telemetry_enabled>;
 
 // TODO: Move inits to host
 FORCE_INLINE
@@ -245,21 +207,16 @@ using CBReaderType = CBReaderWithReleasePolicy<
     upstream_dispatch_cb_sem_id,
     dispatch_cb_pages_per_block,
     dispatch_cb_base,
-    DispatchReleasePolicy>;
+    DispatchReleasePolicy,
+    DispatchTelemetry,
+    dispatch_telemetry_base,
+    telemetry_enabled>;
 
 static CBReaderType dispatch_cb_reader;
 
+// TODO: Since im checking inside the cb, delete this again.
 FORCE_INLINE
 uint32_t wait_for_available_dispatch_data(uint32_t& data_ptr) {
-    DispatchTelemetryBlockGuard telemetry_blocked;
-
-    if constexpr (telemetry_enabled) {
-        // wait_for_available_data_and_release_old_pages blocks if there is no data available.
-        if (dispatch_cb_reader.available_bytes(data_ptr) == 0) {
-            telemetry_blocked.mark_blocked();
-        }
-    }
-
     return dispatch_cb_reader.wait_for_available_data_and_release_old_pages(data_ptr);
 }
 
@@ -325,7 +282,7 @@ void completion_queue_reserve_back(uint32_t num_pages) {
     uint32_t available_space;
 
     {
-        DispatchTelemetryBlockGuard telemetry_blocked;
+        DispatchTelemetryBlockGuard telemetry_blocked(get_dispatch_telemetry_ptr());
         do {
             invalidate_l1_cache();
             completion_rd_ptr_and_toggle = *get_cq_completion_read_ptr();
@@ -478,7 +435,8 @@ void process_exec_buf_end_h() {
     cmd_ptr += sizeof(CQDispatchCmd);
 }
 
-CBWriter<my_downstream_cb_sem_id, 0, 0, 0> dispatch_h_cb_writer{};
+CBWriter<my_downstream_cb_sem_id, 0, 0, 0, 0, 0, 0, DispatchTelemetry, dispatch_telemetry_base, telemetry_enabled>dispatch_h_cb_writer{};
+
 
 // Relay, potentially through the mux/dmux/tunneller path
 // Code below sends 1 page worth of data except at the end of a cmd

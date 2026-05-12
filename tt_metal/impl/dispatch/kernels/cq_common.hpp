@@ -8,6 +8,7 @@
 #include "internal/risc_attribs.h"
 #include "api/dataflow/dataflow_api.h"
 #include "cq_helpers.hpp"
+#include "tt_metal/impl/dispatch/kernels/telemetry.hpp"
 
 #include "internal/debug/sanitize.h"
 #include "api/debug/assert.h"
@@ -278,7 +279,13 @@ template <
     uint32_t downstream_sem_id,
     uint32_t buffer_base = 0,
     uint32_t buffer_end = 0,
-    uint32_t buffer_page_size = 0>
+    uint32_t buffer_page_size = 0,
+    typename Telemetry = NoTelemetry,
+    uint32_t telemetry_addr = 0,
+    // TODO: Note, technically Telemetry being of type NoTelemetry is signifying this is disabled I
+    // guess, but also at the same time it may not be since we may keep type information even when
+    // it's disabled. Hard to say I guess. Need to think through this a bit more.
+    bool telemetry_enabled = false>
 class CBWriter {
 public:
     FORCE_INLINE void acquire_pages(uint32_t n) {
@@ -292,6 +299,16 @@ public:
         // Use a wrapping compare here to compare distance
         // Required for trace which steals downstream credits and may make the value negative
         uint32_t heartbeat = 0;
+        TelemetryBlockGuard<Telemetry, telemetry_enabled> telemetry_blocked(
+            get_telemetry_ptr<Telemetry, telemetry_addr>());
+        if constexpr (telemetry_enabled) {
+            // TODO: this does not actually work since this wrap_gt call could be true, we just
+            // need to invalidate cache first. So might be better to unroll the loop by 1 and do
+            // a first pass outside it.
+            if (wrap_gt(n, additional_count + *sem_addr)) {
+                telemetry_blocked.mark_blocked();
+            }
+        }
         do {
             invalidate_l1_cache();
             IDLE_ERISC_HEARTBEAT_AND_RETURN(heartbeat);
@@ -388,7 +405,10 @@ template <
     uint32_t cb_log_page_size,
     uint32_t cb_blocks,
     uint32_t cb_pages_per_block,
-    uint32_t cb_base>
+    uint32_t cb_base,
+    typename Telemetry = NoTelemetry,
+    uint32_t telemetry_addr = 0,
+    bool telemetry_enabled = false>
 class CBReader {
 public:
     FORCE_INLINE void wait_all_pages() {
@@ -440,6 +460,12 @@ protected:
         if (local_count_ == upstream_count_) {
             WAYPOINT("UAPW");
             uint32_t heartbeat = 0;
+            TelemetryBlockGuard<Telemetry, telemetry_addr> telemetry_blocked(
+                get_telemetry_ptr<Telemetry, telemetry_addr>());
+            if constexpr (telemetry_enabled) {
+                // TODO: what the heck even is this, no, we need to conditionally increment block.
+                telemetry_blocked.mark_blocked();
+            }
             do {
                 invalidate_l1_cache();
                 IDLE_ERISC_HEARTBEAT_AND_RETURN(heartbeat, 0);
@@ -482,11 +508,31 @@ template <
     uint32_t sem_id,
     uint32_t cb_pages_per_block,
     uint32_t cb_base,
-    typename ReleasePolicy>
-class CBReaderWithReleasePolicy : public CBReader<my_sem_id, cb_log_page_size, cb_blocks, cb_pages_per_block, cb_base> {
+    typename ReleasePolicy,
+    typename Telemetry = NoTelemetry,
+    uint32_t telemetry_addr = 0,
+    bool telemetry_enabled = false>
+class CBReaderWithReleasePolicy :
+    public CBReader<
+        my_sem_id,
+        cb_log_page_size,
+        cb_blocks,
+        cb_pages_per_block,
+        cb_base,
+        Telemetry,
+        telemetry_addr,
+        telemetry_enabled> {
 public:
     FORCE_INLINE void init() {
-        this->CBReader<my_sem_id, cb_log_page_size, cb_blocks, cb_pages_per_block, cb_base>::init();
+        CBReader<
+            my_sem_id,
+            cb_log_page_size,
+            cb_blocks,
+            cb_pages_per_block,
+            cb_base,
+            Telemetry,
+            telemetry_addr,
+            telemetry_enabled>::init();
         this->block_noc_writes_to_clear_ = noc_get_nonposted_writes_issued(noc_index);
     }
 
@@ -572,11 +618,31 @@ template <
     uint32_t cb_blocks,
     uint32_t cb_pages_per_block,
     uint32_t cb_base,
-    uint32_t cb_end>
-class CBReaderWithManualRelease : public CBReader<my_sem_id, cb_log_page_size, cb_blocks, cb_pages_per_block, cb_base> {
+    uint32_t cb_end,
+    typename Telemetry = NoTelemetry,
+    uint32_t telemetry_addr = 0,
+    bool telemetry_enabled = false>
+class CBReaderWithManualRelease :
+    public CBReader<
+        my_sem_id,
+        cb_log_page_size,
+        cb_blocks,
+        cb_pages_per_block,
+        cb_base,
+        Telemetry,
+        telemetry_addr,
+        telemetry_enabled> {
 public:
     FORCE_INLINE void init() {
-        this->CBReader<my_sem_id, cb_log_page_size, cb_blocks, cb_pages_per_block, cb_base>::init();
+        CBReader<
+            my_sem_id,
+            cb_log_page_size,
+            cb_blocks,
+            cb_pages_per_block,
+            cb_base,
+            Telemetry,
+            telemetry_addr,
+            telemetry_enabled>::init();
     }
 
     // Get a new CB page. Will update cmd_ptr on wrap-around. Returns the number of pages acquired. Will not release
