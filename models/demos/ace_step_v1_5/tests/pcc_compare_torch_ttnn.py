@@ -25,7 +25,7 @@ import sys
 from pathlib import Path
 
 # Ensure tt-metal and bundled ttnn are importable before any module that pulls in ``ttnn``.
-_tt_metal_root = Path(__file__).resolve().parents[3]
+_tt_metal_root = Path(__file__).resolve().parents[4]
 for _p in (str(_tt_metal_root), str(_tt_metal_root / "ttnn")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
@@ -34,12 +34,12 @@ import numpy as np
 import torch
 from transformers import AutoModel, AutoTokenizer
 
-from models.demos.ace_step_v1_5.ref_decoder_compare import (
+from models.demos.ace_step_v1_5.demo.run_prompt_to_wav import _build_t_schedule, _resolve_ace_step_repo_root
+from models.demos.ace_step_v1_5.tests.ref_decoder_compare import (
     ensure_acestep_repo_on_path,
     hf_decoder_velocity,
     load_hf_decoder_from_checkpoint_dir,
 )
-from models.demos.ace_step_v1_5.run_prompt_to_wav import _build_t_schedule, _resolve_ace_step_repo_root
 
 
 def _comp_pcc(golden: torch.Tensor, calculated: torch.Tensor) -> tuple[bool, float]:
@@ -169,8 +169,8 @@ def _prepare_condition_official(
     ref_root: Path,
     variant: str,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, torch.Tensor]:
-    from models.demos.ace_step_v1_5.acestep_preprocess_shim import GenerationConfig, GenerationParams
-    from models.demos.ace_step_v1_5.official_lm_preprocess import (
+    from models.demos.ace_step_v1_5.demo.acestep_preprocess_shim import GenerationConfig, GenerationParams
+    from models.demos.ace_step_v1_5.demo.official_lm_preprocess import (
         build_filtered_dit_kwargs_for_handler,
         configure_acestep_logging,
         handler_prepare_condition_tensors,
@@ -350,7 +350,7 @@ def main() -> None:
 
     decoder = load_hf_decoder_from_checkpoint_dir(model_dir, ref_repo_root=ref_root, torch_dtype=torch.bfloat16)
 
-    tt_metal_root = str(Path(__file__).resolve().parents[3])
+    tt_metal_root = str(Path(__file__).resolve().parents[4])
     ttnn_pkg_root = str(Path(tt_metal_root) / "ttnn")
     for p in (tt_metal_root, ttnn_pkg_root):
         if p not in sys.path:

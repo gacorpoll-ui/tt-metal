@@ -298,7 +298,7 @@ def run_prompt_to_wav(
         try:
             ref_root = _resolve_ace_step_repo_root(ckpt_dir=ckpt_dir, ace_step_repo_root=ace_step_repo_root)
             if ref_root is not None:
-                from models.demos.ace_step_v1_5.ref_decoder_compare import ensure_acestep_repo_on_path
+                from models.demos.ace_step_v1_5.tests.ref_decoder_compare import ensure_acestep_repo_on_path
 
                 ensure_acestep_repo_on_path(ref_root)
             else:
@@ -378,7 +378,7 @@ def run_prompt_to_wav(
             try:
                 ref_root = _resolve_ace_step_repo_root(ckpt_dir=ckpt_dir, ace_step_repo_root=ace_step_repo_root)
                 if ref_root is not None:
-                    from models.demos.ace_step_v1_5.ref_decoder_compare import ensure_acestep_repo_on_path
+                    from models.demos.ace_step_v1_5.tests.ref_decoder_compare import ensure_acestep_repo_on_path
 
                     ensure_acestep_repo_on_path(ref_root)
                 else:
@@ -606,7 +606,7 @@ def main() -> None:
                 "Could not find ACE-Step-1.5 repo root (folder containing `acestep/`). "
                 "Pass --ace-step-repo-root or set ACE_STEP_REPO_ROOT."
             )
-        from models.demos.ace_step_v1_5.ref_decoder_compare import ensure_acestep_repo_on_path
+        from models.demos.ace_step_v1_5.tests.ref_decoder_compare import ensure_acestep_repo_on_path
 
         ensure_acestep_repo_on_path(ref_root)
         from acestep.handler import AceStepHandler

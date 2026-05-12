@@ -323,14 +323,14 @@ def main() -> None:
                 "Could not find ACE-Step-1.5 repo (needed for acestep imports). "
                 "Pass --ace-step-repo-root or set ACE_STEP_REPO_ROOT."
             )
-        from models.demos.ace_step_v1_5.ref_decoder_compare import ensure_acestep_repo_on_path
+        from models.demos.ace_step_v1_5.tests.ref_decoder_compare import ensure_acestep_repo_on_path
 
         ensure_acestep_repo_on_path(root)
         return root
 
     # --- Optional: full official path (LLM), no TTNN ---
     if args.use_official_lm:
-        from models.demos.ace_step_v1_5.official_lm_preprocess import configure_acestep_logging
+        from models.demos.ace_step_v1_5.demo.official_lm_preprocess import configure_acestep_logging
 
         configure_acestep_logging()
         ref_root = _ensure_acestep_on_path()
@@ -402,7 +402,7 @@ def main() -> None:
     # --- Official: 5 Hz LM + AceStepHandler batching + prepare_condition (precomputed LM hints) ---
     ref_root = _ensure_acestep_on_path()
 
-    from models.demos.ace_step_v1_5.official_lm_preprocess import (
+    from models.demos.ace_step_v1_5.demo.official_lm_preprocess import (
         build_filtered_dit_kwargs_for_handler,
         configure_acestep_logging,
         handler_prepare_condition_tensors,
@@ -413,7 +413,7 @@ def main() -> None:
     from acestep.handler import AceStepHandler
     from acestep.llm_inference import LLMHandler
 
-    from models.demos.ace_step_v1_5.acestep_preprocess_shim import GenerationConfig, GenerationParams
+    from models.demos.ace_step_v1_5.demo.acestep_preprocess_shim import GenerationConfig, GenerationParams
 
     _mdl.MAIN_MODEL_COMPONENTS = [args.variant, "vae", "Qwen3-Embedding-0.6B", args.lm_variant]
 
@@ -483,7 +483,7 @@ def main() -> None:
     timesteps_host = np.asarray(t_schedule + [0.0], dtype=np.float32)
 
     # --- TTNN ---
-    tt_metal_root = str(Path(__file__).resolve().parents[3])
+    tt_metal_root = str(Path(__file__).resolve().parents[4])
     ttnn_pkg_root = str(Path(tt_metal_root) / "ttnn")
     for p in (tt_metal_root, ttnn_pkg_root):
         if p not in sys.path:
