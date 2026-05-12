@@ -990,6 +990,17 @@ struct PaddedAddrGenerator {
     }
 };
 
+template <typename T>
+struct is_padded_addr_generator {
+    static constexpr bool value = false;
+};
+template <typename R>
+struct is_padded_addr_generator<PaddedAddrGenerator<R>> {
+    static constexpr bool value = true;
+};
+template <typename T>
+inline constexpr bool is_padded_addr_generator_v = is_padded_addr_generator<T>::value;
+
 struct Slice {
     uint32_t d0;        // batch dimension
     uint32_t d1;        // head dimension
@@ -1010,6 +1021,17 @@ struct Slice {
 
 // Fetch tiles via NOC reads into a given L1 address. No CB lifecycle — caller manages
 // cb_reserve_back / cb_push_back. Used by forwarding paths that mcast before pushing.
+//
+// For PaddedAddrGenerator the per-tile maybe_read_tile call re-runs tensor_shape.id_of
+// (4 muls + 3 adds) and re-evaluates the d2 bounds predicate; both depend only on row.
+// We dispatch on the generator type with `if constexpr` and take a hot path that:
+//   - clamps bounds once (valid_rows count),
+//   - precomputes the row-base tile id via one id_of call,
+//   - advances tile_id by ++ inside the col loop (like read_chunk_with_padding),
+//   - zero-fills out-of-bounds rows in a separate tail loop.
+// Semantics match the generic path (predicate d2 < shape[2] && d2 < end_seq_tile;
+// out-of-bounds rows zero-filled). CatAddrGenerator and other generator types keep
+// the original per-tile dispatch.
 template <typename CatAddrGeneratorType>
 void fetch_block(
     const CatAddrGeneratorType& cat_addr_generator,
@@ -1021,25 +1043,64 @@ void fetch_block(
     const uint32_t barrier_threshold = 0) {
     const uint32_t src_rows = src_slice.get_d2_size();
     const uint32_t src_cols = src_slice.get_d3_size();
-    uint32_t outer_ptr_stride = transpose ? tile_bytes : src_cols * tile_bytes;
-    uint32_t inner_ptr_stride = transpose ? tile_bytes * src_rows : tile_bytes;
+    const uint32_t outer_ptr_stride = transpose ? tile_bytes : src_cols * tile_bytes;
+    const uint32_t inner_ptr_stride = transpose ? tile_bytes * src_rows : tile_bytes;
 
     uint32_t barrier_count = 0;
-    for (uint32_t row = 0; row < src_rows; ++row) {
-        uint32_t write_ptr = dst_addr + row * outer_ptr_stride;
-        for (uint32_t col = 0; col < src_cols; ++col) {
-            uint32_t did_read = cat_addr_generator.maybe_read_tile(
-                src_slice.d0,
-                src_slice.d1,
-                src_slice.d2_start + row,
-                src_slice.d3_start + col,
-                end_seq_tile,
-                write_ptr);
 
-            write_ptr += inner_ptr_stride;
-            if (barrier_threshold > 0 && ++barrier_count == barrier_threshold) {
-                noc_async_read_barrier();
-                barrier_count = 0;
+    if constexpr (is_padded_addr_generator_v<CatAddrGeneratorType>) {
+        using ReaderT = decltype(cat_addr_generator.reader);
+
+        const uint32_t shape_d2 = cat_addr_generator.tensor_shape.shape[2];
+        const uint32_t bound = shape_d2 < end_seq_tile ? shape_d2 : end_seq_tile;
+        const uint32_t valid_rows = (src_slice.d2_start >= bound) ? 0 : std::min(src_rows, bound - src_slice.d2_start);
+
+        const uint32_t row_stride = cat_addr_generator.tensor_shape.strides[2];  // == shape[3]
+        uint32_t tile_id =
+            cat_addr_generator.tensor_shape.id_of(src_slice.d0, src_slice.d1, src_slice.d2_start, src_slice.d3_start);
+
+        for (uint32_t row = 0; row < valid_rows; ++row) {
+            uint32_t write_ptr = dst_addr + row * outer_ptr_stride;
+            for (uint32_t col = 0; col < src_cols; ++col) {
+                noc_async_read_tile(tile_id, cat_addr_generator.reader, write_ptr);
+                tile_id += 1;
+                write_ptr += inner_ptr_stride;
+                if (barrier_threshold > 0 && ++barrier_count == barrier_threshold) {
+                    noc_async_read_barrier();
+                    barrier_count = 0;
+                }
+            }
+            tile_id += row_stride - src_cols;
+        }
+
+        for (uint32_t row = valid_rows; row < src_rows; ++row) {
+            uint32_t write_ptr = dst_addr + row * outer_ptr_stride;
+            for (uint32_t col = 0; col < src_cols; ++col) {
+                if constexpr (has_get_aligned_page_size_v<ReaderT>) {
+                    fill_zeros_async(write_ptr, cat_addr_generator.reader.get_aligned_page_size());
+                } else {
+                    fill_zeros_async(write_ptr, cat_addr_generator.reader.page_size);
+                }
+                write_ptr += inner_ptr_stride;
+            }
+        }
+    } else {
+        for (uint32_t row = 0; row < src_rows; ++row) {
+            uint32_t write_ptr = dst_addr + row * outer_ptr_stride;
+            for (uint32_t col = 0; col < src_cols; ++col) {
+                uint32_t did_read = cat_addr_generator.maybe_read_tile(
+                    src_slice.d0,
+                    src_slice.d1,
+                    src_slice.d2_start + row,
+                    src_slice.d3_start + col,
+                    end_seq_tile,
+                    write_ptr);
+
+                write_ptr += inner_ptr_stride;
+                if (barrier_threshold > 0 && ++barrier_count == barrier_threshold) {
+                    noc_async_read_barrier();
+                    barrier_count = 0;
+                }
             }
         }
     }
