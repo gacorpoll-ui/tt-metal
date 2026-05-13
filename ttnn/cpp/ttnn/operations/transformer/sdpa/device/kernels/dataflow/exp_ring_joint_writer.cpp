@@ -20,10 +20,14 @@ using namespace tt::tt_fabric::linear::experimental;
 #endif
 
 // Row-by-row drain of cb_out to DRAM; writes overlap with compute's next row-group push.
-// Padding past end_seq_tile is silently skipped by maybe_write_tile.
+// Padding past end_seq_tile is silently skipped (rows >= valid_rows are not written).
 //
 // flush_trid: TRID the caller stamped writes with via noc_async_write_set_trid (0 = default).
 // This file's only call site uses default trid → pass 0. Caller handles any final NoC barrier.
+//
+// Hoist id_of (4 muls + 3 adds) and the d2 bound out of the inner col loop — both depend only
+// on row. The drain_cb_row_grouped callback advances a captured tile_id by ++ per tile and
+// adds row_stride - cols at row end, so addressing reduces to one add per tile.
 template <typename ReaderType>
 void write_out_row_by_row(
     const PaddedAddrGenerator<ReaderType>& cat_out_generator,
@@ -33,16 +37,27 @@ void write_out_row_by_row(
     const uint32_t tile_bytes,
     const uint32_t sbh,
     const uint32_t flush_trid) {
+    const uint32_t total_rows = out_slice.get_d2_size();
+    const uint32_t cols = out_slice.get_d3_size();
+
+    const uint32_t shape_d2 = cat_out_generator.tensor_shape.shape[2];
+    const uint32_t bound = shape_d2 < end_seq_tile ? shape_d2 : end_seq_tile;
+    const uint32_t valid_rows = (out_slice.d2_start >= bound) ? 0 : std::min(total_rows, bound - out_slice.d2_start);
+
+    const uint32_t row_stride = cat_out_generator.tensor_shape.strides[2];
+    uint32_t tile_id =
+        cat_out_generator.tensor_shape.id_of(out_slice.d0, out_slice.d1, out_slice.d2_start, out_slice.d3_start);
+
     drain_cb_row_grouped(
-        cb_out,
-        out_slice.get_d2_size(),
-        out_slice.get_d3_size(),
-        tile_bytes,
-        sbh,
-        flush_trid,
-        [&](uint32_t row, uint32_t col, uint32_t l1_addr) {
-            cat_out_generator.maybe_write_tile(
-                out_slice.d0, out_slice.d1, out_slice.d2_start + row, out_slice.d3_start + col, end_seq_tile, l1_addr);
+        cb_out, total_rows, cols, tile_bytes, sbh, flush_trid, [&](uint32_t row, uint32_t col, uint32_t l1_addr) {
+            if (row >= valid_rows) {
+                return;
+            }
+            noc_async_write_tile(tile_id, cat_out_generator.reader, l1_addr);
+            ++tile_id;
+            if (col == cols - 1) {
+                tile_id += row_stride - cols;
+            }
         });
 }
 

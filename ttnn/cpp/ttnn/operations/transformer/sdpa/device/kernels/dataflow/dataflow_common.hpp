@@ -1123,6 +1123,10 @@ void read_block(
     cb_push_back(cb_id, num_tiles);
 }
 
+// Symmetric counterpart of fetch_block: for PaddedAddrGenerator, hoist id_of out of the inner
+// loop (the per-tile maybe_write_tile path re-runs 4 muls + 3 adds and re-evaluates a row-only
+// bound). Out-of-bound rows are simply skipped (no zero-fill needed on the write side).
+// CatAddrGenerator and other generator types keep the original per-tile dispatch.
 template <typename CatAddrGeneratorType>
 void write_block(
     const CatAddrGeneratorType& cat_addr_generator,
@@ -1134,20 +1138,46 @@ void write_block(
     const uint32_t dst_cols = dst_slice.get_d3_size();
     const uint32_t num_tiles = dst_rows * dst_cols;
     const uint32_t base_read_ptr = get_read_ptr(cb_id);
-    uint32_t outer_ptr_stride = dst_cols * tile_bytes;
-    uint32_t inner_ptr_stride = tile_bytes;
-
-    uint32_t barrier_count = 0;
+    const uint32_t outer_ptr_stride = dst_cols * tile_bytes;
+    const uint32_t inner_ptr_stride = tile_bytes;
 
     cb_wait_front(cb_id, num_tiles);
-    for (uint32_t row = 0; row < dst_rows; ++row) {
-        uint32_t read_ptr = base_read_ptr + row * outer_ptr_stride;
-        for (uint32_t col = 0; col < dst_cols; ++col) {
-            uint32_t did_write = cat_addr_generator.maybe_write_tile(
-                dst_slice.d0, dst_slice.d1, dst_slice.d2_start + row, dst_slice.d3_start + col, end_seq_tile, read_ptr);
-            read_ptr += inner_ptr_stride;
+
+    if constexpr (is_padded_addr_generator_v<CatAddrGeneratorType>) {
+        const uint32_t shape_d2 = cat_addr_generator.tensor_shape.shape[2];
+        const uint32_t bound = shape_d2 < end_seq_tile ? shape_d2 : end_seq_tile;
+        const uint32_t valid_rows = (dst_slice.d2_start >= bound) ? 0 : std::min(dst_rows, bound - dst_slice.d2_start);
+
+        const uint32_t row_stride = cat_addr_generator.tensor_shape.strides[2];
+        uint32_t tile_id =
+            cat_addr_generator.tensor_shape.id_of(dst_slice.d0, dst_slice.d1, dst_slice.d2_start, dst_slice.d3_start);
+
+        for (uint32_t row = 0; row < valid_rows; ++row) {
+            uint32_t read_ptr = base_read_ptr + row * outer_ptr_stride;
+            for (uint32_t col = 0; col < dst_cols; ++col) {
+                noc_async_write_tile(tile_id, cat_addr_generator.reader, read_ptr);
+                tile_id += 1;
+                read_ptr += inner_ptr_stride;
+            }
+            tile_id += row_stride - dst_cols;
+        }
+        // Rows in [valid_rows, dst_rows) are padding — nothing to write.
+    } else {
+        for (uint32_t row = 0; row < dst_rows; ++row) {
+            uint32_t read_ptr = base_read_ptr + row * outer_ptr_stride;
+            for (uint32_t col = 0; col < dst_cols; ++col) {
+                uint32_t did_write = cat_addr_generator.maybe_write_tile(
+                    dst_slice.d0,
+                    dst_slice.d1,
+                    dst_slice.d2_start + row,
+                    dst_slice.d3_start + col,
+                    end_seq_tile,
+                    read_ptr);
+                read_ptr += inner_ptr_stride;
+            }
         }
     }
+
     noc_async_write_barrier();
     cb_pop_front(cb_id, num_tiles);
 }
