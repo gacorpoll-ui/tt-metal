@@ -31,6 +31,12 @@ and can be selected individually with pytest ``-k``:
                                        aligned to within ±20µs on the Tracy
                                        timeline (host anchor versus Tracy
                                        message stamp plus CI variance on WH).
+* ``test_realtime_profiler_perf_llama_tg`` —
+                                       Galaxy-only perf gate. Run Llama-70B
+                                       mini-stress under Tracy capture and
+                                       assert p50/p99 budgets for
+                                       ``push_entry_to_host`` and
+                                       ``signal_realtime_profiler_and_switch``.
 """
 
 from __future__ import annotations
@@ -98,17 +104,21 @@ def _free_port() -> str | None:
 
 
 def _run_under_tracy(
-    workload_script: Path,
+    workload_script: Path | None,
     out_tracy: Path,
     log_path: Path,
     extra_env: dict | None = None,
     timeout_s: int = 600,
+    subprocess_argv: list[str] | None = None,
 ):
     """
-    Launch `capture-release` in the background, run `workload_script` under
-    it in a subprocess with stdout streamed to ``log_path`` (avoids the OS
-    pipe buffer filling up and deadlocking the child), and return
+    Launch `capture-release` in the background, run a workload subprocess
+    under it with stdout streamed to ``log_path`` (avoids the OS pipe buffer
+    filling up and deadlocking the child), and return
     (workload_returncode, workload_stdout_text).
+
+    Pass ``subprocess_argv`` to launch an arbitrary command instead of the
+    default ``python3 <workload_script>``.
     """
     assert CAPTURE_TOOL.exists(), f"Tracy capture tool not found: {CAPTURE_TOOL}"
 
@@ -128,10 +138,16 @@ def _run_under_tracy(
     if extra_env:
         env.update(extra_env)
 
+    if subprocess_argv is not None:
+        argv = subprocess_argv
+    else:
+        assert workload_script is not None, "workload_script required when subprocess_argv not given"
+        argv = ["python3", str(workload_script)]
+
     try:
         with open(log_path, "w") as log_f:
             proc = subprocess.run(
-                ["python3", str(workload_script)],
+                argv,
                 env=env,
                 cwd=str(TT_METAL_HOME),
                 timeout=timeout_s,
@@ -804,3 +820,104 @@ def test_sync_accuracy(tmp_path):
         f"\nAll {len(pairs)} sync pairs within ±{SYNC_DIFF_THRESHOLD_NS}ns "
         f"(min={min(diffs):+.0f}ns, max={max(diffs):+.0f}ns, mean={sum(diffs)/len(diffs):+.0f}ns)."
     )
+
+
+# ---------------------------------------------------------------------------
+# 7. Dispatch-zone latency gate (Galaxy / TG mini-stress Llama-70B)
+# ---------------------------------------------------------------------------
+
+PERF_PUSH_ZONE = "push_entry_to_host"
+PERF_PUSH_P50_MAX_NS = 800
+PERF_PUSH_P99_MAX_NS = 5_000
+PERF_PUSH_MIN_COUNT = 10_000
+
+PERF_SIGNAL_ZONE = "signal_realtime_profiler_and_switch"
+PERF_SIGNAL_P50_MAX_NS = 250
+PERF_SIGNAL_P99_MAX_NS = 1_000
+PERF_SIGNAL_MIN_COUNT = 10_000
+
+
+def _parse_zone_durations(csv_path: Path, zone_name: str) -> list[int]:
+    durations = []
+    with open(csv_path, "r", newline="") as f:
+        reader = csv.DictReader(f, delimiter=";")
+        for row in reader:
+            if row.get("name") == zone_name:
+                try:
+                    durations.append(int(row["exec_time_ns"]))
+                except (KeyError, ValueError):
+                    continue
+    return durations
+
+
+def _zone_stats(durations: list[int]) -> dict:
+    if not durations:
+        return {"count": 0, "p50": 0, "p99": 0}
+    s = sorted(durations)
+    n = len(s)
+    return {
+        "count": n,
+        "p50": s[n // 2],
+        "p99": s[min(n - 1, int(n * 0.99))],
+    }
+
+
+@pytest.mark.timeout(2400)
+def test_realtime_profiler_perf_llama_tg(tmp_path):
+    """
+    Galaxy-only perf gate: run Llama-70B mini-stress under Tracy capture and
+    assert per-zone p50/p99 budgets for push_entry_to_host and
+    signal_realtime_profiler_and_switch.
+    """
+    assert CAPTURE_TOOL.exists(), f"Tracy capture tool not found: {CAPTURE_TOOL}"
+    assert CSVEXPORT_TOOL.exists(), f"Tracy csvexport tool not found: {CSVEXPORT_TOOL}"
+
+    tracy_file = tmp_path / "trace.tracy"
+    zones_csv = tmp_path / "zones.csv"
+    log_path = tmp_path / "workload.log"
+
+    llama_argv = [
+        "pytest",
+        "models/demos/llama3_70b_galaxy/demo/demo_decode.py",
+        "-k",
+        "mini-stress-test",
+        "--timeout=1800",
+    ]
+    extra_env = {
+        "LLAMA_DIR": os.environ.get("LLAMA_DIR", "/mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct/"),
+        "FAKE_DEVICE": os.environ.get("FAKE_DEVICE", "TG"),
+    }
+
+    rc, _stdout = _run_under_tracy(
+        workload_script=None,
+        out_tracy=tracy_file,
+        log_path=log_path,
+        extra_env=extra_env,
+        timeout_s=2100,
+        subprocess_argv=llama_argv,
+    )
+    assert rc == 0, f"Llama mini-stress workload failed (rc={rc}); see {log_path}"
+
+    _export_zones_unwrapped(tracy_file, zones_csv)
+    _save_artifacts(
+        "test_realtime_profiler_perf_llama_tg",
+        **{"trace.tracy": tracy_file, "zones.csv": zones_csv, "workload_output.log": log_path},
+    )
+
+    failures = []
+    for zone, p50_max, p99_max, min_count in [
+        (PERF_PUSH_ZONE, PERF_PUSH_P50_MAX_NS, PERF_PUSH_P99_MAX_NS, PERF_PUSH_MIN_COUNT),
+        (PERF_SIGNAL_ZONE, PERF_SIGNAL_P50_MAX_NS, PERF_SIGNAL_P99_MAX_NS, PERF_SIGNAL_MIN_COUNT),
+    ]:
+        durs = _parse_zone_durations(zones_csv, zone)
+        st = _zone_stats(durs)
+        print(f"[{zone}] count={st['count']} p50={st['p50']}ns p99={st['p99']}ns")
+        if st["count"] < min_count:
+            failures.append(f"{zone}: too few samples ({st['count']} < {min_count})")
+            continue
+        if st["p50"] > p50_max:
+            failures.append(f"{zone}: p50 {st['p50']}ns > budget {p50_max}ns")
+        if st["p99"] > p99_max:
+            failures.append(f"{zone}: p99 {st['p99']}ns > budget {p99_max}ns")
+
+    assert not failures, "Dispatch-zone perf gate failed:\n  " + "\n  ".join(failures)

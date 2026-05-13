@@ -15,6 +15,10 @@ run_profiling_test() {
     # under the name test_cross_reference_tg; the old standalone file
     # test_profiler_cross_reference_TG.py no longer exists.
     TT_METAL_DEVICE_PROFILER=1 pytest tests/ttnn/tracy/test_realtime_profiler.py::test_cross_reference_tg --timeout 2400
+
+    # Dispatch-zone latency gate: p50/p99 budgets for push_entry_to_host
+    # and signal_realtime_profiler_and_switch under a Llama-70B workload.
+    TT_METAL_DEVICE_PROFILER=1 pytest tests/ttnn/tracy/test_realtime_profiler.py::test_realtime_profiler_perf_llama_tg --timeout 2400
 }
 
 main() {
