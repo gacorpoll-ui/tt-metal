@@ -21,6 +21,7 @@
 #include <utility>
 
 #include <tt_stl/assert.hpp>
+#include <tt_stl/cleanup.hpp>
 #include "buffer.hpp"
 #include "buffer_types.hpp"
 #include "device.hpp"
@@ -264,10 +265,21 @@ void FDMeshCommandQueue::clear_expected_num_workers_completed() {
         lock, [this] { return num_outstanding_reads_.load() == 0 || thread_exception_state_.load(); });
 }
 
+void FDMeshCommandQueue::mark_in_use() {
+    if (!in_use_) {
+        // Transitioning from idle (post-quiesce) to active: clear the quiesced flag so
+        // that EventSynchronize() for new events properly waits on hardware completion.
+        for (auto* device : mesh_device_->get_devices()) {
+            device->sysmem_manager().set_quiesced(id_, false);
+        }
+    }
+    in_use_ = true;
+}
+
 void FDMeshCommandQueue::enqueue_mesh_workload(MeshWorkload& mesh_workload, bool blocking) {
     ZoneScopedN("EnqueueProgram");
     auto lock = lock_api_function_();
-    in_use_ = true;
+    mark_in_use();
     uint64_t command_hash = *mesh_device_->get_active_sub_device_manager_id();
     std::unordered_set<SubDeviceId> sub_device_ids = mesh_workload.impl().determine_sub_device_ids(mesh_device_);
     TT_FATAL(sub_device_ids.size() == 1, "Programs must be executed on a single sub-device");
@@ -452,7 +464,7 @@ void FDMeshCommandQueue::enqueue_write_shard_to_core(
         return;
     }
 
-    in_use_ = true;
+    mark_in_use();
     TT_FATAL(!trace_id_.has_value(), "Writes are not supported during trace capture.");
 
     IDevice* device = mesh_device_->impl().get_device(address.device_coord);
@@ -493,7 +505,7 @@ void FDMeshCommandQueue::enqueue_read_shard_from_core(
         return;
     }
 
-    in_use_ = true;
+    mark_in_use();
     TT_FATAL(!trace_id_.has_value(), "Reads are not supported during trace capture.");
 
     IDevice* device = mesh_device_->impl().get_device(address.device_coord);
@@ -586,7 +598,7 @@ bool FDMeshCommandQueue::write_shard_to_device(
         return false;
     }
 
-    in_use_ = true;
+    mark_in_use();
     TT_FATAL(!trace_id_.has_value(), "Writes are not supported during trace capture. trace id: {}", trace_id_.value());
 
     auto* device_buffer = buffer.get_device_buffer(device_coord);
@@ -620,7 +632,7 @@ void FDMeshCommandQueue::read_shard_from_device(
         return;
     }
 
-    in_use_ = true;
+    mark_in_use();
     TT_FATAL(!trace_id_.has_value(), "Reads are not supported during trace capture.");
 
     auto* device_buffer = buffer.get_device_buffer(device_coord);
@@ -713,7 +725,7 @@ MeshEvent FDMeshCommandQueue::enqueue_record_event_helper(
         return MeshEvent(0, mesh_device_, id_, device_range.value_or(MeshCoordinateRange(mesh_device_->shape())));
     }
 
-    in_use_ = true;
+    mark_in_use();
     TT_FATAL(!trace_id_.has_value(), "Event Synchronization is not supported during trace capture.");
 
     auto& sysmem_manager = this->reference_sysmem_manager();
@@ -780,7 +792,7 @@ MeshEvent FDMeshCommandQueue::enqueue_record_event_to_host(
 
 void FDMeshCommandQueue::enqueue_wait_for_event(const MeshEvent& sync_event) {
     auto lock = lock_api_function_();
-    in_use_ = true;
+    mark_in_use();
     TT_FATAL(!trace_id_.has_value(), "Event Synchronization is not supported during trace capture.");
     for_each_local(mesh_device_, sync_event.device_range(), [&](const auto& coord) {
         event_dispatch::issue_wait_for_event_commands(
@@ -945,7 +957,7 @@ void FDMeshCommandQueue::reset_worker_state(
     }
     cq_shared_state_->sub_device_cq_owner.clear();
     cq_shared_state_->sub_device_cq_owner.resize(num_sub_devices);
-    in_use_ = true;
+    mark_in_use();
     for (auto* device : mesh_device_->get_devices()) {
         program_dispatch::reset_worker_dispatch_state_on_device(
             mesh_device_,
@@ -1019,7 +1031,7 @@ void FDMeshCommandQueue::write_go_signal_to_unused_sub_grids(
 
 void FDMeshCommandQueue::enqueue_trace(const MeshTraceId& trace_id, bool blocking) {
     auto lock = lock_api_function_();
-    in_use_ = true;
+    mark_in_use();
     auto trace_inst = mesh_device_->get_mesh_trace(trace_id);
     auto descriptor = trace_inst->desc;
     auto buffer = trace_inst->mesh_buffer;
@@ -1490,9 +1502,20 @@ void FDMeshCommandQueue::finish_and_reset_in_use() {
             device->sysmem_manager().set_current_and_last_completed_event(
                 id_, is_reference_cq ? UINT32_MAX : 0, UINT32_MAX);
         }
-        finish_nolock({});
 
-        in_use_ = false;
+        // Exception-safety: even if finish_nolock() throws (e.g. a fabric/dispatch
+        // timeout propagated as TT_THROW), we MUST publish quiesced=true and clear
+        // in_use_ before unwinding.  Otherwise subsequent mark_in_use() is a no-op
+        // and EventSynchronize() never short-circuits, leaving the CQ permanently
+        // "busy".  A scope-exit guard flips state on every path.
+        auto mark_quiesced_guard = ttsl::make_cleanup([this]() noexcept {
+            for (auto* device : mesh_device_->get_devices()) {
+                device->sysmem_manager().set_quiesced(id_, true);
+            }
+            in_use_ = false;
+        });
+
+        finish_nolock({});
     }
 }
 
