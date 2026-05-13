@@ -6,6 +6,9 @@
 runtime
 *.log
 *.csv
+
+# UniAD pretrained weights (951MB — auto-downloaded via weights_download.sh)
+models/experimental/uniad/*.pth
 *.xlsx
 *.code-workspace
 /tt-perf*

@@ -16,6 +16,7 @@ import copy
 
 from models.experimental.uniad.tt.model_preprocessing_uniad import create_uniad_model_parameters_uniad
 from models.experimental.uniad.common import load_torch_model
+from tests.ttnn.utils_for_testing import assert_with_pcc
 
 
 @pytest.mark.parametrize("device_params", [{"l1_small_size": 4 * 8192}], indirect=True)
@@ -557,5 +558,33 @@ def test_uniad(device, reset_seeds, model_location_generator):
         command=ttnn_command,
     )
 
-    logger.info(f"reference_output: {reference_output}")
-    logger.info(f"ttnn_output: {ttnn_output}")
+    logger.info(f"reference_output keys: {list(reference_output[0].keys())}")
+    logger.info(f"ttnn_output keys:      {list(ttnn_output[0].keys())}")
+
+    # ----- PCC quality gate (T4) ------------------------------------------
+    # Promote the "smoke test" e2e to a proper PCC test against the PyTorch
+    # reference. Compares planning's sdc_traj — the final downstream output
+    # of the whole pipeline; if it matches, the upstream perception +
+    # decoder + motion all matched too.
+    def _to_torch(x):
+        if isinstance(x, ttnn.Tensor):
+            return ttnn.to_torch(x)
+        return torch.as_tensor(x) if not isinstance(x, torch.Tensor) else x
+
+    failures = []
+
+    try:
+        ref_traj = reference_output[0]["planning"]["result_planning"]["sdc_traj"]
+        ttnn_traj = ttnn_output[0]["planning"]["result_planning"]["sdc_traj"]
+        ref_t = _to_torch(ref_traj).to(torch.float32)
+        ttnn_t = _to_torch(ttnn_traj).to(torch.float32)
+        pcc, msg = assert_with_pcc(ref_t, ttnn_t, pcc=0.99)
+        logger.info(f"PCC sdc_traj: {msg}")
+    except (KeyError, AssertionError, TypeError) as exc:
+        failures.append(("planning.result_planning.sdc_traj", exc))
+
+    if failures:
+        for key, exc in failures:
+            logger.error(f"PCC FAILED on {key}: {type(exc).__name__}: {exc}")
+        raise AssertionError(f"E2E PCC check failed on {len(failures)} key(s): " + ", ".join(k for k, _ in failures))
+    logger.info("E2E PCC quality gate: all checked keys PASS")
