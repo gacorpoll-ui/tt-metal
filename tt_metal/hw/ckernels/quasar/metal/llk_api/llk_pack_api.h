@@ -22,6 +22,13 @@
  * LLK PACK
  *************************************************************************/
 
+inline std::uint32_t g_llk_pack_output_id = 0;
+
+inline bool llk_pack_is_unpack_to_dest_32b(const std::uint32_t output_id) {
+    const DataFormat reg_dst_format = static_cast<DataFormat>(pack_src_format[output_id]);
+    return reg_dst_format == DataFormat::Float32 || reg_dst_format == DataFormat::Int32;
+}
+
 /**
  *
  * @brief Gets the output L1 tile index where the tile will be packed out to, determined by out_of_order_output
@@ -68,13 +75,13 @@ inline std::uint32_t get_output_tile_index(std::uint8_t output_id, std::uint32_t
  */
 inline void llk_pack_init(const std::uint32_t pack_output) {
     const std::uint8_t output_id = static_cast<std::uint8_t>(get_output_id(pack_output));
+    g_llk_pack_output_id = output_id;
 
     _llk_pack_init_(output_id);
 
     // 32-bit unpack-to-dest path: PACR addresses dest via SEC{pack::TRISC_ID}_Offset.
     // Initialize the section base to bank 0 for SyncHalf so the first PACR reads bank 0.
-    const std::uint32_t dst_format = pack_dst_format[output_id];
-    if (dst_format == (std::uint32_t)DataFormat::Float32 || dst_format == (std::uint32_t)DataFormat::Int32) {
+    if (llk_pack_is_unpack_to_dest_32b(output_id)) {
         if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {
             _reset_dest_register_offset_();
             _set_dest_section_base_<ckernel::pack::TRISC_ID>(_get_dest_buffer_base_());
@@ -137,6 +144,7 @@ inline void llk_pack_block(std::uint32_t start_tile_index, std::uint32_t pack_ou
  */
 inline void llk_pack_hw_configure(const std::uint32_t pack_output) {
     const std::uint32_t output_id = get_output_id(pack_output);
+    g_llk_pack_output_id = output_id;
 
     // Program buffer descriptors for all 32 dataflow buffers, i is the logical dfb id
     for (std::uint32_t i = 0; i < NUM_CIRCULAR_BUFFERS; ++i) {
@@ -197,9 +205,7 @@ inline void llk_packer_wait_for_math_done() { _llk_packer_wait_for_math_done_();
  */
 template <bool is_fp32_dest_acc_en>
 inline void llk_pack_dest_section_done() {
-    const std::uint32_t dst_format = pack_dst_format[0];
-    if (dst_format == (std::uint32_t)DataFormat::Float32 ||
-        dst_format == (std::uint32_t)DataFormat::Int32) {
+    if (llk_pack_is_unpack_to_dest_32b(g_llk_pack_output_id)) {
         _llk_sync_get_<p_stall::PACK0>(semaphore::MATH_PACK);
         if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {
             _llk_sync_advance_dest_section_<ckernel::pack::TRISC_ID, true /*EN_32BIT_DEST*/, p_stall::PACK0>();
