@@ -10,6 +10,7 @@
 #include "ttnn/operations/conv/conv2d/device/conv2d_device_operation_types.hpp"
 
 #include "tt-metalium/circular_buffer_config.hpp"
+#include <tt-metalium/program_descriptors.hpp>
 #include "ttnn/operations/core/compute_kernel/compute_kernel_config.hpp"
 #include "ttnn/tensor/tensor.hpp"
 #include "ttnn/types.hpp"
@@ -88,6 +89,16 @@ void allocate_cbs(
     std::vector<CBInfo>& cb_info,
     tt::tt_metal::Program& program,
     const std::variant<CoreCoord, CoreRange, CoreRangeSet>& all_cores,
+    const Tensor& input_tensor,
+    const Tensor& output_tensor,
+    const Tensor& l1_indices_tensor);
+
+// Same allocation policy as allocate_cbs(), but appends CBDescriptor entries to `desc` (used by
+// ProgramDescriptor-based conv2d factories). `all_cores` must be the logical core grid for the CBs.
+void allocate_cbs_to_program_descriptor(
+    std::vector<CBInfo>& cb_info,
+    tt::tt_metal::ProgramDescriptor& desc,
+    const CoreRangeSet& all_cores,
     const Tensor& input_tensor,
     const Tensor& output_tensor,
     const Tensor& l1_indices_tensor);

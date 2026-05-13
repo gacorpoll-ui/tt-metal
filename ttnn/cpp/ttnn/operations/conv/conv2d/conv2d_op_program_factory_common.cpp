@@ -389,6 +389,66 @@ void allocate_cbs(
     }
 }
 
+void allocate_cbs_to_program_descriptor(
+    std::vector<CBInfo>& cb_info,
+    tt::tt_metal::ProgramDescriptor& desc,
+    const CoreRangeSet& all_cores,
+    const Tensor& input_tensor,
+    const Tensor& output_tensor,
+    const Tensor& l1_indices_tensor) {
+    uint32_t cb_index = 0;
+    for (auto& cb : cb_info) {
+        if (cb.num_pages == 0) {
+            // Skip circular buffers with zero pages
+            continue;
+        }
+
+        Buffer* buffer = nullptr;
+        if (cb.is_globally_allocated) {
+            if (cb.name == Conv2dCb::ACT_SHARDED) {
+                buffer = input_tensor.buffer();
+            } else if (cb.name == Conv2dCb::OUT || cb.name == Conv2dCb::MATMUL_PARTIALS) {
+                buffer = output_tensor.buffer();
+            } else if (cb.name == Conv2dCb::READER_INDICES) {
+                buffer = l1_indices_tensor.buffer();
+            } else {
+                TT_THROW(
+                    "Unexpected circular buffer name {}. Expected one of: SHARDED_ACT_CB, OUT0_CB, READER_INDICES_CB",
+                    enchantum::to_string(cb.name));
+            }
+        }
+
+        desc.cbs.push_back(tt::tt_metal::CBDescriptor{
+            .total_size = cb.num_pages * cb.page_size,
+            .core_ranges = all_cores,
+            .format_descriptors = {{tt::tt_metal::CBFormatDescriptor{
+                .buffer_index = static_cast<uint8_t>(cb_index),
+                .data_format = cb.data_format,
+                .page_size = cb.page_size,
+            }}},
+            .buffer = buffer,
+        });
+        cb.index = cb_index;
+        cb_index++;
+        log_trace(
+            tt::LogOp,
+            "Descriptor circular buffer {} with index {}, num pages {}, page size {}, globally allocated: {}",
+            enchantum::to_string(cb.name),
+            cb.index,
+            cb.num_pages,
+            cb.page_size,
+            cb.is_globally_allocated);
+    }
+
+    for (auto& cb : cb_info) {
+        if (cb.overlapped_by_cb.has_value()) {
+            // If this CB is overlapped by another CB, set the index to the overlapped CB's index
+            const CBInfo& overlapped_cb = get_cb_info_by_name(cb_info, cb.overlapped_by_cb.value());
+            cb.index = overlapped_cb.index;
+        }
+    }
+}
+
 const CBInfo& get_cb_info_by_name(const std::vector<CBInfo>& cb_info, Conv2dCb cb_name) {
     auto it = std::find_if(cb_info.begin(), cb_info.end(), [cb_name](const CBInfo& cb) { return cb.name == cb_name; });
     return *it;
