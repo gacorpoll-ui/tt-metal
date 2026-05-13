@@ -22,16 +22,18 @@ on:
         required: false
         type: string
         default: "in-service"
+      sku-tag:
+        required: false
+        type: string
+        default: ""
+        description: "Optional extra runner label (e.g. 'pipeline-perf' for runners that host /mnt/MLPerf model weights)."
 
 jobs:
   profiler-tests:
     strategy:
       fail-fast: false
     name: "profiler tests"
-    runs-on:
-      - arch-wormhole_b0
-      - ${{ inputs.topology }}
-      - ${{ inputs.extra-tag }}
+    runs-on: ${{ inputs.sku-tag != '' && fromJSON(format('["arch-wormhole_b0","{0}","{1}","{2}"]', inputs.sku-tag, inputs.topology, inputs.extra-tag)) || fromJSON(format('["arch-wormhole_b0","{0}","{1}"]', inputs.topology, inputs.extra-tag)) }}
     container:
       image: ${{ inputs.docker-image }}
       env:
@@ -67,7 +69,7 @@ jobs:
           build-artifact-name: ${{ inputs.build-artifact-name }}
           wheel-artifact-name: ${{ inputs.wheel-artifact-name }}
       - name: Run profiler regression tests
-        timeout-minutes: 35
+        timeout-minutes: 60
         run: |
           ${{ inputs.test-script }}
       - uses: tenstorrent/tt-metal/.github/actions/upload-artifact-with-job-uuid@main

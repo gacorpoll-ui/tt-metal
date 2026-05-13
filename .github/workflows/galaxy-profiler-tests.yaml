@@ -50,4 +50,5 @@ jobs:
       build-artifact-name: ${{ needs.build-artifact-profiler.outputs.build-artifact-name }}
       wheel-artifact-name: ${{ needs.build-artifact-profiler.outputs.wheel-artifact-name }}
       topology: topology-6u
+      sku-tag: pipeline-perf  # required for /mnt/MLPerf (Llama weights) on the host
       test-script: ./tests/scripts/wh_6u/run_wh_6u_profiler_tests.sh

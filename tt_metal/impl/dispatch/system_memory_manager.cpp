@@ -182,7 +182,12 @@ SystemMemoryManager::SystemMemoryManager(ContextId context_id, ChipId device_id,
     this->channel_offset = DispatchSettings::MAX_HUGEPAGE_SIZE * get_umd_channel(channel) +
                            (channel >> 2) * DispatchSettings::MAX_DEV_CHANNEL_SIZE;
 
-    static constexpr uint32_t AUX_PAGES_PER_CQ = 2;
+    // Auxiliary hugepage pool, carved from each CQ's channel space. Consumed by
+    // SystemMemoryManager::allocate_region — today's largest user is the RT-profiler
+    // D2H socket FIFO (RT_PROFILER_RING_CAPACITY * RT_PROFILER_ENTRY_SIZE = 256 KB).
+    // Sized to fit the FIFO with headroom even on single-CQ devices
+    // (free_region_size_ = num_hw_cqs * AUX_PAGES_PER_CQ * 4 KB).
+    static constexpr uint32_t AUX_PAGES_PER_CQ = 128;  // 512 KB per CQ
     uint32_t per_cq_reduction = AUX_PAGES_PER_CQ * DispatchSettings::TRANSFER_PAGE_SIZE;
     this->cq_size -= per_cq_reduction;
 
