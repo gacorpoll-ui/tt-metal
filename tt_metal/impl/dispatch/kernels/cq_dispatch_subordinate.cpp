@@ -141,6 +141,7 @@ void dispatch_s_noc_inline_dw_write(uint64_t addr, uint32_t val, uint8_t noc_id,
 
 FORCE_INLINE
 void signal_realtime_profiler_and_switch(volatile tt_l1_ptr realtime_profiler_msg_t* msg) {
+    DeviceZoneScopedN("signal_realtime_profiler_and_switch");
     RealtimeProfilerState current_state = static_cast<RealtimeProfilerState>(msg->realtime_profiler_state);
     bool used_buffer_a = (current_state == REALTIME_PROFILER_STATE_PUSH_B);
 

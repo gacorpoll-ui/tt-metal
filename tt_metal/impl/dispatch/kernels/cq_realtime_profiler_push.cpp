@@ -45,7 +45,7 @@ constexpr uint32_t pcie_xy_enc_noc1 = static_cast<uint32_t>(pcie_noc_xy_full >> 
 #endif
 
 // Push one ring buffer entry to the host via PCIe D2H socket
-__attribute__((noinline)) void push_entry_to_host(
+FORCE_INLINE void push_entry_to_host(
     SocketSenderInterface& sock,
     uint32_t slot_addr,
     uint32_t pcie_xy_enc,
@@ -53,6 +53,7 @@ __attribute__((noinline)) void push_entry_to_host(
     uint32_t& host_write_ptr,
     uint32_t host_fifo_start,
     uint32_t fifo_page_aligned_size) {
+    DeviceZoneScopedN("push_entry_to_host");
     noc_write_init_state<write_cmd_buf>(noc_index, NOC_UNICAST_WRITE_VC);
     RT_PROF_NCRISC_DBG_INC(ring_buffer, socket_reserve_pages_enter_count);
     socket_reserve_pages(sock, 1);
@@ -70,7 +71,9 @@ __attribute__((noinline)) void push_entry_to_host(
 
     socket_push_pages(sock, 1);
     socket_notify_receiver(sock);
-
+    // Switch to noc_async_writes_flushed() to reclaim ~200ns/push on avg (a few microseconds in rare cases) when this
+    // core gets repurposed for additional work and the saved cycles matter. The noc_async_writes_flushed() barrier is
+    // sufficient for correctness.
     noc_async_write_barrier();
     RT_PROF_NCRISC_DBG_INC(ring_buffer, push_write_barrier_exit_count);
 }

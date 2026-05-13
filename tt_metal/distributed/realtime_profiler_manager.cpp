@@ -74,9 +74,11 @@ constexpr uint32_t REALTIME_PROFILER_SYNC_MARKER_ID = 0xFFFFFFFF;
 // Real-time profiler runtime constants. On-device L1 layout sizes are reused from
 // realtime_profiler_ring_buffer.hpp so host and device share a single source of truth.
 struct RealtimeProfilerRuntimeSizes {
-    static constexpr uint32_t fifo_size = 4096;                    // 4KB pinned-host FIFO for D2H socket
     static constexpr uint32_t page_size = RT_PROFILER_ENTRY_SIZE;  // host page size == ring entry size
+    static constexpr uint32_t fifo_pages = RT_PROFILER_RING_CAPACITY;
+    static constexpr uint32_t fifo_size = fifo_pages * page_size;
     static constexpr uint32_t core_l1_size = sizeof(RealtimeProfilerCoreL1);
+    static constexpr auto receiver_idle_sleep = std::chrono::microseconds(100);
 };
 
 // Compute the RT-profiler tensix L1 carve-out addresses for a given RealtimeProfilerCoreL1
@@ -544,6 +546,10 @@ RealtimeProfilerManager::RealtimeProfilerManager(const std::shared_ptr<MeshDevic
             ncrisc_config.noc = NOC::RISCV_1_default;
             ncrisc_config.defines["RING_BUFFER_ADDR"] = std::to_string(ring_buffer_addr);
             ncrisc_config.defines["REALTIME_PROFILER_MSG_ADDR"] = std::to_string(realtime_profiler_base_addr);
+            // Long-running kernel (while-true loop, never returns until terminate). Tag as
+            // dispatch so ~profileScope flushes the L1 profiler buffer mid-execution; otherwise
+            // DeviceZoneScopedN zones get silently dropped once the buffer fills.
+            ncrisc_config.defines["DISPATCH_KERNEL"] = "1";
             if (need_pcie_noc_defines) {
                 ncrisc_config.defines["RT_PROFILER_PCIE_NOC_X"] = std::to_string(pcie_noc_x);
                 ncrisc_config.defines["RT_PROFILER_PCIE_NOC_Y"] = std::to_string(pcie_noc_y);
@@ -752,50 +758,52 @@ RealtimeProfilerManager::RealtimeProfilerManager(const std::shared_ptr<MeshDevic
 
         log_debug(tt::LogMetal, "[Real-time profiler] Receiver thread started for {} devices", devices_.size());
 
-        // Process one page from a device socket. Returns true if a page was consumed.
         std::vector<uint32_t> page_buf(RealtimeProfilerRuntimeSizes::page_size / sizeof(uint32_t));
-        auto process_one_page = [&](DeviceState& dev_state) -> bool {
-            uint32_t available = dev_state.socket->pages_available();
+        auto drain_pages = [&](DeviceState& dev_state) -> bool {
+            const uint32_t available = dev_state.socket->pages_available();
             if (available == 0) {
                 return false;
             }
 
-            ZoneScopedN("ProcessPage");
-            dev_state.socket->read(page_buf.data(), 1);
-            uint32_t* read_ptr = page_buf.data();
+            ZoneScopedN("DrainPages");
+            for (uint32_t p = 0; p < available; p++) {
+                const bool is_last = (p + 1 == available);
+                dev_state.socket->read(page_buf.data(), 1, is_last);
+                uint32_t* read_ptr = page_buf.data();
 
-            uint32_t marker = read_ptr[3];
-            if (!dev_state.sync_response_received.load() && marker == REALTIME_PROFILER_SYNC_MARKER_ID) {
-                uint64_t device_time = (static_cast<uint64_t>(read_ptr[0]) << 32) | read_ptr[1];
-                tracy_handler_->CalibrateDevice(
-                    dev_state.chip_id, dev_state.sync_host_time_before, device_time, dev_state.sync_frequency);
-                tracy_handler_->PushSyncCheckMarker(dev_state.chip_id, device_time, dev_state.sync_frequency);
+                uint32_t marker = read_ptr[3];
+                if (!dev_state.sync_response_received.load() && marker == REALTIME_PROFILER_SYNC_MARKER_ID) {
+                    uint64_t device_time = (static_cast<uint64_t>(read_ptr[0]) << 32) | read_ptr[1];
+                    tracy_handler_->CalibrateDevice(
+                        dev_state.chip_id, dev_state.sync_host_time_before, device_time, dev_state.sync_frequency);
+                    tracy_handler_->PushSyncCheckMarker(dev_state.chip_id, device_time, dev_state.sync_frequency);
+                    pages_received++;
+                    dev_state.sync_response_received.store(true);
+                    continue;
+                }
+
+                // kernel_start (words 0-3), kernel_end (words 4-7); each
+                // realtime_profiler_timestamp_t: time_hi, time_lo, id, header.
+                uint64_t start_time = (static_cast<uint64_t>(read_ptr[0]) << 32) | read_ptr[1];
+                uint32_t start_id = read_ptr[2];
+                uint64_t end_time = (static_cast<uint64_t>(read_ptr[4]) << 32) | read_ptr[5];
+
+                // Skip records with id==0 (non-GO dispatch commands like SET_NUM_WORKER_SEMS):
+                // they have no valid program and may carry stale end timestamps.
+                if (start_id != 0) {
+                    ZoneScopedN("InvokeCallbacks");
+                    tt::ProgramRealtimeRecord record;
+                    record.program_id = start_id;
+                    record.start_timestamp = start_time;
+                    record.end_timestamp = end_time;
+                    record.frequency = dev_state.sync_frequency;
+                    record.chip_id = dev_state.chip_id;
+                    record.kernel_sources = tt::GetKernelSourcesVecForRuntimeId(start_id);
+                    tt::InvokeProgramRealtimeProfilerCallbacks(record);
+                }
+
                 pages_received++;
-                dev_state.sync_response_received.store(true);
-                return true;
             }
-
-            // kernel_start (words 0-3), kernel_end (words 4-7); each
-            // realtime_profiler_timestamp_t: time_hi, time_lo, id, header.
-            uint64_t start_time = (static_cast<uint64_t>(read_ptr[0]) << 32) | read_ptr[1];
-            uint32_t start_id = read_ptr[2];
-            uint64_t end_time = (static_cast<uint64_t>(read_ptr[4]) << 32) | read_ptr[5];
-
-            // Skip records with id==0 (non-GO dispatch commands like SET_NUM_WORKER_SEMS):
-            // they have no valid program and may carry stale end timestamps.
-            if (start_id != 0) {
-                ZoneScopedN("InvokeCallbacks");
-                tt::ProgramRealtimeRecord record;
-                record.program_id = start_id;
-                record.start_timestamp = start_time;
-                record.end_timestamp = end_time;
-                record.frequency = dev_state.sync_frequency;
-                record.chip_id = dev_state.chip_id;
-                record.kernel_sources = tt::GetKernelSourcesVecForRuntimeId(start_id);
-                tt::InvokeProgramRealtimeProfilerCallbacks(record);
-            }
-
-            pages_received++;
             return true;
         };
 
@@ -814,7 +822,7 @@ RealtimeProfilerManager::RealtimeProfilerManager(const std::shared_ptr<MeshDevic
 
             for (auto& dev_state : devices_) {
                 try {
-                    if (process_one_page(dev_state)) {
+                    if (drain_pages(dev_state)) {
                         any_data = true;
                     }
                 } catch (const std::exception& e) {
@@ -827,8 +835,8 @@ RealtimeProfilerManager::RealtimeProfilerManager(const std::shared_ptr<MeshDevic
             }
 
             if (!any_data) {
-                ZoneScopedN("Idle");
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                ZoneScopedN("Idle profiler receiver");
+                std::this_thread::sleep_for(RealtimeProfilerRuntimeSizes::receiver_idle_sleep);
             }
         }
 
@@ -836,15 +844,15 @@ RealtimeProfilerManager::RealtimeProfilerManager(const std::shared_ptr<MeshDevic
         {
             ZoneScopedN("DrainShutdown");
             constexpr uint32_t kDrainQuietRounds = 10;
-            uint64_t drain_pages = 0;
+            uint64_t drain_pages_count = 0;
             uint32_t quiet_rounds = 0;
             while (quiet_rounds < kDrainQuietRounds) {
                 bool any_data = false;
                 for (auto& dev_state : devices_) {
                     try {
-                        if (process_one_page(dev_state)) {
+                        if (drain_pages(dev_state)) {
                             any_data = true;
-                            drain_pages++;
+                            drain_pages_count++;
                         }
                     } catch (const std::exception& e) {
                         log_warning(
@@ -866,7 +874,7 @@ RealtimeProfilerManager::RealtimeProfilerManager(const std::shared_ptr<MeshDevic
                 tt::LogMetal,
                 "[Real-time profiler] Receiver thread stopped after {} pages ({} drained during shutdown)",
                 pages_received,
-                drain_pages);
+                drain_pages_count);
         }
     });
 }
