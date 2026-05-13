@@ -295,12 +295,24 @@ PermuteDeviceOperation::MultiCoreBlockedGeneric::create(
     bool fp32_dest_acc_en = cb_data_format_output == tt::DataFormat::Float32 ||
                             cb_data_format_output == tt::DataFormat::Int32 ||
                             cb_data_format_output == tt::DataFormat::UInt32;
+    // For FP32 inputs, set UnpackToDestFp32 on both the ROW_MAJOR input CB (src0_cb_index = c_0)
+    // and the tilized intermediate CB (src2_cb_index = c_1). The tilize step unpacks c_0 → DEST
+    // and the transpose step unpacks c_1 → DEST; without this flag on both, FP32 values are
+    // truncated to TF32 precision in DEST (~0.001 relative error), matching what
+    // transpose_wh_program_factory does for its c_0 and c_24 in the row_major path.
+    std::vector<tt::tt_metal::UnpackToDestMode> unpack_to_dest_mode(
+        NUM_CIRCULAR_BUFFERS, tt::tt_metal::UnpackToDestMode::Default);
+    if (cb_data_format == tt::DataFormat::Float32) {
+        unpack_to_dest_mode[src0_cb_index] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+        unpack_to_dest_mode[src2_cb_index] = tt::tt_metal::UnpackToDestMode::UnpackToDestFp32;
+    }
     auto compute_kernel_id = tt::tt_metal::CreateKernel(
         program,
         "ttnn/cpp/ttnn/operations/data_movement/permute/device/kernels/compute/transpose_xw_rm_single_tile_size.cpp",
         all_cores,
         tt::tt_metal::ComputeConfig{
             .fp32_dest_acc_en = fp32_dest_acc_en,
+            .unpack_to_dest_mode = unpack_to_dest_mode,
             .compile_args = compute_kernel_args,
             .named_compile_args = compute_named_compile_time_args,
         });
