@@ -896,13 +896,21 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
         timeout_s=2100,
         subprocess_argv=llama_argv,
     )
-    assert rc == 0, f"Llama mini-stress workload failed (rc={rc}); see {log_path}"
 
-    _export_zones_unwrapped(tracy_file, zones_csv)
-    _save_artifacts(
+    if tracy_file.exists():
+        _export_zones_unwrapped(tracy_file, zones_csv)
+    artifact_dir = _save_artifacts(
         "test_realtime_profiler_perf_llama_tg",
         **{"trace.tracy": tracy_file, "zones.csv": zones_csv, "workload_output.log": log_path},
     )
+
+    if rc != 0:
+        tail = log_path.read_text()[-8000:] if log_path.exists() else "<no log captured>"
+        pytest.fail(
+            f"Llama mini-stress workload failed (rc={rc}); "
+            f"artifacts at {artifact_dir}\n"
+            f"--- workload.log (last 8KB) ---\n{tail}"
+        )
 
     failures = []
     for zone, p50_max, p99_max, min_count in [
