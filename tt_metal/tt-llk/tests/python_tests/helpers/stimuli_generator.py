@@ -214,6 +214,7 @@ def _generate_mxfp4_face(size, const_face, const_value, sfpu, negative_values=Fa
 
     return _exclude_mx_subnormals(face_data, DataFormat.MxFp4)
 
+
 def generate_identity_face_tensor(
     stimuli_format: DataFormat, rows: int, cols: int
 ) -> torch.Tensor:
