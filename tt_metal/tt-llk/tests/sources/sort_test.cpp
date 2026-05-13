@@ -73,7 +73,14 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const std::uint32_t unpack_dst_data_types[NUM_STAGES] = {formats.unpack_A_dst, ckernel::to_underlying(DataFormat::UInt16)};
 
     _llk_unpack_hw_configure_<is_fp32_dest_acc_en>(
-        unpack_src_data_types[0], unpack_src_data_types[0], unpack_dst_data_types[0], unpack_dst_data_types[0], FACE_R_DIM, FACE_R_DIM, 4, 4);
+        unpack_src_data_types[0],
+        unpack_src_data_types[0],
+        unpack_dst_data_types[0],
+        unpack_dst_data_types[0],
+        /*unpA_face_r_dim=*/FACE_R_DIM,
+        /*unpB_face_r_dim=*/FACE_R_DIM,
+        /*unpA_num_faces=*/4,
+        /*unpB_num_faces=*/4);
 
     for (std::uint32_t row = 0; row < NUM_ROWS; ++row)
     {
@@ -84,9 +91,9 @@ void run_kernel(RUNTIME_PARAMETERS params)
         {
             // Values pair (wt, wt+1) - face-level transpose.
             _llk_unpack_reconfig_data_format_srca_impl_<is_fp32_dest_acc_en, p_dim_stride_target::IGNORE, false>(
-                unpack_src_data_types[0], unpack_dst_data_types[0], 16 * 16 * 4);
+                unpack_src_data_types[0], unpack_dst_data_types[0], /*tile_size=*/16 * 16 * 4);
             _llk_unpack_A_init_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
-                1, 1, FACE_R_DIM, 4, unpack_src_data_types[0], unpack_dst_data_types[0]);
+                /*transpose_of_faces=*/1, /*within_face_16x16_transpose=*/1, FACE_R_DIM, /*num_faces=*/4, unpack_src_data_types[0], unpack_dst_data_types[0]);
             _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
                 L1_ADDRESS(params.buffer_A[row_offset + wt]), unpack_src_data_types[0], unpack_dst_data_types[0]);
             _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
@@ -94,9 +101,9 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
             // Indices pair (Wt+wt, Wt+wt+1) - face-level transpose.
             _llk_unpack_reconfig_data_format_srca_impl_<is_fp32_dest_acc_en, p_dim_stride_target::IGNORE, false>(
-                unpack_src_data_types[1], unpack_dst_data_types[1], 16 * 16 * 4);
+                unpack_src_data_types[1], unpack_dst_data_types[1], /*tile_size=*/16 * 16 * 4);
             _llk_unpack_A_init_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
-                1, 1, FACE_R_DIM, 4, unpack_src_data_types[1], unpack_dst_data_types[1]);
+                /*transpose_of_faces=*/1, /*within_face_16x16_transpose=*/1, FACE_R_DIM, /*num_faces=*/4, unpack_src_data_types[1], unpack_dst_data_types[1]);
             _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
                 L1_ADDRESS(params.buffer_A[row_offset + Wt + wt]), unpack_src_data_types[1], unpack_dst_data_types[1]);
             _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
@@ -116,9 +123,14 @@ void run_kernel(RUNTIME_PARAMETERS params)
                     {
                         // Values - no face transpose (data already column-wise after local_sort).
                         _llk_unpack_reconfig_data_format_srca_impl_<is_fp32_dest_acc_en, p_dim_stride_target::IGNORE, false>(
-                            unpack_src_data_types[0], unpack_dst_data_types[0], 16 * 16 * 4);
+                            unpack_src_data_types[0], unpack_dst_data_types[0], /*tile_size=*/16 * 16 * 4);
                         _llk_unpack_A_init_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
-                            0, 0, FACE_R_DIM, 4, unpack_src_data_types[0], unpack_dst_data_types[0]);
+                            /*transpose_of_faces=*/0,
+                            /*within_face_16x16_transpose=*/0,
+                            FACE_R_DIM,
+                            /*num_faces=*/4,
+                            unpack_src_data_types[0],
+                            unpack_dst_data_types[0]);
                         _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
                             L1_ADDRESS(params.buffer_A[row_offset + i]), unpack_src_data_types[0], unpack_dst_data_types[0]);
                         _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
@@ -126,9 +138,14 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
                         // Indices - no face transpose.
                         _llk_unpack_reconfig_data_format_srca_impl_<is_fp32_dest_acc_en, p_dim_stride_target::IGNORE, false>(
-                            unpack_src_data_types[1], unpack_dst_data_types[1], 16 * 16 * 4);
+                            unpack_src_data_types[1], unpack_dst_data_types[1], /*tile_size=*/16 * 16 * 4);
                         _llk_unpack_A_init_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
-                            0, 0, FACE_R_DIM, 4, unpack_src_data_types[1], unpack_dst_data_types[1]);
+                            /*transpose_of_faces=*/0,
+                            /*within_face_16x16_transpose=*/0,
+                            FACE_R_DIM,
+                            /*num_faces=*/4,
+                            unpack_src_data_types[1],
+                            unpack_dst_data_types[1]);
                         _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
                             L1_ADDRESS(params.buffer_A[row_offset + Wt + i]), unpack_src_data_types[1], unpack_dst_data_types[1]);
                         _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
@@ -143,9 +160,14 @@ void run_kernel(RUNTIME_PARAMETERS params)
         {
             const std::uint32_t stage_idx = (t < Wt) ? 0u : 1u;
             _llk_unpack_reconfig_data_format_srca_impl_<is_fp32_dest_acc_en, p_dim_stride_target::IGNORE, false>(
-                unpack_src_data_types[stage_idx], unpack_dst_data_types[stage_idx], 16 * 16 * 4);
+                unpack_src_data_types[stage_idx], unpack_dst_data_types[stage_idx], /*tile_size=*/16 * 16 * 4);
             _llk_unpack_A_init_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
-                0, 0, FACE_R_DIM, 4, unpack_src_data_types[stage_idx], unpack_dst_data_types[stage_idx]);
+                /*transpose_of_faces=*/0,
+                /*within_face_16x16_transpose=*/0,
+                FACE_R_DIM,
+                /*num_faces=*/4,
+                unpack_src_data_types[stage_idx],
+                unpack_dst_data_types[stage_idx]);
             _llk_unpack_A_<BroadcastType::NONE, false, EltwiseBinaryReuseDestType::NONE, unpack_to_dest>(
                 L1_ADDRESS(params.buffer_A[row_offset + t]), unpack_src_data_types[stage_idx], unpack_dst_data_types[stage_idx]);
         }
@@ -206,9 +228,11 @@ void run_kernel(RUNTIME_PARAMETERS params)
             // Values reconfig + datacopy.
             _llk_math_reconfig_data_format_srca_<is_fp32_dest_acc_en, false>(math_data_types[0]);
 #ifdef ARCH_BLACKHOLE
-            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(4, math_data_types[0]);
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(
+                /*num_faces=*/4, /*dst_format=*/math_data_types[0]);
 #else
-            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(4, math_data_types[0]);
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(
+                /*num_faces=*/4, /*dst_format=*/math_data_types[0]);
 #endif
             _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
                 input_dest_start, math_data_types[0], math_data_types[0]);
@@ -218,9 +242,11 @@ void run_kernel(RUNTIME_PARAMETERS params)
             // Indices reconfig + datacopy.
             _llk_math_reconfig_data_format_srca_<is_fp32_dest_acc_en, false>(math_data_types[1]);
 #ifdef ARCH_BLACKHOLE
-            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(4, math_data_types[1]);
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(
+                /*num_faces=*/4, /*dst_format=*/math_data_types[1]);
 #else
-            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(4, math_data_types[1]);
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(
+                /*num_faces=*/4, /*dst_format=*/math_data_types[1]);
 #endif
             _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
                 index_dest_start, math_data_types[1], math_data_types[1]);
@@ -262,9 +288,10 @@ void run_kernel(RUNTIME_PARAMETERS params)
                         _llk_math_reconfig_data_format_srca_<is_fp32_dest_acc_en, false>(math_data_types[0]);
 #ifdef ARCH_BLACKHOLE
                         _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(
-                            4, math_data_types[0]);
+                            /*num_faces=*/4, /*dst_format=*/math_data_types[0]);
 #else
-                        _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(4, math_data_types[0]);
+                        _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(
+                            /*num_faces=*/4, /*dst_format=*/math_data_types[0]);
 #endif
                         _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
                             input_dest_start, math_data_types[0], math_data_types[0]);
@@ -275,9 +302,10 @@ void run_kernel(RUNTIME_PARAMETERS params)
                         _llk_math_reconfig_data_format_srca_<is_fp32_dest_acc_en, false>(math_data_types[1]);
 #ifdef ARCH_BLACKHOLE
                         _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(
-                            4, math_data_types[1]);
+                            /*num_faces=*/4, /*dst_format=*/math_data_types[1]);
 #else
-                        _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(4, math_data_types[1]);
+                        _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(
+                            /*num_faces=*/4, /*dst_format=*/math_data_types[1]);
 #endif
                         _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
                             index_dest_start, math_data_types[1], math_data_types[1]);
@@ -320,12 +348,14 @@ void run_kernel(RUNTIME_PARAMETERS params)
             _llk_math_wait_for_dest_available_<dest_sync>();
             _llk_math_reconfig_data_format_srca_<is_fp32_dest_acc_en, false>(math_data_types[stage_idx]);
 #ifdef ARCH_BLACKHOLE
-            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(4, math_data_types[stage_idx]);
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false, false>(
+                /*num_faces=*/4, /*dst_format=*/math_data_types[stage_idx]);
 #else
-            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(4, math_data_types[stage_idx]);
+            _llk_math_eltwise_unary_datacopy_init_<DataCopyType::A2D, is_fp32_dest_acc_en, BroadcastType::NONE, false>(
+                /*num_faces=*/4, /*dst_format=*/math_data_types[stage_idx]);
 #endif
             _llk_math_eltwise_unary_datacopy_<DataCopyType::A2D, DstSync::SyncHalf, is_fp32_dest_acc_en, BroadcastType::NONE, unpack_to_dest>(
-                0, math_data_types[stage_idx], math_data_types[stage_idx]);
+                /*dst_index=*/0, math_data_types[stage_idx], math_data_types[stage_idx]);
             _llk_math_dest_section_done_<dest_sync, is_fp32_dest_acc_en>();
         }
     }
@@ -361,9 +391,9 @@ void run_kernel(RUNTIME_PARAMETERS params)
     const std::uint32_t pack_dst_data_types[NUM_STAGES] = {formats.pack_dst, ckernel::to_underlying(DataFormat::UInt16)};
 
 #ifdef ARCH_BLACKHOLE
-    _llk_pack_hw_configure_<is_fp32_dest_acc_en, false, false>(pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4);
+    _llk_pack_hw_configure_<is_fp32_dest_acc_en, false, false>(pack_src_data_types[0], pack_dst_data_types[0], /*tile_size=*/16 * 16 * 4);
 #else
-    _llk_pack_hw_configure_<is_fp32_dest_acc_en, false>(pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4);
+    _llk_pack_hw_configure_<is_fp32_dest_acc_en, false>(pack_src_data_types[0], pack_dst_data_types[0], /*tile_size=*/16 * 16 * 4);
 #endif
     _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[0]);
 
@@ -379,10 +409,23 @@ void run_kernel(RUNTIME_PARAMETERS params)
             // Values reconfig + pack.
 #ifdef ARCH_BLACKHOLE
             _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
-                pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4, FACE_R_DIM, TILE_C_DIM, 4, false, 1);
+                pack_src_data_types[0],
+                pack_dst_data_types[0],
+                /*tile_size=*/16 * 16 * 4,
+                FACE_R_DIM,
+                TILE_C_DIM,
+                /*num_faces=*/4,
+                /*partial_face=*/false,
+                /*num_tiles=*/1);
 #else
             _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
-                pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4, FACE_R_DIM, 4, false, false);
+                pack_src_data_types[0],
+                pack_dst_data_types[0],
+                /*tile_size=*/16 * 16 * 4,
+                FACE_R_DIM,
+                /*num_faces=*/4,
+                /*partial_face=*/false,
+                /*narrow_tile=*/false);
 #endif
             _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[0]);
             _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(input_dest_start, L1_ADDRESS(params.buffer_A[row_offset + wt]));
@@ -391,10 +434,23 @@ void run_kernel(RUNTIME_PARAMETERS params)
             // Indices reconfig + pack.
 #ifdef ARCH_BLACKHOLE
             _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
-                pack_src_data_types[1], pack_dst_data_types[1], 16 * 16 * 4, FACE_R_DIM, TILE_C_DIM, 4, false, 1);
+                pack_src_data_types[1],
+                pack_dst_data_types[1],
+                /*tile_size=*/16 * 16 * 4,
+                FACE_R_DIM,
+                TILE_C_DIM,
+                /*num_faces=*/4,
+                /*partial_face=*/false,
+                /*num_tiles=*/1);
 #else
             _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
-                pack_src_data_types[1], pack_dst_data_types[1], 16 * 16 * 4, FACE_R_DIM, 4, false, false);
+                pack_src_data_types[1],
+                pack_dst_data_types[1],
+                /*tile_size=*/16 * 16 * 4,
+                FACE_R_DIM,
+                /*num_faces=*/4,
+                /*partial_face=*/false,
+                /*narrow_tile=*/false);
 #endif
             _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[1]);
             _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(index_dest_start, L1_ADDRESS(params.buffer_A[row_offset + Wt + wt]));
@@ -454,10 +510,23 @@ void run_kernel(RUNTIME_PARAMETERS params)
                         // Values reconfig + pack.
 #ifdef ARCH_BLACKHOLE
                         _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
-                            pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4, FACE_R_DIM, TILE_C_DIM, 4, false, 1);
+                            pack_src_data_types[0],
+                            pack_dst_data_types[0],
+                            /*tile_size=*/16 * 16 * 4,
+                            FACE_R_DIM,
+                            TILE_C_DIM,
+                            /*num_faces=*/4,
+                            /*partial_face=*/false,
+                            /*num_tiles=*/1);
 #else
                         _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
-                            pack_src_data_types[0], pack_dst_data_types[0], 16 * 16 * 4, FACE_R_DIM, 4, false, false);
+                            pack_src_data_types[0],
+                            pack_dst_data_types[0],
+                            /*tile_size=*/16 * 16 * 4,
+                            FACE_R_DIM,
+                            /*num_faces=*/4,
+                            /*partial_face=*/false,
+                            /*narrow_tile=*/false);
 #endif
                         _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[0]);
                         _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(v_low_dst, L1_ADDRESS(params.buffer_A[row_offset + i]));
@@ -466,10 +535,23 @@ void run_kernel(RUNTIME_PARAMETERS params)
                         // Indices reconfig + pack.
 #ifdef ARCH_BLACKHOLE
                         _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
-                            pack_src_data_types[1], pack_dst_data_types[1], 16 * 16 * 4, FACE_R_DIM, TILE_C_DIM, 4, false, 1);
+                            pack_src_data_types[1],
+                            pack_dst_data_types[1],
+                            /*tile_size=*/16 * 16 * 4,
+                            FACE_R_DIM,
+                            TILE_C_DIM,
+                            /*num_faces=*/4,
+                            /*partial_face=*/false,
+                            /*num_tiles=*/1);
 #else
                         _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
-                            pack_src_data_types[1], pack_dst_data_types[1], 16 * 16 * 4, FACE_R_DIM, 4, false, false);
+                            pack_src_data_types[1],
+                            pack_dst_data_types[1],
+                            /*tile_size=*/16 * 16 * 4,
+                            FACE_R_DIM,
+                            /*num_faces=*/4,
+                            /*partial_face=*/false,
+                            /*narrow_tile=*/false);
 #endif
                         _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[1]);
                         _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(x_low_dst, L1_ADDRESS(params.buffer_A[row_offset + Wt + i]));
@@ -488,13 +570,26 @@ void run_kernel(RUNTIME_PARAMETERS params)
             _llk_packer_wait_for_math_done_();
 #ifdef ARCH_BLACKHOLE
             _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
-                pack_src_data_types[stage_idx], pack_dst_data_types[stage_idx], 16 * 16 * 4, FACE_R_DIM, TILE_C_DIM, 4, false, 1);
+                pack_src_data_types[stage_idx],
+                pack_dst_data_types[stage_idx],
+                /*tile_size=*/16 * 16 * 4,
+                FACE_R_DIM,
+                TILE_C_DIM,
+                /*num_faces=*/4,
+                /*partial_face=*/false,
+                /*num_tiles=*/1);
 #else
             _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
-                pack_src_data_types[stage_idx], pack_dst_data_types[stage_idx], 16 * 16 * 4, FACE_R_DIM, 4, false, false);
+                pack_src_data_types[stage_idx],
+                pack_dst_data_types[stage_idx],
+                /*tile_size=*/16 * 16 * 4,
+                FACE_R_DIM,
+                /*num_faces=*/4,
+                /*partial_face=*/false,
+                /*narrow_tile=*/false);
 #endif
             _llk_pack_init_wrapper_</*untilize=*/false, /*zero_output=*/false>(pack_dst_data_types[stage_idx]);
-            _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(0, L1_ADDRESS(params.buffer_Res[row_offset + t]));
+            _llk_pack_<dest_sync, is_fp32_dest_acc_en, false>(/*tile_index=*/0, L1_ADDRESS(params.buffer_Res[row_offset + t]));
             _llk_pack_dest_section_done_<dest_sync, is_fp32_dest_acc_en>();
         }
     }

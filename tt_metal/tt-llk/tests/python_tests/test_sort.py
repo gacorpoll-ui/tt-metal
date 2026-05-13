@@ -11,7 +11,6 @@ per row; duplicates / missing values (especially multiples of 256) signal
 the tt-metal#37571 class of corruption.
 """
 
-import sys
 from collections import Counter
 
 import torch
@@ -24,6 +23,7 @@ from helpers.golden_generators import (
     get_golden_generator,
 )
 from helpers.llk_params import DestAccumulation, TopKSortDirection, format_dict
+from helpers.logger import logger
 from helpers.param_config import input_output_formats, parametrize
 from helpers.stimuli_config import StimuliConfig
 from helpers.stimuli_generator import generate_stimuli
@@ -99,7 +99,7 @@ def validate_sort_permutation(
       1. indices form a valid permutation of [0, Wt*32) per row
       2. each result index points to the matching value in the original input
 
-    On failure, print the corruption pattern (duplicates, missing values,
+    On failure, log the corruption pattern (duplicates, missing values,
     multiples of 256 missing) so we can diagnose #37571.
     """
     num_rows_tensor, num_cols_tensor = input_dimensions
@@ -143,21 +143,18 @@ def validate_sort_permutation(
                 first_failure_row = row_idx
                 missing_mod_256 = [v for v in missing if v % 256 == 0]
                 dup0_count = idx_counter.get(0, 0)
-                print(
-                    f"\n[#37571 reproducer] Row {row_idx} indices are NOT a valid permutation of [0, {half}):",
-                    file=sys.stderr,
-                )
-                print(
-                    f"  missing count   = {len(missing)}  (first 16: {missing[:16]})",
-                    file=sys.stderr,
-                )
-                print(
-                    f"  missing %256==0 = {missing_mod_256[:16]}",
-                    file=sys.stderr,
-                )
-                print(
-                    f"  duplicates      = {duplicates[:16]}  (count of 0 = {dup0_count})",
-                    file=sys.stderr,
+                logger.error(
+                    "[#37571 reproducer] Row {} indices are NOT a valid permutation of [0, {}):\n"
+                    "  missing count   = {}  (first 16: {})\n"
+                    "  missing %256==0 = {}\n"
+                    "  duplicates      = {}  (count of 0 = {})",
+                    row_idx,
+                    half,
+                    len(missing),
+                    missing[:16],
+                    missing_mod_256[:16],
+                    duplicates[:16],
+                    dup0_count,
                 )
             continue
 
@@ -175,10 +172,14 @@ def validate_sort_permutation(
             ):
                 if first_failure_row is None:
                     first_failure_row = row_idx
-                    print(
-                        f"\n[#37571 reproducer] Row {row_idx}, datum {k}: index {result_index} "
-                        f"points to {original_value_at_idx} in input, but result has {result_value}",
-                        file=sys.stderr,
+                    logger.error(
+                        "[#37571 reproducer] Row {}, datum {}: index {} "
+                        "points to {} in input, but result has {}",
+                        row_idx,
+                        k,
+                        result_index,
+                        original_value_at_idx,
+                        result_value,
                     )
                 all_ok = False
                 break
