@@ -134,7 +134,7 @@ inline void llk_math_eltwise_binary(uint dst_index, const bool clear_fp32_dst_ac
  * @tparam src_b_bcast_type: Broadcast type for SrcB; one of {NONE, ROW, COL, SCALAR}.
  * @tparam is_fp32_dest_acc_en: Unused tparam; only for API compatibiliy.
  * @tparam math_fidelity: 0 = LoFi, 2 = HiFi2, 3 = HiFi3, 4 = HiFi4 - controls precision of multiplication
- *     when input is Tf32 format. Unused tparam; only for API compatibiliy.
+ *     when input is Tf32 format. Unused in assert and for API compatibility.
  * @tparam binary_reuse_dest: When not NONE, reuses the destination register as SrcA or SrcB.
  *     The MOVD2A/B instruction copies a face from dest to the source register before each MOP run.
  * @param operand_A: Logical dataflow buffer id for input A, used to derive the number of faces
@@ -155,6 +155,19 @@ inline void llk_math_eltwise_binary(
     [[maybe_unused]] const std::uint32_t operand_B,
     uint dst_index,
     const bool clear_fp32_dst_acc) {
+<<<<<<< HEAD
+=======
+    static_assert(src_b_bcast_type == BroadcastType::NONE, "Broadcast types will be added in a future update");
+    static_assert(
+        eltwise_binary_type == EltwiseBinaryType::ELWMUL || math_fidelity == MathFidelity::LoFi,
+        "Math fidelity must be LoFi for non-ELWMUL ops");
+
+    const std::uint32_t operand_id = get_operand_id(operand_A);
+    const ckernel::TensorShape tensor_shape_A = get_operand_tensor_shape(operand_id);
+
+    const bool clear_in_fp32_mode = is_fp32_dest_acc_en && clear_fp32_dst_acc;
+
+>>>>>>> 9610788f310 (Remove conditional from eltwise binary compute api and add asserts at llk api layer)
     WAYPOINT("MBIW");
     if constexpr (src_b_bcast_type == BroadcastType::NONE) {
         const std::uint32_t operand_id = get_operand_id(operand_A);
