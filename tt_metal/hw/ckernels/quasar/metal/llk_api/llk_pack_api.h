@@ -22,11 +22,19 @@
  * LLK PACK
  *************************************************************************/
 
-inline std::uint32_t g_llk_pack_output_id = 0;
-
 inline bool llk_pack_is_unpack_to_dest_32b(const std::uint32_t output_id) {
-    const DataFormat reg_dst_format = static_cast<DataFormat>(pack_src_format[output_id]);
-    return reg_dst_format == DataFormat::Float32 || reg_dst_format == DataFormat::Int32;
+    const DataFormat pack_reg_format = static_cast<DataFormat>(pack_src_format[output_id]);
+    return pack_reg_format == DataFormat::Float32 || pack_reg_format == DataFormat::Int32;
+}
+
+inline bool llk_pack_has_unpack_to_dest_32b() {
+    for (std::uint32_t output_id = 0; output_id < NUM_CIRCULAR_BUFFERS; ++output_id) {
+        if (static_cast<DataFormat>(pack_dst_format[output_id]) != DataFormat::Invalid &&
+            llk_pack_is_unpack_to_dest_32b(output_id)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -75,7 +83,6 @@ inline std::uint32_t get_output_tile_index(std::uint8_t output_id, std::uint32_t
  */
 inline void llk_pack_init(const std::uint32_t pack_output) {
     const std::uint8_t output_id = static_cast<std::uint8_t>(get_output_id(pack_output));
-    g_llk_pack_output_id = output_id;
 
     _llk_pack_init_(output_id);
 
@@ -144,7 +151,6 @@ inline void llk_pack_block(std::uint32_t start_tile_index, std::uint32_t pack_ou
  */
 inline void llk_pack_hw_configure(const std::uint32_t pack_output) {
     const std::uint32_t output_id = get_output_id(pack_output);
-    g_llk_pack_output_id = output_id;
 
     // Program buffer descriptors for all 32 dataflow buffers, i is the logical dfb id
     for (std::uint32_t i = 0; i < NUM_CIRCULAR_BUFFERS; ++i) {
@@ -205,7 +211,7 @@ inline void llk_packer_wait_for_math_done() { _llk_packer_wait_for_math_done_();
  */
 template <bool is_fp32_dest_acc_en>
 inline void llk_pack_dest_section_done() {
-    if (llk_pack_is_unpack_to_dest_32b(g_llk_pack_output_id)) {
+    if (llk_pack_has_unpack_to_dest_32b()) {
         _llk_sync_get_<p_stall::PACK0>(semaphore::MATH_PACK);
         if constexpr (DST_SYNC_MODE == DstSync::SyncHalf) {
             _llk_sync_advance_dest_section_<ckernel::pack::TRISC_ID, true /*EN_32BIT_DEST*/, p_stall::PACK0>();

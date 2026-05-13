@@ -17,11 +17,19 @@
  * LLK MATH COMMON
  *************************************************************************/
 
-inline std::uint32_t g_llk_math_srca_operand_id = 0;
-
 inline bool llk_math_is_unpack_to_dest_32b(const std::uint32_t operand_id) {
     const DataFormat unpack_dst_fmt = static_cast<DataFormat>(unpack_dst_format[operand_id]);
     return unpack_dst_fmt == DataFormat::Float32 || unpack_dst_fmt == DataFormat::Int32;
+}
+
+inline bool llk_math_has_unpack_to_dest_32b() {
+    for (std::uint32_t operand_id = 0; operand_id < NUM_CIRCULAR_BUFFERS; ++operand_id) {
+        if (static_cast<DataFormat>(unpack_dst_format[operand_id]) != DataFormat::Invalid &&
+            llk_math_is_unpack_to_dest_32b(operand_id)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -58,7 +66,6 @@ inline bool is_src_fmt_int32_dest_compatible(const DataFormat src_reg_fmt) {
 template <bool EN_32BIT_DEST_FORMAT>
 inline void llk_math_hw_configure(const std::uint32_t srca_operand, const std::uint32_t srcb_operand) {
     const std::uint32_t srca_operand_id = get_operand_id(srca_operand);
-    g_llk_math_srca_operand_id = srca_operand_id;
 
     // Unpack 32-bit datums through unpack-to-dest. Math owns the ALU implied-format
     // register; program it here once before any per-tile dest reads.
@@ -128,7 +135,7 @@ inline void llk_math_wait_for_dest_available() {
 
     // In the unpack-to-dest path, math is also the consumer of UNPACK_MATH.
     // Wait until the unpacker has filled a bank, then claim it.
-    if (llk_math_is_unpack_to_dest_32b(g_llk_math_srca_operand_id)) {
+    if (llk_math_has_unpack_to_dest_32b()) {
         _llk_sync_wait_<p_stall::STALL_MATH | p_stall::STALL_SFPU | p_stall::STALL_SYNC>(
             semaphore::UNPACK_MATH, p_stall::STALL_ON_ZERO);
         _llk_sync_get_(semaphore::UNPACK_MATH);
@@ -159,7 +166,7 @@ inline void llk_math_pack_sync_init() {
     // UNPACK_MATH is inited additionally in the unpack-to-dest path.
     _llk_math_pack_sync_init_<DST_SYNC_MODE>();
 
-    if (llk_math_is_unpack_to_dest_32b(g_llk_math_srca_operand_id)) {
+    if (llk_math_has_unpack_to_dest_32b()) {
         constexpr std::uint32_t N = (DST_SYNC_MODE == DstSync::SyncFull) ? 1 : 2;
         _llk_sync_init_(semaphore::UNPACK_MATH, N, 0);
     }
