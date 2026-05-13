@@ -15,8 +15,8 @@ namespace sfpu {
 
 template <bool APPROXIMATION_MODE, bool is_fp32_dest_acc_en, bool STABLE_SORT = false>
 inline void calculate_bitonic_topk_phases_steps(
-    std::uint32_t dst_index_in,
-    std::uint32_t dst_index_out,
+    [[maybe_unused]] std::uint32_t dst_index_in,
+    [[maybe_unused]] std::uint32_t dst_index_out,
     uint idir,
     uint i_end_phase,
     uint i_start_phase,
@@ -27,14 +27,15 @@ inline void calculate_bitonic_topk_phases_steps(
 }
 
 template <bool APPROXIMATION_MODE, bool is_fp32_dest_acc_en, bool idir = false, bool STABLE_SORT = false>
-inline void calculate_bitonic_topk_merge(std::uint32_t dst_index_in, std::uint32_t dst_index_out, uint m_iter, uint k) {
+inline void calculate_bitonic_topk_merge(
+    [[maybe_unused]] std::uint32_t dst_index_in, [[maybe_unused]] std::uint32_t dst_index_out, uint m_iter, uint k) {
     _bitonic_topk_merge<APPROXIMATION_MODE, is_fp32_dest_acc_en, idir, STABLE_SORT>(m_iter, k);
 }
 
 template <bool APPROXIMATION_MODE, bool is_fp32_dest_acc_en, bool STABLE_SORT = false>
 inline void calculate_bitonic_topk_rebuild(
-    std::uint32_t dst_index_in,
-    std::uint32_t dst_index_out,
+    [[maybe_unused]] std::uint32_t dst_index_in,
+    [[maybe_unused]] std::uint32_t dst_index_out,
     uint idir,
     uint m_iter,
     uint k,
