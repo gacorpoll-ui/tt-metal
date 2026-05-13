@@ -49,6 +49,29 @@ inline void _llk_math_eltwise_unary_sfpu_params_(F&& sfpu_func, std::uint32_t ds
 }
 
 /**
+ * @brief Runs SFPU operation for a tile (default 32x32) with split dest indices.
+ * @param sfpu_func: SFPU callback — receives (dst_tile_index_in, dst_tile_index_out, args...)
+ * @param dst_tile_index_in: tile in destination register to read from
+ * @param dst_tile_index_out: tile in destination register to write to
+ * @param args: forwarded to sfpu_func after the two tile indices
+ */
+template <class F, class... ARGS>
+inline void _llk_math_eltwise_unary_sfpu_params_(F&& sfpu_func, std::uint32_t dst_tile_index_in, std::uint32_t dst_tile_index_out, ARGS&&... args)
+{
+    _llk_math_eltwise_unary_sfpu_start_(dst_tile_index_in);
+
+    for (std::uint32_t face = 0; face < NUM_FACES; face++)
+    {
+        sfpu_func(dst_tile_index_in, dst_tile_index_out, static_cast<ARGS&&>(args)...);
+
+        // Move to the next face
+        _llk_math_eltwise_unary_sfpu_inc_dst_face_addr_();
+    }
+
+    _llk_math_eltwise_unary_sfpu_done_();
+}
+
+/**
  * @brief Determines the stochround conversion type based on source and cast data formats
  */
 template <DataFormat SRC_FMT, DataFormat CAST_FMT>

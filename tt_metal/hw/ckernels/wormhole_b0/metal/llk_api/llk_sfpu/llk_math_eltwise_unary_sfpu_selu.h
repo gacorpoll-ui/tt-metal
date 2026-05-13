@@ -17,6 +17,19 @@ inline void llk_math_eltwise_unary_sfpu_selu(
     _llk_math_eltwise_unary_sfpu_params_(
         ckernel::sfpu::calculate_selu<APPROXIMATE, is_fp32_dest_acc_en, ITERATIONS>,
         dst_index,
+        dst_index,
+        vector_mode,
+        scale,
+        alpha);
+}
+
+template <bool APPROXIMATE, bool is_fp32_dest_acc_en = false, int ITERATIONS = 8>
+inline void llk_math_eltwise_unary_sfpu_selu(
+    uint dst_index_in, uint dst_index_out, uint scale, uint alpha, int vector_mode = (int)VectorMode::RC) {
+    _llk_math_eltwise_unary_sfpu_params_(
+        ckernel::sfpu::calculate_selu<APPROXIMATE, is_fp32_dest_acc_en, ITERATIONS>,
+        dst_index_in,
+        dst_index_out,
         vector_mode,
         scale,
         alpha);

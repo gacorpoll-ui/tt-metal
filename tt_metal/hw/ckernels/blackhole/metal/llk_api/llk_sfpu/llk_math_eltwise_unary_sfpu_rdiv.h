@@ -21,6 +21,18 @@ inline void llk_math_eltwise_unary_sfpu_rdiv(
     _llk_math_eltwise_unary_sfpu_params_(
         ckernel::sfpu::calculate_rdiv<APPROXIMATE, fp32_dest_acc_en, rounding_mode, ITERATIONS>,
         dst_index,
+        dst_index,
+        vector_mode,
+        value);
+}
+
+template <bool APPROXIMATE, bool fp32_dest_acc_en, RoundingMode rounding_mode, int ITERATIONS = 8>
+inline void llk_math_eltwise_unary_sfpu_rdiv(
+    uint32_t dst_index_in, uint32_t dst_index_out, uint32_t value, int vector_mode = (int)VectorMode::RC) {
+    _llk_math_eltwise_unary_sfpu_params_(
+        ckernel::sfpu::calculate_rdiv<APPROXIMATE, fp32_dest_acc_en, rounding_mode, ITERATIONS>,
+        dst_index_in,
+        dst_index_out,
         vector_mode,
         value);
 }
