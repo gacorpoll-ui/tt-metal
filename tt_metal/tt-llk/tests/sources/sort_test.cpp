@@ -408,17 +408,16 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
             // Values reconfig + pack.
 #ifdef ARCH_BLACKHOLE
-            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en>(
                 pack_src_data_types[0],
                 pack_dst_data_types[0],
                 /*tile_size=*/16 * 16 * 4,
                 FACE_R_DIM,
                 TILE_C_DIM,
                 /*num_faces=*/4,
-                /*partial_face=*/false,
-                /*num_tiles=*/1);
+                /*partial_face=*/false);
 #else
-            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en>(
                 pack_src_data_types[0],
                 pack_dst_data_types[0],
                 /*tile_size=*/16 * 16 * 4,
@@ -433,17 +432,16 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
             // Indices reconfig + pack.
 #ifdef ARCH_BLACKHOLE
-            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en>(
                 pack_src_data_types[1],
                 pack_dst_data_types[1],
                 /*tile_size=*/16 * 16 * 4,
                 FACE_R_DIM,
                 TILE_C_DIM,
                 /*num_faces=*/4,
-                /*partial_face=*/false,
-                /*num_tiles=*/1);
+                /*partial_face=*/false);
 #else
-            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en>(
                 pack_src_data_types[1],
                 pack_dst_data_types[1],
                 /*tile_size=*/16 * 16 * 4,
@@ -509,17 +507,16 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
                         // Values reconfig + pack.
 #ifdef ARCH_BLACKHOLE
-                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en>(
                             pack_src_data_types[0],
                             pack_dst_data_types[0],
                             /*tile_size=*/16 * 16 * 4,
                             FACE_R_DIM,
                             TILE_C_DIM,
                             /*num_faces=*/4,
-                            /*partial_face=*/false,
-                            /*num_tiles=*/1);
+                            /*partial_face=*/false);
 #else
-                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en>(
                             pack_src_data_types[0],
                             pack_dst_data_types[0],
                             /*tile_size=*/16 * 16 * 4,
@@ -534,17 +531,16 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
                         // Indices reconfig + pack.
 #ifdef ARCH_BLACKHOLE
-                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en>(
                             pack_src_data_types[1],
                             pack_dst_data_types[1],
                             /*tile_size=*/16 * 16 * 4,
                             FACE_R_DIM,
                             TILE_C_DIM,
                             /*num_faces=*/4,
-                            /*partial_face=*/false,
-                            /*num_tiles=*/1);
+                            /*partial_face=*/false);
 #else
-                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+                        _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en>(
                             pack_src_data_types[1],
                             pack_dst_data_types[1],
                             /*tile_size=*/16 * 16 * 4,
@@ -569,17 +565,16 @@ void run_kernel(RUNTIME_PARAMETERS params)
             const std::uint32_t stage_idx = (t < Wt) ? 0u : 1u;
             _llk_packer_wait_for_math_done_();
 #ifdef ARCH_BLACKHOLE
-            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en>(
                 pack_src_data_types[stage_idx],
                 pack_dst_data_types[stage_idx],
                 /*tile_size=*/16 * 16 * 4,
                 FACE_R_DIM,
                 TILE_C_DIM,
                 /*num_faces=*/4,
-                /*partial_face=*/false,
-                /*num_tiles=*/1);
+                /*partial_face=*/false);
 #else
-            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en, false>(
+            _llk_pack_reconfig_data_format_<is_fp32_dest_acc_en>(
                 pack_src_data_types[stage_idx],
                 pack_dst_data_types[stage_idx],
                 /*tile_size=*/16 * 16 * 4,
