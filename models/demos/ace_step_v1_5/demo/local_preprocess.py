@@ -3,11 +3,18 @@ Local conditioning pipeline — replaces ``AceStepHandler`` + ``official_lm_prep
 
 Loads HuggingFace models directly, runs the local 5 Hz LM, then calls the HF
 model's ``prepare_condition()`` to produce the conditioning tensors needed by
-the TTNN diffusion loop.  No ACE-Step repo on ``sys.path`` required.
+the TTNN diffusion loop.
+
+The DiT checkpoint's remote modeling code imports ``acestep.models.common.*``.
+A minimal copy of those modules lives under ``bundled_acestep/`` next to this
+demo; if ``acestep`` is not already importable, that directory is prepended to
+``sys.path`` so no external ACE-Step git clone is required.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +25,20 @@ from models.demos.ace_step_v1_5.demo.local_lm import generate_metadata_and_codes
 
 _DIT_INSTRUCTION = "Fill the audio semantic mask based on the given conditions:"
 _CODES_PER_SECOND = 5
+
+
+def _ensure_acestep_for_remote_code() -> None:
+    """Prepend vendored ``acestep`` package root if the real package is absent."""
+    if importlib.util.find_spec("acestep") is not None:
+        return
+    root = Path(__file__).resolve().parent.parent / "bundled_acestep"
+    if not (root / "acestep" / "__init__.py").is_file():
+        raise FileNotFoundError(
+            f"Vendored acestep stub not found at {root}. " "Expected bundled_acestep/acestep/ from the tt-metal tree."
+        )
+    path = str(root.resolve())
+    if path not in sys.path:
+        sys.path.insert(0, path)
 
 
 def _build_text_prompt(caption: str, metadata: dict[str, Any]) -> str:
@@ -51,7 +72,8 @@ def prepare_conditioning(
     torch_dev: torch.device | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, torch.Tensor, dict[str, Any]]:
     """
-    Run the full conditioning pipeline locally (no ACE repo needed).
+    Run the full conditioning pipeline locally. The DiT load uses vendored
+    ``acestep.models.common`` when the full ACE-Step package is not installed.
 
     Returns
     -------
@@ -125,6 +147,7 @@ def prepare_conditioning(
 
     # ── 3. Load ACE-Step DiT model (for prepare_condition + detokenize) ──
     print("[local_preprocess] Loading ACE-Step DiT model …", flush=True)
+    _ensure_acestep_for_remote_code()
     ace = AutoModel.from_pretrained(str(model_dir), trust_remote_code=True).eval().to(torch_dev)
 
     # ── 4. Build precomputed_lm_hints_25Hz from audio codes ──
@@ -135,6 +158,17 @@ def prepare_conditioning(
         with torch.inference_mode():
             lm_hints_5Hz = ace.tokenizer.quantizer.get_output_from_indices(codes_tensor)
             precomputed_lm_hints_25Hz = ace.detokenize(lm_hints_5Hz)
+
+    # LM audio codes define a 25 Hz timeline; it can be shorter than duration_sec*25.
+    # prepare_condition uses torch.where(is_covers, lm_hints, src_latents) — lengths must match.
+    if precomputed_lm_hints_25Hz is not None:
+        hint_T = int(precomputed_lm_hints_25Hz.shape[1])
+        if hint_T == 0:
+            precomputed_lm_hints_25Hz = None
+        elif hint_T < frames:
+            frames = hint_T
+        elif hint_T > frames:
+            precomputed_lm_hints_25Hz = precomputed_lm_hints_25Hz[:, :frames, :].contiguous()
 
     # ── 5. Build remaining tensors ──
     silence = torch.load(str(silence_latent_path), map_location="cpu").to(torch.float32)
