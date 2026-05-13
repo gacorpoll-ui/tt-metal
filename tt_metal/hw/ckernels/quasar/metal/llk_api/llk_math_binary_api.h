@@ -72,7 +72,7 @@ inline void llk_math_eltwise_binary_init_with_operands(
     const std::uint32_t operandB_id = get_operand_id(operand_B);
     const ckernel::TensorShape tensor_shape_A = get_operand_tensor_shape(operandA_id);
     const DataFormat srcA_format = static_cast<DataFormat>(get_operand_dst_format(operandA_id));
-    const DataFormat srcB_format = static_cast<DataFormat>(get_operand_dst_format(operandB_id));    
+    const DataFormat srcB_format = static_cast<DataFormat>(get_operand_dst_format(operandB_id));
 
     _configure_default_data_format_state_<false /* IMPLIED_MATH_FORMAT */, DST_ACCUM_MODE>(srcA_format, srcB_format);
     if constexpr (src_b_bcast_type == BroadcastType::NONE) {
@@ -155,19 +155,10 @@ inline void llk_math_eltwise_binary(
     [[maybe_unused]] const std::uint32_t operand_B,
     uint dst_index,
     const bool clear_fp32_dst_acc) {
-<<<<<<< HEAD
-=======
-    static_assert(src_b_bcast_type == BroadcastType::NONE, "Broadcast types will be added in a future update");
     static_assert(
         eltwise_binary_type == EltwiseBinaryType::ELWMUL || math_fidelity == MathFidelity::LoFi,
         "Math fidelity must be LoFi for non-ELWMUL ops");
 
-    const std::uint32_t operand_id = get_operand_id(operand_A);
-    const ckernel::TensorShape tensor_shape_A = get_operand_tensor_shape(operand_id);
-
-    const bool clear_in_fp32_mode = is_fp32_dest_acc_en && clear_fp32_dst_acc;
-
->>>>>>> 9610788f310 (Remove conditional from eltwise binary compute api and add asserts at llk api layer)
     WAYPOINT("MBIW");
     if constexpr (src_b_bcast_type == BroadcastType::NONE) {
         const std::uint32_t operand_id = get_operand_id(operand_A);
