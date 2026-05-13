@@ -150,6 +150,7 @@ class TtMoe(LightweightModule):
         gate_fallback_mode: GateComputeMode = GateComputeMode.HOST_ALL,
         weight_cache_path: Optional[Path] = None,
         layer_idx: int = 0,
+        is_balanced: bool = False,
     ):
         """
         Initialize TtMoe module.
@@ -183,6 +184,8 @@ class TtMoe(LightweightModule):
             shared_expert_weights_dtype: Data type for shared expert weights
             gate_weights: Dict with "weight" and "e_score_correction_bias" keys for gate
             gate_fallback_mode: Fallback mode for gate (default: HOST_ALL)
+            is_balanced: If True, uses zigzag sequence placement for padding awareness.
+                Should match the is_balanced flag used in MLA/transformer.
         """
         super().__init__()
         self.mesh_device = mesh_device
@@ -238,6 +241,7 @@ class TtMoe(LightweightModule):
             fallback_mode=gate_fallback_mode,
             weight_cache_path=weight_cache_path,
             cache_name_prefix=f"layer_{layer_idx}.gate",
+            is_balanced=is_balanced,
         )
         logger.debug(f"Initializing TtMoe")
         logger.debug(f"  mesh_device.shape={mesh_device.shape}")
