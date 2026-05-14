@@ -1198,6 +1198,57 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
                         ch.dev->id(), ch.eth_logical_core, CoreType::ETH);
                     cluster_.assert_risc_reset_at_core(
                         tt_cxy_pair(ch.dev->id(), virtual_eth_coord), tt::umd::RiscType::ALL);
+                    // FIX CG (#42429): Zero the heartbeat register (0x1F80) while ERISC is held
+                    // in assert-reset.  Root cause: FIX XZ polls hb_addr for 0xABCDxxxx to confirm
+                    // base firmware is running after the force-reset.  However WH ERISC ROM does NOT
+                    // clear L1 on reset — the pre-reset heartbeat value (0xABCDxxxx from the prior
+                    // boot) survives.  FIX XZ therefore reads the STALE value on the very first
+                    // poll iteration, declares the channel "confirmed in 0ms", and returns before
+                    // the ERISC has actually reached base firmware.  The channel is physically stuck
+                    // in ROM (waiting for ETH PHY link training at postcode 0x49705180) while the
+                    // host believes it is healthy — causing the NEXT session to see probe_dead.
+                    //
+                    // Fix: write 0 to hb_addr WHILE ERISC IS IN RESET (ERISC cannot write L1 in
+                    // assert-reset, so the 0 will persist until ROM writes its boot postcode to
+                    // 0x18070 and base firmware eventually writes 0xABCDxxxx to 0x1F80).  FIX XZ's
+                    // nonzero_seen gate then correctly waits for the FIRST nonzero post-reset value.
+                    //
+                    // This is only done for MMIO channels (PCIe direct write, no relay needed).
+                    // Non-MMIO channels with a dead relay cannot be reached anyway and their
+                    // force-reset is delegated to RiscFirmwareInitializer::teardown (FIX AC).
+                    {
+                        const bool is_mmio_chan_cg =
+                            cluster_.get_associated_mmio_device(ch.dev->id()) == ch.dev->id();
+                        if (is_mmio_chan_cg) {
+                            const uint32_t hb_addr_cg = hal_.get_eth_fw_mailbox_val(FWMailboxMsg::HEARTBEAT);
+                            if (hb_addr_cg != 0u) {
+                                try {
+                                    cluster_.write_core_immediate(
+                                        ch.dev->id(),
+                                        virtual_eth_coord,
+                                        std::vector<uint32_t>{0u},
+                                        hb_addr_cg);
+                                    log_debug(
+                                        tt::LogMetal,
+                                        "FIX CG (#42429): Device {} chan={} — zeroed heartbeat "
+                                        "register 0x{:05x} while ERISC in reset (prevents FIX XZ "
+                                        "false-positive on stale 0xABCDxxxx).",
+                                        ch.dev->id(),
+                                        ch.eth_chan_id,
+                                        hb_addr_cg);
+                                } catch (...) {
+                                    // Best-effort; if the write fails FIX XZ may still get a false
+                                    // positive but it degrades gracefully (probe_dead in next session).
+                                    log_warning(
+                                        tt::LogMetal,
+                                        "FIX CG (#42429): Device {} chan={} — heartbeat zero-write "
+                                        "failed; FIX XZ may read stale heartbeat (false positive).",
+                                        ch.dev->id(),
+                                        ch.eth_chan_id);
+                                }
+                            }
+                        }
+                    }
                     // FIX CE (#42429): Write fw_launch_addr_value BEFORE deassert so ERISC ROM
                     // reads the correct entry point and boots into base UMD firmware instead of
                     // hanging at postcode 0x49705180 (fw_launch_addr=0 ROM wait loop).  Without
