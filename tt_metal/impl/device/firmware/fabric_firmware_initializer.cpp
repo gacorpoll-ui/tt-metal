@@ -2874,7 +2874,63 @@ void FabricFirmwareInitializer::compile_and_configure_fabric() {
 
         // Step 1: PCIe-direct soft reset of MMIO dead channels.
         // Track which MMIO channels were recovered so Step 2 knows which relay paths are live.
-        std::unordered_map<ChipId, std::unordered_set<uint32_t>> mmio_recovered_channels;
+        //
+        // FIX CS (#42429): Collective assert-all → deassert-all (FIX CL discipline).
+        //
+        // Root cause of the previous per-channel serial assert+deassert+poll failure:
+        // Dead MMIO channels (stuck at ROM postcode 0x49705180, ETH link-training wait) have
+        // ETH link peers that are ALSO stuck at ROM 0x49705180 — either other dead MMIO channels
+        // (T3K mesh MMIO-to-MMIO links) or dead non-MMIO channels in probe_dead_channels_map.
+        // When we assert+deassert+poll one MMIO channel at a time:
+        //   1. dev=0 chan=15 deasserts alone → enters ROM link-training again.
+        //   2. Its ETH peer (e.g. dev=1 chan=15) is still in assert-reset (not yet deasserted)
+        //      OR still at ROM 0x49705180 (for non-MMIO peers).
+        //   3. MMIO ERISC waits for ETH PHY link partner — but peer isn't ready.
+        //   4. 2000ms poll times out; channel not added to mmio_recovered_channels.
+        //   5. Step 2 skips ALL non-MMIO channels (MMIO peers not recovered).
+        //
+        // Fix (same pattern as FIX CL in teardown force-reset):
+        //   Phase A: assert ALL dead MMIO channels across all MMIO devices + write fw_launch_addr.
+        //   Phase B: 50ms pause (hardware reset propagation, same as FIX CL).
+        //   Phase C: deassert ALL asserted channels simultaneously.
+        //   Phase D: poll for base-UMD boot (all channels deasserted together → ETH link
+        //            training fires on all pairs simultaneously → succeeds).
+        //
+        // The non-MMIO dead channels (probe_dead_channels_map for relay-broken devices) are also
+        // at ROM 0x49705180.  They will begin ETH link training on their own hardware timer
+        // independent of the MMIO assert.  After all MMIO channels deassert together, both
+        // endpoints of MMIO↔non-MMIO ETH links are simultaneously in ROM link-training →
+        // link training completes on both sides.
+        //
+        // Implementation note: we collect all (dev, chan, core_loc) tuples first, then assert
+        // all, pause, deassert all, then poll.  Failures are tracked per-channel and excluded
+        // from deassert and poll without aborting the collective operation.
+
+        struct Step1AssertedChannel {
+            Device* dev;
+            uint32_t chan;
+            tt_cxy_pair core_loc;
+        };
+        std::vector<Step1AssertedChannel> step1_asserted;
+
+        // Cache fw_launch_addr config once (same for all MMIO ERISC channels).
+        uint32_t fw_launch_addr_cs = 0;
+        uint32_t fw_launch_addr_value_cs = 0;
+        {
+            try {
+                const auto aeth_idx_cs = hal_.get_programmable_core_type_index(
+                    HalProgrammableCoreType::ACTIVE_ETH);
+                const auto& jit_cfg_cs = hal_.get_jit_build_config(aeth_idx_cs, 0, 0);
+                fw_launch_addr_cs = jit_cfg_cs.fw_launch_addr;
+                fw_launch_addr_value_cs = jit_cfg_cs.fw_launch_addr_value;
+            } catch (...) {
+                // Non-fatal: proceed without fw_launch_addr write; ERISC may still boot
+                // if fw_launch_addr was not previously zeroed by FIX BN.
+            }
+        }
+
+        // Phase A: Assert ALL dead MMIO channels + write fw_launch_addr_value while held in reset.
+        uint32_t step1_total = 0;
         for (auto* dev : compiled_devices) {
             if (!dev || !dev->is_mmio_capable()) {
                 continue;
@@ -2883,10 +2939,11 @@ void FabricFirmwareInitializer::compile_and_configure_fabric() {
             if (mmio_dead.empty()) {
                 continue;
             }
+            step1_total += static_cast<uint32_t>(mmio_dead.size());
             log_info(
                 tt::LogMetal,
-                "FIX RR-NM step 1: MMIO dev={} — PCIe-direct soft reset for {} dead channel(s) "
-                "to restore relay path for non-MMIO recovery. (#42429)",
+                "FIX CS (#42429) FIX RR-NM step 1: MMIO dev={} — asserting {} dead channel(s) "
+                "(collective assert-all before any deassert). (#42429)",
                 dev->id(),
                 mmio_dead.size());
 
@@ -2895,85 +2952,133 @@ void FabricFirmwareInitializer::compile_and_configure_fabric() {
                     auto virtual_core = cluster_.get_virtual_eth_core_from_channel(dev->id(), chan);
                     tt_cxy_pair core_loc(dev->id(), virtual_core);
                     cluster_.assert_risc_reset_at_core(core_loc, tt::umd::RiscType::ERISC0);
-                    // FIX BO (#42429): restore fw_launch_addr to base-UMD firmware entry point
-                    // BEFORE deassert so ERISC ROM reads a non-zero jump address.
-                    // FIX BN (commit 1f01767) clears fw_launch_addr=0 after teardown heartbeat
-                    // confirmation.  That zero persists in the register.  When FIX RR-NM step 1
-                    // subsequently calls assert+deassert, ERISC ROM reads fw_launch_addr==0 and
-                    // enters the indefinite ROM wait loop at 0x49705180, causing every channel
-                    // to fail the 2000ms boot poll.  Writing the non-zero firmware entry point
-                    // while ERISC is held in assert-reset guarantees ROM sees a valid target
-                    // and exits to base-UMD firmware immediately on deassert.
-                    try {
-                        const auto aeth_idx_bo = hal_.get_programmable_core_type_index(
-                            HalProgrammableCoreType::ACTIVE_ETH);
-                        const auto& jit_cfg_bo = hal_.get_jit_build_config(aeth_idx_bo, 0, 0);
-                        // fw_launch_addr      = L1 address of the launch-address register
-                        // fw_launch_addr_value = firmware entry point to write into that register
-                        if (jit_cfg_bo.fw_launch_addr_value != 0) {
+                    // Write fw_launch_addr_value while ERISC is held in reset (FIX BO pattern).
+                    if (fw_launch_addr_value_cs != 0) {
+                        try {
                             cluster_.write_core_immediate(
                                 dev->id(),
                                 virtual_core,
-                                std::vector<uint32_t>{jit_cfg_bo.fw_launch_addr_value},
-                                jit_cfg_bo.fw_launch_addr);
+                                std::vector<uint32_t>{fw_launch_addr_value_cs},
+                                fw_launch_addr_cs);
+                        } catch (...) {
+                            // Non-fatal — deassert proceeds.
                         }
-                    } catch (...) {
-                        // Non-fatal — deassert proceeds; ERISC may still boot if fw_launch_addr
-                        // was not previously zeroed by FIX BN.
                     }
-                    cluster_.deassert_risc_reset_at_core(core_loc, tt::umd::RiscType::ERISC0);
-
-                    // Poll for ROM boot completion (same as FIX BH).
-                    const uint64_t edm_addr =
-                        static_cast<uint64_t>(router_config_rrnm.edm_status_address);
-                    uint32_t elapsed_ms = 0;
-                    bool booted = false;
-                    while (elapsed_ms < kRRNM_BootWaitMs) {
-                        std::vector<uint32_t> status_buf(1, 0);
-                        cluster_.read_core(status_buf, sizeof(uint32_t), core_loc, edm_addr);
-                        if (status_buf[0] == kBaseUmdSentinel_RRNM) {
-                            booted = true;
-                            log_info(
-                                tt::LogMetal,
-                                "FIX RR-NM step 1: MMIO dev={} chan={} reached base-UMD "
-                                "(0x49706550) after {}ms. Relay path available. (#42429)",
-                                dev->id(),
-                                chan,
-                                elapsed_ms);
-                            break;
-                        }
-                        std::this_thread::sleep_for(
-                            std::chrono::milliseconds(kRRNM_PollIntervalMs));
-                        elapsed_ms += kRRNM_PollIntervalMs;
-                    }
-                    if (booted) {
-                        mmio_recovered_channels[dev->id()].insert(chan);
-                    } else {
-                        log_warning(
-                            tt::LogMetal,
-                            "FIX RR-NM step 1: MMIO dev={} chan={} did not exit ROM within "
-                            "{}ms — relay path NOT available for non-MMIO peer. (#42429)",
-                            dev->id(),
-                            chan,
-                            kRRNM_BootWaitMs);
-                    }
+                    step1_asserted.push_back({dev, chan, core_loc});
                 } catch (const std::exception& e) {
                     log_warning(
                         tt::LogMetal,
-                        "FIX RR-NM step 1: MMIO dev={} chan={} PCIe-direct reset failed: {}. "
-                        "Relay path NOT available for non-MMIO peer. (#42429)",
+                        "FIX CS (#42429) FIX RR-NM step 1: MMIO dev={} chan={} assert failed: {}. "
+                        "Skipping channel (will not deassert). (#42429)",
                         dev->id(),
                         chan,
                         e.what());
                 } catch (...) {
                     log_warning(
                         tt::LogMetal,
-                        "FIX RR-NM step 1: MMIO dev={} chan={} PCIe-direct reset failed "
-                        "(unknown exception). (#42429)",
+                        "FIX CS (#42429) FIX RR-NM step 1: MMIO dev={} chan={} assert failed "
+                        "(unknown exception). Skipping channel. (#42429)",
                         dev->id(),
                         chan);
                 }
             }
+        }
+
+        // mmio_recovered_channels is used by Step 2 — declared here so it is in scope.
+        std::unordered_map<ChipId, std::unordered_set<uint32_t>> mmio_recovered_channels;
+
+        if (!step1_asserted.empty()) {
+            // Phase B: pause so all ETH PHYs see simultaneous reset (FIX CL / FIX CA pattern).
+            constexpr uint32_t kRRNM_CollectiveResetPauseMs = 50;
+            log_info(
+                tt::LogMetal,
+                "FIX CS (#42429) FIX RR-NM step 1: asserted {}/{} MMIO channel(s). "
+                "Pausing {}ms before collective deassert to allow simultaneous link training. "
+                "(#42429)",
+                step1_asserted.size(),
+                step1_total,
+                kRRNM_CollectiveResetPauseMs);
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(kRRNM_CollectiveResetPauseMs));
+
+            // Phase C: Deassert ALL successfully-asserted channels simultaneously.
+            std::vector<Step1AssertedChannel> step1_deasserted;
+            for (const auto& ac : step1_asserted) {
+                try {
+                    cluster_.deassert_risc_reset_at_core(ac.core_loc, tt::umd::RiscType::ERISC0);
+                    step1_deasserted.push_back(ac);
+                } catch (const std::exception& e) {
+                    log_warning(
+                        tt::LogMetal,
+                        "FIX CS (#42429) FIX RR-NM step 1: MMIO dev={} chan={} deassert failed: {}. "
+                        "Relay path NOT available for non-MMIO peer. (#42429)",
+                        ac.dev->id(),
+                        ac.chan,
+                        e.what());
+                } catch (...) {
+                    log_warning(
+                        tt::LogMetal,
+                        "FIX CS (#42429) FIX RR-NM step 1: MMIO dev={} chan={} deassert failed "
+                        "(unknown exception). (#42429)",
+                        ac.dev->id(),
+                        ac.chan);
+                }
+            }
+
+            // Phase D: Poll each deasserted channel for base-UMD boot.
+            // All channels deasserted together → ETH link training fires simultaneously on all
+            // pairs → all boot to base-UMD firmware in roughly the same window.
+            const uint64_t edm_addr_cs =
+                static_cast<uint64_t>(router_config_rrnm.edm_status_address);
+
+            for (const auto& ac : step1_deasserted) {
+                uint32_t elapsed_ms = 0;
+                bool booted = false;
+                while (elapsed_ms < kRRNM_BootWaitMs) {
+                    std::vector<uint32_t> status_buf(1, 0);
+                    try {
+                        cluster_.read_core(
+                            status_buf, sizeof(uint32_t), ac.core_loc, edm_addr_cs);
+                    } catch (...) {
+                        // Transient read error; keep polling.
+                    }
+                    if (status_buf[0] == kBaseUmdSentinel_RRNM) {
+                        booted = true;
+                        log_info(
+                            tt::LogMetal,
+                            "FIX CS (#42429) FIX RR-NM step 1: MMIO dev={} chan={} reached "
+                            "base-UMD (0x49706550) after {}ms. Relay path available. (#42429)",
+                            ac.dev->id(),
+                            ac.chan,
+                            elapsed_ms);
+                        break;
+                    }
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(kRRNM_PollIntervalMs));
+                    elapsed_ms += kRRNM_PollIntervalMs;
+                }
+                if (booted) {
+                    mmio_recovered_channels[ac.dev->id()].insert(ac.chan);
+                } else {
+                    log_warning(
+                        tt::LogMetal,
+                        "FIX CS (#42429) FIX RR-NM step 1: MMIO dev={} chan={} did not exit ROM "
+                        "within {}ms after collective deassert — relay path NOT available for "
+                        "non-MMIO peer. (#42429)",
+                        ac.dev->id(),
+                        ac.chan,
+                        kRRNM_BootWaitMs);
+                }
+            }
+
+        } else {
+            // No MMIO channels were successfully asserted — mmio_recovered_channels stays empty.
+            // Step 2 will find no recovered peers and skip all non-MMIO channels.
+            log_warning(
+                tt::LogMetal,
+                "FIX CS (#42429) FIX RR-NM step 1: no MMIO channels were successfully asserted. "
+                "Skipping collective deassert+poll; step 2 will skip all non-MMIO channels. "
+                "(#42429)");
         }
 
         // Step 2: Relay-assisted write-only reset of non-MMIO dead channels.
