@@ -161,23 +161,20 @@ constexpr bool telemetry_enabled = true; // TODO: make this a compile-time optio
 
 using DispatchTelemetry = tt::tt_metal::DispatchTelemetry;
 
-FORCE_INLINE
-volatile tt_l1_ptr DispatchTelemetry* get_dispatch_telemetry_ptr() {
-    return reinterpret_cast<volatile tt_l1_ptr DispatchTelemetry*>(dispatch_telemetry_base);
-}
-
-using DispatchTelemetryBlockGuard = TelemetryBlockGuard<DispatchTelemetry, telemetry_enabled>;
+using DispatchTelemetryBlockGuard = TelemetryBlockGuard<DispatchTelemetry, dispatch_telemetry_base, telemetry_enabled>;
 
 // TODO: Move inits to host
 FORCE_INLINE
 void init_dispatch_telemetry() {
     const DispatchTelemetry telemetry{};
     copy_struct_to_l1(dispatch_telemetry_base, telemetry);
+
     // get telemtry and print all values
-    DEVICE_PRINT("dispatch telemetry: version {}\n", get_dispatch_telemetry_ptr()->version);
-    DEVICE_PRINT("dispatch telemetry: signature {}\n", get_dispatch_telemetry_ptr()->signature);
-    DEVICE_PRINT("dispatch telemetry: blocked_count {}\n", get_dispatch_telemetry_ptr()->blocked_count);
-    DEVICE_PRINT("dispatch telemetry: unblocked_count {}\n", get_dispatch_telemetry_ptr()->unblocked_count);
+    auto dispatch_telemetry_ptr = get_telemetry_ptr<DispatchTelemetry, dispatch_telemetry_base>();
+    DEVICE_PRINT("dispatch telemetry: version {}\n", dispatch_telemetry_ptr->version);
+    DEVICE_PRINT("dispatch telemetry: signature {}\n", dispatch_telemetry_ptr->signature);
+    DEVICE_PRINT("dispatch telemetry: blocked_count {}\n", dispatch_telemetry_ptr->blocked_count);
+    DEVICE_PRINT("dispatch telemetry: unblocked_count {}\n", dispatch_telemetry_ptr->unblocked_count);
 }
 
 // Release policies are TU-local so we can use the local relay_client instance
@@ -282,7 +279,7 @@ void completion_queue_reserve_back(uint32_t num_pages) {
     uint32_t available_space;
 
     {
-        DispatchTelemetryBlockGuard telemetry_blocked(get_dispatch_telemetry_ptr());
+        DispatchTelemetryBlockGuard telemetry_blocked;
         do {
             invalidate_l1_cache();
             completion_rd_ptr_and_toggle = *get_cq_completion_read_ptr();
@@ -297,10 +294,8 @@ void completion_queue_reserve_back(uint32_t num_pages) {
                     ? completion_rd_ptr - cq_write_interface.completion_fifo_wr_ptr
                     : (completion_queue_size_16B - (cq_write_interface.completion_fifo_wr_ptr - completion_rd_ptr));
 
-            if constexpr (telemetry_enabled) {
-                if (data_size_16B > available_space) {
-                    telemetry_blocked.mark_blocked();
-                }
+            if (data_size_16B > available_space) {
+                telemetry_blocked.mark_blocked();
             }
         } while (data_size_16B > available_space);
     }
