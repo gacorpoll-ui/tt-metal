@@ -510,7 +510,7 @@ tt::tt_metal::ProgramDescriptor AllGatherConcatDeviceOperation::create_descripto
         for (uint32_t v : input_tensor_cores_y) {
             reader_rt_args.push_back(v);
         }
-        log_trace(tt::LogOp, "Reader Runtime Args: <{} args>", reader_rt_args.size());
+        // log_trace removed: RTArgList has no size() method
 
         desc.kernels[worker_sender_reader_kernel_id].emplace_runtime_args(core, reader_rt_args);
 

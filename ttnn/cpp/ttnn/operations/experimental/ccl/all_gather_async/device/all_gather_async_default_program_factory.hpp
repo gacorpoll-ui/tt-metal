@@ -5,42 +5,9 @@
 #pragma once
 
 #include "all_gather_async_device_operation_types.hpp"
-
-#include <tt-metalium/program.hpp>
-#include <tt-metalium/program_descriptors.hpp>
-
-#include <optional>
+#include "ttnn/device_operation.hpp"
 
 namespace ttnn::experimental::prim {
-
-struct DefaultMeshWorkloadFactory {
-    // Per-coord program build.  All semaphores ride on AllGatherAsyncParams
-    // (allocated by the caller), so no prepare_resources hook is required.
-    static tt::tt_metal::ProgramDescriptor create_descriptor(
-        const AllGatherAsyncParams& operation_attributes,
-        const AllGatherAsyncInputs& tensor_args,
-        Tensor& output_tensor,
-        const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate);
-};
-
-}  // namespace ttnn::experimental::prim
-
-namespace ttnn {
-
-// ---------------------------------------------------------------------------
-// Legacy (Program&) builder helper, retained as a parallel API for external
-// consumers that have not yet been migrated to ProgramDescriptor:
-//
-//   - ccl/all_gather (top-level wrapper)
-//   - experimental/ccl/all_gather_matmul_async
-//   - experimental/ccl/llama_all_gather_matmul_async
-//   - experimental/ccl/all_gather_minimal_matmul_async
-//
-// The descriptor-based default factory (DefaultMeshWorkloadFactory::create_descriptor)
-// is a self-contained re-implementation of the same logic and does NOT route
-// through this helper.  Once all external consumers are migrated, the helper
-// and the AllGatherProgramArtifacts struct can be removed.
-// ---------------------------------------------------------------------------
 
 struct AllGatherProgramArtifacts {
     tt::tt_metal::KernelHandle reader_kernel_id{};
@@ -51,6 +18,37 @@ struct AllGatherProgramArtifacts {
     uint32_t num_mux_cores_per_direction_per_link = 0;
     uint32_t num_cores_per_link = 0;
 };
+
+struct DefaultMeshWorkloadFactory {
+    using shared_variables_t = AllGatherProgramArtifacts;
+    using cached_mesh_workload_t = ttnn::device_operation::AdaptedCachedMeshWorkload<shared_variables_t>;
+
+    static cached_mesh_workload_t create_mesh_workload(
+        const AllGatherAsyncParams& operation_attributes,
+        const ttnn::MeshCoordinateRangeSet& tensor_coords,
+        const AllGatherAsyncInputs& tensor_args,
+        Tensor& output_tensor);
+
+    static void override_runtime_arguments(
+        cached_mesh_workload_t& cached_workload,
+        const AllGatherAsyncParams& operation_attributes,
+        const AllGatherAsyncInputs& tensor_args,
+        Tensor& output_tensor);
+
+private:
+    using cached_program_t = ttnn::device_operation::CachedProgram<shared_variables_t>;
+
+    static cached_program_t create_at(
+        const AllGatherAsyncParams& operation_attributes,
+        const ttnn::MeshCoordinate& mesh_coordinate,
+        const AllGatherAsyncInputs& tensor_args,
+        Tensor& output_tensor);
+};
+
+}  // namespace ttnn::experimental::prim
+
+namespace ttnn {
+using AllGatherProgramArtifacts = experimental::prim::AllGatherProgramArtifacts;
 
 // Builder function that creates kernels and returns artifacts
 AllGatherProgramArtifacts build_all_gather_async_minimal_default_program_artifacts(

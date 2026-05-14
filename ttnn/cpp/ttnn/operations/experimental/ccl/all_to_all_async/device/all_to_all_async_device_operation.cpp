@@ -225,4 +225,17 @@ Tensor all_to_all_async(
     return ttnn::device_operation::launch<OperationType>(operation_attributes, tensor_args);
 }
 
+ttsl::hash::hash_t AllToAllAsyncDeviceOperation::compute_program_hash(
+    const operation_attributes_t& args, const tensor_args_t& tensor_args) {
+    return tt::tt_metal::operation::hash_operation<AllToAllAsyncDeviceOperation>(
+        args.in_dim,
+        args.out_dim,
+        args.num_links,
+        args.ring_size,
+        args.output_mem_config,
+        args.topology,
+        args.sub_device_id,
+        tensor_args);
+}
+
 }  // namespace ttnn::experimental::prim

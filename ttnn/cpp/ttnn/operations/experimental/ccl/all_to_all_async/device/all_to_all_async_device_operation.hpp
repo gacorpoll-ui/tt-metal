@@ -29,6 +29,10 @@ struct AllToAllAsyncDeviceOperation {
 
     static spec_return_value_t compute_output_specs(const operation_attributes_t&, const tensor_args_t&);
     static tensor_return_value_t create_output_tensors(const operation_attributes_t&, const tensor_args_t&);
+
+    // GlobalSemaphore is not hashable via the default reflection-based path; we
+    // hash the rest of operation_attributes explicitly + tensor_args.
+    static ttsl::hash::hash_t compute_program_hash(const operation_attributes_t&, const tensor_args_t&);
 };
 
 Tensor all_to_all_async(

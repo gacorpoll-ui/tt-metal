@@ -39,6 +39,10 @@ struct AllGatherConcatDeviceOperation {
         const tensor_args_t& tensor_args,
         tensor_return_value_t& tensor_return_value,
         const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate);
+
+    // GlobalSemaphore in operation_attributes is not hashable via the default
+    // reflection path; hash the rest of the fields explicitly + tensor_args.
+    static ttsl::hash::hash_t compute_program_hash(const operation_attributes_t&, const tensor_args_t&);
 };
 
 Tensor all_gather_concat(

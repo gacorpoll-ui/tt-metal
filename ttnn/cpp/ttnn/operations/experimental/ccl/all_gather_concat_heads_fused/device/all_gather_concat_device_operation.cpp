@@ -122,4 +122,19 @@ Tensor all_gather_concat(
     return ttnn::device_operation::launch<OperationType>(operation_attributes, tensor_args);
 }
 
+ttsl::hash::hash_t AllGatherConcatDeviceOperation::compute_program_hash(
+    const operation_attributes_t& args, const tensor_args_t& tensor_args) {
+    return tt::tt_metal::operation::hash_operation<AllGatherConcatDeviceOperation>(
+        args.dim,
+        args.num_links,
+        args.ring_size,
+        args.output_mem_config,
+        args.topology,
+        args.sub_device_id,
+        args.num_heads,
+        args.use_noc1_only,
+        args.cluster_axis,
+        tensor_args);
+}
+
 }  // namespace ttnn::experimental::prim
