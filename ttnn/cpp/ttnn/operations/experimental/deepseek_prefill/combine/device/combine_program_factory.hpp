@@ -4,56 +4,49 @@
 
 #pragma once
 
+#include <optional>
 #include <vector>
+
 #include "combine_types.hpp"
 #include "ttnn/device_operation.hpp"
 #include "ttnn/distributed/types.hpp"
 #include <ttnn/global_semaphore.hpp>
+#include <tt-metalium/global_semaphore.hpp>
+#include <tt-metalium/program_descriptors.hpp>
 
 namespace ttnn::operations::experimental::deepseek_prefill::combine {
 
-struct CombineSharedVariables {
-    std::vector<tt::tt_metal::KernelHandle> reader_kernel_ids;  // one per sender core
-    tt::tt_metal::KernelHandle writer_kernel_id = 0;
-    tt::tt_metal::KernelHandle zero_init_kernel_id = 0;
-    std::vector<tt::tt_metal::KernelHandle> reader_untilize_kernel_ids;  // one per idle core
-    std::vector<CoreCoord> cores;
-    std::vector<CoreCoord> zero_init_cores;
-    std::vector<CoreCoord> idle_cores;
-    GlobalSemaphore init_semaphore;       // Initialized in create_at()
-    GlobalSemaphore exit_semaphore;       // Separate sem for the exit handshake (avoids
-                                          // init/exit race on combine_devices==2 pairs)
-    uint32_t zero_init_semaphore_id = 0;  // Local semaphore ID for reader->writer sync
-    uint32_t zero_init_barrier_semaphore_id = 0;     // Barrier: writer signals reader after global init
-    uint32_t counter_ready_semaphore_id = 0;         // Sender signals idle cores after token count multicast
-    std::vector<uint32_t> data_ready_semaphore_ids;  // One per sender: idle core signals sender data is ready
-    std::vector<uint32_t> start_semaphore_ids;       // One per sender: sender signals idle core to start
-};
-
 struct CombineProgramFactory {
-    using shared_variables_t = CombineSharedVariables;
-    using cached_mesh_workload_t = ttnn::device_operation::AdaptedCachedMeshWorkload<shared_variables_t>;
+    // Workload-level resources allocated once per cache miss in prepare_resources()
+    // and re-passed to every per-coord create_descriptor() call.  Storing the two
+    // GlobalSemaphores here keeps their device-side allocations alive for the
+    // lifetime of the cached workload — both are referenced by writer runtime
+    // args as absolute addresses.
+    //
+    // GlobalSemaphore has no default constructor, so wrap in std::optional<> to
+    // satisfy the framework's `resource_t{}` value-init in DescriptorMeshWorkloadFactoryAdapter.
+    // prepare_resources() always populates both before create_descriptor() reads them.
+    struct Resources {
+        std::optional<GlobalSemaphore> init_semaphore;
+        std::optional<GlobalSemaphore> exit_semaphore;
+    };
 
-    static cached_mesh_workload_t create_mesh_workload(
-        const CombineParams& operation_attributes,
-        const MeshCoordinateRangeSet& tensor_coords,
-        const CombineInputs& tensor_args,
-        ttnn::Tensor& tensor_return_value);
+    // Allocates the two GlobalSemaphores and runs the cross-device Synchronize
+    // barrier.  Invoked ONCE per workload (before any per-coord program build)
+    // by the DescriptorMeshWorkloadFactoryAdapter.
+    static Resources prepare_resources(
+        const CombineParams& operation_attributes, const CombineInputs& tensor_args, ttnn::Tensor& tensor_return_value);
 
-    static ttnn::device_operation::CachedProgram<shared_variables_t> create_at(
+    // Per-coord program build.  workload_resources is the value returned from
+    // prepare_resources(); mesh_dispatch_coordinate identifies which device in
+    // the mesh this program targets (used to derive fabric node id, neighbor
+    // lookups, and counter_offset).
+    static tt::tt_metal::ProgramDescriptor create_descriptor(
         const CombineParams& operation_attributes,
-        const MeshCoordinate& mesh_coordinate,
         const CombineInputs& tensor_args,
         ttnn::Tensor& tensor_return_value,
-        const MeshCoordinateRangeSet& tensor_coords,
-        const GlobalSemaphore& init_semaphore,
-        const GlobalSemaphore& exit_semaphore);
-
-    static void override_runtime_arguments(
-        cached_mesh_workload_t& cached_workload,
-        const CombineParams& operation_attributes,
-        const CombineInputs& tensor_args,
-        ttnn::Tensor& tensor_return_value);
+        Resources& workload_resources,
+        const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate);
 };
 
 }  // namespace ttnn::operations::experimental::deepseek_prefill::combine
