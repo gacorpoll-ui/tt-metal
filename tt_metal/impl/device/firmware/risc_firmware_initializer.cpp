@@ -605,10 +605,25 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                                         std::vector<uint32_t>{jit_cfg_cc.fw_launch_addr_value},
                                         jit_cfg_cc.fw_launch_addr);
                                 }
-                            } catch (...) {
+                            } catch (const std::exception& ex_cc) {
                                 // Non-fatal — relay write may fail transiently; deassert proceeds.
                                 // If fw_launch_addr stays 0, non-MMIO ROM enters link-training wait,
                                 // but that is the pre-FIX-CC baseline; FIX AY will handle recovery.
+                                log_warning(
+                                    tt::LogAlways,
+                                    "teardown: FIX CC — fw_launch_addr_value relay write to non-MMIO "
+                                    "ETH core {} on device {} failed: {}. Non-MMIO may enter link-"
+                                    "training wait (FIX AY fallback). (#42429)",
+                                    eth_virt.str(),
+                                    non_mmio_id,
+                                    ex_cc.what());
+                            } catch (...) {
+                                log_warning(
+                                    tt::LogAlways,
+                                    "teardown: FIX CC — fw_launch_addr_value relay write to non-MMIO "
+                                    "ETH core {} on device {} failed (non-std exception). (#42429)",
+                                    eth_virt.str(),
+                                    non_mmio_id);
                             }
                             cluster_.deassert_risc_reset_at_core_write_only(
                                 tt_cxy_pair(non_mmio_id, eth_virt));

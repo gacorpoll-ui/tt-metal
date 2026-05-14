@@ -1674,28 +1674,38 @@ void Device::quiesce_and_restart_fabric_workers(bool defer_eth_launch) {
                         lc0.x,
                         lc0.y,
                         eth_chan_0);
-                    // FIX PD (GAP-50): clear ERISC dispatch fw_launch_addr after Phase 2.5
+                    // FIX PD (GAP-50): overwrite ERISC dispatch fw_launch_addr after Phase 2.5
                     // force-reset. HW reset does NOT zero L1. If dispatch firmware was running,
-                    // fw_launch_addr retains its non-zero value → 500ms cascade on next open.
-                    // (140 occurrences/run observed in t3k_ttnn_tests, MMIO devices 0-3 chans
-                    //  6-9,14. FIX PC was in the wrong path; this quiesce path is the source.)
+                    // fw_launch_addr retains its dispatch-specific value → 500ms cascade on next
+                    // open.  (140 occurrences/run observed in t3k_ttnn_tests, MMIO devices 0-3
+                    // chans 6-9,14. FIX PC was in the wrong path; this quiesce path is the source.)
+                    //
+                    // FIX CD (#42429): Write fw_launch_addr_value (base-UMD entry) instead of 0.
+                    // Original FIX PD wrote {0} which left ERISC unbootable after any subsequent
+                    // assert+deassert — ERISC ROM reads fw_launch_addr=0 and hangs at 0x49705180
+                    // (same root cause as FIX BZ in fabric_firmware_initializer.cpp).  Writing
+                    // fw_launch_addr_value keeps ERISC always bootable and replaces the stale
+                    // dispatch value (avoiding the 500ms cascade).
                     try {
                         const auto& hal_pd = env_impl.get_hal();
                         const auto aeth_idx =
                             hal_pd.get_programmable_core_type_index(HalProgrammableCoreType::ACTIVE_ETH);
-                        const uint32_t fw_launch_addr_pd = hal_pd.get_jit_build_config(aeth_idx, 0, 0).fw_launch_addr;
+                        const auto& jit_cfg_pd = hal_pd.get_jit_build_config(aeth_idx, 0, 0);
+                        const uint32_t fw_launch_addr_pd = jit_cfg_pd.fw_launch_addr;
+                        const uint32_t fw_launch_addr_value_pd = jit_cfg_pd.fw_launch_addr_value;
                         env_impl.get_cluster().write_core_immediate(
-                            this->id(), phys_core_0, std::vector<uint32_t>{0}, fw_launch_addr_pd);
+                            this->id(), phys_core_0,
+                            std::vector<uint32_t>{fw_launch_addr_value_pd != 0 ? fw_launch_addr_value_pd : 0u},
+                            fw_launch_addr_pd);
                     } catch (const std::exception& ex_pd) {
                         // Best-effort: non-MMIO dead relay may throw — FIX PA in reset_cores()
                         // handles the one-time fallback.
                         // GAP-B (#42429): Log warning for MMIO devices where PCIe writes should
-                        // never fail. Silent failure masks HAL/hardware bugs → 500ms cascade
-                        // persists with no diagnostic.
+                        // never fail. Silent failure masks HAL/hardware bugs.
                         if (this->is_mmio_capable()) {
                             log_warning(
                                 tt::LogMetal,
-                                "FIX PD (GAP-B): MMIO device {} fw_launch_addr clear FAILED "
+                                "FIX PD/CD (GAP-B): MMIO device {} fw_launch_addr write FAILED "
                                 "(PCIe write should not fail): {}",
                                 this->id(),
                                 ex_pd.what());
@@ -1704,7 +1714,7 @@ void Device::quiesce_and_restart_fabric_workers(bool defer_eth_launch) {
                         if (this->is_mmio_capable()) {
                             log_warning(
                                 tt::LogMetal,
-                                "FIX PD (GAP-B): MMIO device {} fw_launch_addr clear FAILED "
+                                "FIX PD/CD (GAP-B): MMIO device {} fw_launch_addr write FAILED "
                                 "(non-std exception on PCIe write)",
                                 this->id());
                         }
@@ -2209,20 +2219,26 @@ void Device::launch_eth_cores_for_quiesce() {
                         eth_chan_0);
                     // FIX PD (GAP-50): Mirror of the quiesce_and_restart_fabric_workers() FIX PD.
                     // This path is taken when defer_eth_launch=true (launch_eth_cores_for_quiesce).
+                    // FIX CD (#42429): Write fw_launch_addr_value instead of 0 (see FIX CD comment
+                    // in quiesce_and_restart_fabric_workers Pass-0 path for full rationale).
                     try {
                         const auto& hal_pd = env_impl.get_hal();
                         const auto aeth_idx =
                             hal_pd.get_programmable_core_type_index(HalProgrammableCoreType::ACTIVE_ETH);
-                        const uint32_t fw_launch_addr_pd = hal_pd.get_jit_build_config(aeth_idx, 0, 0).fw_launch_addr;
+                        const auto& jit_cfg_pd = hal_pd.get_jit_build_config(aeth_idx, 0, 0);
+                        const uint32_t fw_launch_addr_pd = jit_cfg_pd.fw_launch_addr;
+                        const uint32_t fw_launch_addr_value_pd = jit_cfg_pd.fw_launch_addr_value;
                         env_impl.get_cluster().write_core_immediate(
-                            this->id(), phys_core_0, std::vector<uint32_t>{0}, fw_launch_addr_pd);
+                            this->id(), phys_core_0,
+                            std::vector<uint32_t>{fw_launch_addr_value_pd != 0 ? fw_launch_addr_value_pd : 0u},
+                            fw_launch_addr_pd);
                     } catch (const std::exception& ex_pd) {
                         // Best-effort: non-MMIO dead relay may throw.
                         // GAP-B (#42429): Log warning for MMIO devices — PCIe writes should not fail.
                         if (this->is_mmio_capable()) {
                             log_warning(
                                 tt::LogMetal,
-                                "FIX PD (GAP-B): MMIO device {} fw_launch_addr clear FAILED "
+                                "FIX PD/CD (GAP-B): MMIO device {} fw_launch_addr write FAILED "
                                 "(launch_eth_cores_for_quiesce path, PCIe write should not fail): {}",
                                 this->id(),
                                 ex_pd.what());
@@ -2231,7 +2247,7 @@ void Device::launch_eth_cores_for_quiesce() {
                         if (this->is_mmio_capable()) {
                             log_warning(
                                 tt::LogMetal,
-                                "FIX PD (GAP-B): MMIO device {} fw_launch_addr clear FAILED "
+                                "FIX PD/CD (GAP-B): MMIO device {} fw_launch_addr write FAILED "
                                 "(launch_eth_cores_for_quiesce path, non-std exception)",
                                 this->id());
                         }
