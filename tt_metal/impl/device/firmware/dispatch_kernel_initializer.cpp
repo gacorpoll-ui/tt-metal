@@ -19,6 +19,10 @@
 
 #include "dispatch/topology.hpp"
 
+#ifdef TT_ENABLE_FAULT_INJECTION
+#include "impl/device/testing/fault_injection.hpp"
+#endif
+
 #include "hal.hpp"
 #include "hal_types.hpp"
 #include "llrt/hal/generated/dev_msgs.hpp"
@@ -440,6 +444,14 @@ void DispatchKernelInitializer::rescue_stuck_dispatch_cores(IDevice* device) con
         // signal path (process_termination_signals) may still succeed.
         auto dispatch_cores = get_virtual_dispatch_cores(device->id());
         try {
+#ifdef TT_ENABLE_FAULT_INJECTION
+            // FIX CK (#42429): fault injection hook for H4 (stuck dispatch cores) testing.
+            // When armed, simulate stuck dispatch cores by throwing before the real wait call,
+            // forcing the hard-reset + FIX CI breadcrumb path to execute.
+            if (tt::tt_metal::testing::FaultInjector::should_fail_relay_write(device->id())) {
+                throw std::runtime_error("FaultInjector: simulated stuck dispatch cores for rescue_stuck_dispatch_cores");
+            }
+#endif
             // NOTE: was 100ms; increased to 1000ms (#42429) to avoid premature timeout on slower relay paths.
             tt::llrt::internal_::wait_until_cores_done(device->id(), dev_msgs::RUN_MSG_GO, dispatch_cores, 1000, true);
             log_info(

@@ -28,6 +28,10 @@
 
 #include <tt-metalium/experimental/fabric/control_plane.hpp>
 #include <tt-metalium/experimental/fabric/fabric_types.hpp>
+
+#ifdef TT_ENABLE_FAULT_INJECTION
+#include "impl/device/testing/fault_injection.hpp"
+#endif
 #include "common/executor.hpp"
 #include "get_platform_architecture.hpp"
 #include "hal_types.hpp"
@@ -799,6 +803,12 @@ void Cluster::assert_risc_reset_at_core(const tt_cxy_pair& core, const tt::umd::
 
 void Cluster::assert_risc_reset_at_core_write_only(
     const tt_cxy_pair& core, const tt::umd::RiscType& soft_resets) const {
+#ifdef TT_ENABLE_FAULT_INJECTION
+    // FIX CK (#42429): fault injection hook for H2 (dual relay failure) testing.
+    if (tt::tt_metal::testing::FaultInjector::should_fail_relay_write(core.chip)) {
+        throw std::runtime_error("FaultInjector: simulated relay write failure for assert_risc_reset_at_core_write_only");
+    }
+#endif
     const metal_SocDescriptor& soc_desc = this->get_soc_desc(core.chip);
     tt::umd::CoreCoord core_coord = soc_desc.get_coord_at(core, CoordSystem::TRANSLATED);
     this->driver_->assert_risc_reset_write_only(core.chip, core_coord, soft_resets);
@@ -1026,6 +1036,19 @@ void Cluster::write_core_immediate(const void* mem_ptr, uint32_t sz_in_bytes, tt
         // if flush times out.  Declared outside try so catch block can compute duration.
         const auto flush_start_ch = std::chrono::steady_clock::now();
         try {
+#ifdef TT_ENABLE_FAULT_INJECTION
+            // FIX CK (#42429): fault injection hook for H3 (flush timeout) testing.
+            // Must be INSIDE the try block so the FIX CH catch block fires with the
+            // injected flush-timeout exception string.
+            {
+                uint32_t fi_elapsed_ms = 0;
+                if (tt::tt_metal::testing::FaultInjector::get_flush_timeout(chip_id, &fi_elapsed_ms)) {
+                    throw std::runtime_error(
+                        "Timeout waiting for Ethernet core service remote IO request flush "
+                        "(FaultInjector: simulated " + std::to_string(fi_elapsed_ms) + "ms)");
+                }
+            }
+#endif
             this->driver_->write_to_device_reg(mem_ptr, sz_in_bytes, core.chip, core_coord, addr);
             this->driver_->wait_for_non_mmio_flush(chip_id);
         } catch (const std::exception& e) {
