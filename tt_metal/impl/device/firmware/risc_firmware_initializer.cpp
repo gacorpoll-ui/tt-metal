@@ -805,6 +805,70 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                     "non-MMIO ETH PHYs initializing; starting FIX AC MMIO resets now.");
             }
 
+            // FIX CP (#42429): Extend mmio_ac_skip_channels with MMIO peers of all channels on
+            // FIX CA-failed non-MMIO devices.
+            //
+            // Root cause: FIX CO only covers bc_deadlock channels on relay-broken non-MMIO devices.
+            // But when FIX CA fails for a non-MMIO device (e.g. device 4 bc_deadlock relay timeout),
+            // ALL ETH channels on that device remain unreset — not just the bc_deadlock ones.
+            // FIX AC then PCIe-resets the MMIO peers of those non-bc_deadlock channels, which enter
+            // ROM and write 0x49705180 waiting for ETH link training. Their non-MMIO peers are still
+            // running fabric firmware (not in ROM, not participating in link training). The MMIO ERISCs
+            // stay at 0x49705180 indefinitely; FIX XZ times out after 30s; next session promotes those
+            // channels to probe_dead via FIX BT → FIX RR-NM fires → degraded mode → test timeouts.
+            //
+            // Fix: after FIX CA, for every non-MMIO device where FIX CA completely failed,
+            // add ALL of that device's MMIO ETH peers to mmio_ac_skip_channels.  FIX AC will then
+            // leave those MMIO channels running UMD base firmware (0x49706550). Next session sees
+            // the UMD sentinel and skips them in FIX BT. FIX CO handles bc_deadlock; FIX CP handles
+            // the broader case of complete FIX CA failure.
+            if (!ca_failed_devices.empty() &&
+                descriptor_->metal_context().is_device_manager_initialized() && get_control_plane_) {
+                const auto& eth_connections_cp = cluster_.get_ethernet_connections();
+                uint32_t cp_added = 0;
+                for (const tt::ChipId failed_non_mmio_id : ca_failed_devices) {
+                    auto dev_it = eth_connections_cp.find(failed_non_mmio_id);
+                    if (dev_it == eth_connections_cp.end()) {
+                        continue;
+                    }
+                    for (const auto& [eth_chan_enum, peer_info] : dev_it->second) {
+                        const auto& [peer_chip_id, peer_chan_enum] = peer_info;
+                        if (!mmio_ids_set.count(peer_chip_id)) {
+                            continue;
+                        }
+                        const uint64_t skip_key =
+                            make_mmio_skip_key(peer_chip_id, static_cast<uint32_t>(peer_chan_enum));
+                        if (mmio_ac_skip_channels
+                                .emplace(
+                                    skip_key,
+                                    std::make_pair(
+                                        failed_non_mmio_id, static_cast<uint32_t>(eth_chan_enum)))
+                                .second) {
+                            ++cp_added;
+                            log_warning(
+                                tt::LogAlways,
+                                "teardown: FIX CP (#42429) — FIX CA failed for non-MMIO device {} "
+                                "(relay broken). Adding MMIO peer device {} chan={} to FIX AC skip "
+                                "set (ETH link training would hang at ROM postcode 0x49705180). "
+                                "(#42429)",
+                                failed_non_mmio_id,
+                                peer_chip_id,
+                                static_cast<uint32_t>(peer_chan_enum));
+                        }
+                    }
+                }
+                if (cp_added > 0) {
+                    log_warning(
+                        tt::LogAlways,
+                        "teardown: FIX CP (#42429) — added {} MMIO channel(s) to FIX AC skip set "
+                        "({} total) from {} FIX CA-failed non-MMIO device(s). These MMIO channels "
+                        "left running UMD base firmware; next session skip via FIX BT. (#42429)",
+                        cp_added,
+                        mmio_ac_skip_channels.size(),
+                        ca_failed_devices.size());
+                }
+            }
+
             for (const tt::ChipId mmio_id : mmio_ids_set) {
                 for (const auto& logical_core :
                      this->get_control_plane_().get_active_ethernet_cores(mmio_id)) {
