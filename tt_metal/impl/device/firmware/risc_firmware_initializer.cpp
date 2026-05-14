@@ -515,6 +515,7 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                 relay_broken_non_mmio.size());
 
             // FIX CA (#42429): Write-only reset of non-MMIO ETH ERISCs BEFORE resetting MMIO ERISCs.
+            // FIX CC (#42429): Also write fw_launch_addr_value for non-MMIO (mirrors FIX BR for MMIO).
             //
             // Root cause of FIX AC heartbeat failure (all 24 MMIO ETH cores timeout at 5000ms):
             //   When non-MMIO ERISCs crash (e.g. fabric EDM assert / AllGather kernel fault),
@@ -528,16 +529,23 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
             //   fires, and ac_heartbeat_any_ready stays false.  This gates FIX AY (the deferred
             //   non-MMIO ERISC reset), creating a permanent deadlock that only tt-smi -r breaks.
             //
-            // Fix: Before resetting MMIO ERISCs (which destroys their relay capability), use the
-            //   STILL-ALIVE MMIO ERISCs as relay to send a write-only assert+deassert to every
+            // Fix (CA): Before resetting MMIO ERISCs (which destroys their relay capability), use
+            //   the STILL-ALIVE MMIO ERISCs as relay to send a write-only assert+deassert to every
             //   non-MMIO ETH ERISC.  The write-only relay path routes:
             //     PCIe → MMIO ERISC (still running) → NOC → non-MMIO chip SOFT_RESET register
             //   This is fire-and-forget — the non-MMIO ERISC does not need to acknowledge the
-            //   write.  After the write, the non-MMIO ERISC enters ROM boot and can respond to
-            //   ETH PHY link training.  Then FIX AC resets the MMIO side, and BOTH sides boot
-            //   simultaneously.  Link training completes on both sides, FIX AC's 5000ms heartbeat
-            //   poll succeeds, FIX PG does not fire, and FIX AY is no longer needed for the
-            //   deadlock case (though it still runs as belt-and-suspenders for any missed channels).
+            //   write.  After the write, the non-MMIO ERISC enters ROM boot.
+            //
+            // Fix (CC): FIX BR writes fw_launch_addr_value for MMIO before FIX AC deassert, so
+            //   MMIO ROM jumps directly to base-UMD (skips ETH link training).  Without FIX CC,
+            //   non-MMIO ROM sees fw_launch_addr=0 → enters ETH link-training wait at 0x49705180
+            //   → waits for MMIO to participate → MMIO is in base-UMD (skipped training) →
+            //   non-MMIO stuck indefinitely.  FIX CC writes fw_launch_addr_value for non-MMIO
+            //   (via relay, while in reset) so both sides boot directly to base-UMD.  Link
+            //   training is no longer a gating dependency.  FIX AC's 5000ms heartbeat poll
+            //   succeeds, FIX PG does not fire, and the next session's probe sees 0x49706550
+            //   on both sides (FIX BT skips them; dead_relay_devices_ stays empty; FIX RR-NM
+            //   does not fire).
             uint32_t ca_succeeded = 0;  // promoted out of block so FIX CB can read it
             {
                 uint32_t ca_failed = 0;
@@ -565,6 +573,43 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                         try {
                             cluster_.assert_risc_reset_at_core_write_only(
                                 tt_cxy_pair(non_mmio_id, eth_virt), tt::umd::RiscType::ALL);
+                            // FIX CC (#42429): Write fw_launch_addr_value for non-MMIO channels while in
+                            // reset, mirroring FIX BR for MMIO.
+                            //
+                            // Root cause: FIX BR writes fw_launch_addr_value for MMIO ERISCs before
+                            // FIX AC deassert → MMIO ROM sees non-zero fw_launch_addr → jumps directly
+                            // to base-UMD (skips ETH link training at 0x49705180).  FIX CA previously
+                            // did NOT write fw_launch_addr_value for non-MMIO channels → non-MMIO ROM
+                            // sees fw_launch_addr=0 (cleared by FIX BN) → enters ETH link training
+                            // wait at 0x49705180 → waits for MMIO side to participate in link training
+                            // → but MMIO already jumped to base-UMD (skipped link training) → non-MMIO
+                            // stays stuck at 0x49705180 indefinitely.  Next session's probe detects
+                            // non-MMIO stuck at 0x49705180 → FIX BT promotes to probe_dead_channels →
+                            // FIX RR-NM fires but MMIO channels are also dead (all timed out in FIX XZ)
+                            // → step 1 PCIe-reset loop spends 48s timing out → step 2 skipped → hang.
+                            //
+                            // Fix: write fw_launch_addr_value here (via MMIO relay, fire-and-forget,
+                            // while non-MMIO is in reset) so non-MMIO ROM also jumps directly to
+                            // base-UMD on deassert.  Both MMIO and non-MMIO then boot to base-UMD
+                            // simultaneously.  ETH link training is no longer a gating dependency.
+                            // Next session's probe sees 0x49706550 (base-UMD sentinel) on both sides
+                            // → FIX BT skips them → dead_relay_devices_ not populated → FIX RR-NM
+                            // does not fire.
+                            try {
+                                const auto aeth_idx_cc = hal_.get_programmable_core_type_index(
+                                    HalProgrammableCoreType::ACTIVE_ETH);
+                                const auto& jit_cfg_cc = hal_.get_jit_build_config(aeth_idx_cc, 0, 0);
+                                if (jit_cfg_cc.fw_launch_addr_value != 0) {
+                                    cluster_.write_core_immediate(
+                                        non_mmio_id, eth_virt,
+                                        std::vector<uint32_t>{jit_cfg_cc.fw_launch_addr_value},
+                                        jit_cfg_cc.fw_launch_addr);
+                                }
+                            } catch (...) {
+                                // Non-fatal — relay write may fail transiently; deassert proceeds.
+                                // If fw_launch_addr stays 0, non-MMIO ROM enters link-training wait,
+                                // but that is the pre-FIX-CC baseline; FIX AY will handle recovery.
+                            }
                             cluster_.deassert_risc_reset_at_core_write_only(
                                 tt_cxy_pair(non_mmio_id, eth_virt));
                             ++ca_succeeded;
