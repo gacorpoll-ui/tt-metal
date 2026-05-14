@@ -416,6 +416,54 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
         std::unordered_set<tt::ChipId> relay_broken_non_mmio;
         bool any_teardown_timed_out = false;
         const auto mmio_ids_set = cluster_.mmio_chip_ids();
+        // FIX CO (#42429): MMIO (chip_id, eth_channel) pairs whose non-MMIO peer is a
+        // bc_deadlock channel on a relay-broken device.  These MMIO channels must NOT be
+        // reset by FIX AC.
+        //
+        // Root cause (run 25886920428):
+        //   FIX BC detected Device 4 and Device 2 channels stuck at REMOTE_HANDSHAKE_COMPLETE
+        //   (simultaneous-handshake deadlock).  FIX CJ registered them as bc_deadlock.  FIX CN
+        //   correctly skipped those channels from fabric_firmware_init::teardown's force-reset
+        //   loop to preserve the relay path.  In RiscFirmwareInitializer::teardown, FIX CA
+        //   attempted write-only resets of all non-MMIO channels on relay-broken Device 4,
+        //   INCLUDING the 2 bc_deadlock channels.  But Device 4's relay path IS the bc_deadlock
+        //   channel itself (the UMD relay BRISC was replaced by fabric firmware via FIX M), so
+        //   assert_risc_reset_at_core_write_only silently fails — the write goes to the relay
+        //   BRISC which is now spinning in fabric firmware at REMOTE_HANDSHAKE_COMPLETE and
+        //   cannot forward the reset write.  The bc_deadlock non-MMIO channels remain stuck in
+        //   running firmware (not in reset).
+        //
+        //   FIX AC then resets ALL MMIO ETH channels PCIe-direct.  Each MMIO ERISC enters ROM
+        //   boot and writes postcode 0x49705180, then waits for ETH PHY link training with its
+        //   peer.  The MMIO channel whose ETH link peer is the bc_deadlock non-MMIO channel
+        //   (still spinning, not in ROM mode) cannot complete link training — the non-MMIO
+        //   peer's PHY is not in reset state and not participating in link training.  The MMIO
+        //   ERISC stays stuck at 0x49705180 indefinitely.  FIX XZ times out after 30s with all
+        //   24 MMIO ETH heartbeats still zero.
+        //
+        //   Next session: terminate_stale_erisc_routers sees ROM postcode 0x49705180 on those
+        //   MMIO channels → FIX BT promotes them to probe_dead → FIX RR-NM fires → step 1
+        //   PCIe-reset loop spends 48s timing out (non-MMIO peer not in reset → link training
+        //   never completes) → Device 4 stays in dead-relay degraded mode → SetUp() throws
+        //   "Timeout waiting for Ethernet core service remote IO request".
+        //
+        // Fix: identify which MMIO channels have their ETH link peer as a bc_deadlock channel
+        // on a relay-broken non-MMIO device.  Skip those MMIO channels in FIX AC's PCIe reset
+        // loop.  Without the reset, the MMIO ERISC continues running UMD base firmware (NOT
+        // stuck at 0x49705180).  The non-MMIO bc_deadlock peer is still spinning at
+        // REMOTE_HANDSHAKE_COMPLETE but is also not in ROM mode, so link training is not
+        // triggered on either side.  Next session's terminate_stale_erisc_routers sees
+        // 0x49706550 (UMD sentinel) on the MMIO side → FIX BT skips it → no dead_relay →
+        // FIX RR-NM does not fire.  The bc_deadlock non-MMIO channels are cleaned up by the
+        // next session's FIX BC / FIX BH path.
+        //
+        // This set is populated below after relay_broken_non_mmio is finalised.
+        // Key: pair<mmio_chip_id, eth_channel>; value: non-MMIO peer chip_id (for logging).
+        std::unordered_map<uint64_t, std::pair<tt::ChipId, uint32_t>> mmio_ac_skip_channels;
+        // Helper to pack (chip_id, channel) into a single uint64_t key.
+        auto make_mmio_skip_key = [](tt::ChipId chip_id, uint32_t chan) -> uint64_t {
+            return (static_cast<uint64_t>(chip_id) << 32) | static_cast<uint64_t>(chan);
+        };
 
         if (descriptor_->metal_context().is_device_manager_initialized() && get_control_plane_) {
             auto& dm = descriptor_->metal_context().device_manager();
@@ -492,6 +540,64 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                 if (dev->is_fabric_teardown_timed_out()) {
                     any_teardown_timed_out = true;
                 }
+            }
+        }
+
+        // FIX CO (#42429): Step 1b — populate mmio_ac_skip_channels.
+        // For every bc_deadlock channel on a relay-broken non-MMIO device, find its MMIO
+        // ETH peer via get_ethernet_connections() and register that peer for FIX AC skip.
+        // Must run AFTER relay_broken_non_mmio is finalised (including FIX BA additions).
+        if (!relay_broken_non_mmio.empty() &&
+            descriptor_->metal_context().is_device_manager_initialized() && get_control_plane_) {
+            auto& dm_co = descriptor_->metal_context().device_manager();
+            const auto& eth_connections_co = cluster_.get_ethernet_connections();
+            for (const tt::ChipId non_mmio_id : relay_broken_non_mmio) {
+                const Device* dev_co = dm_co->get_device(non_mmio_id);
+                if (!dev_co) {
+                    continue;
+                }
+                const auto& bcd = dev_co->get_bc_deadlock_channels();
+                if (bcd.empty()) {
+                    continue;
+                }
+                auto dev_it = eth_connections_co.find(non_mmio_id);
+                if (dev_it == eth_connections_co.end()) {
+                    continue;
+                }
+                for (const uint32_t bc_chan : bcd) {
+                    auto chan_it = dev_it->second.find(static_cast<tt::EthernetChannel>(bc_chan));
+                    if (chan_it == dev_it->second.end()) {
+                        continue;
+                    }
+                    const auto& [peer_chip_id, peer_chan] = chan_it->second;
+                    // Only skip if the peer is an MMIO device — FIX AC only resets MMIO channels.
+                    if (!mmio_ids_set.count(peer_chip_id)) {
+                        continue;
+                    }
+                    const uint64_t skip_key = make_mmio_skip_key(peer_chip_id, static_cast<uint32_t>(peer_chan));
+                    if (mmio_ac_skip_channels.emplace(skip_key, std::make_pair(non_mmio_id, bc_chan)).second) {
+                        log_warning(
+                            tt::LogAlways,
+                            "teardown: FIX CO (#42429) — MMIO device {} chan={} has non-MMIO peer "
+                            "device {} chan={} which is bc_deadlock on a relay-broken device. "
+                            "Skipping FIX AC PCIe reset for this MMIO channel to avoid 30s XZ "
+                            "timeout (non-MMIO peer cannot be reset via relay; resetting MMIO "
+                            "side would leave it stuck at ROM postcode 0x49705180 indefinitely).",
+                            peer_chip_id,
+                            static_cast<uint32_t>(peer_chan),
+                            non_mmio_id,
+                            bc_chan);
+                    }
+                }
+            }
+            if (!mmio_ac_skip_channels.empty()) {
+                log_warning(
+                    tt::LogAlways,
+                    "teardown: FIX CO (#42429) — {} MMIO ETH channel(s) will be skipped in FIX AC "
+                    "reset loop (bc_deadlock non-MMIO peer unreachable via broken relay). "
+                    "These MMIO channels continue running UMD base firmware; next session "
+                    "will see 0x49706550 sentinel and skip them in FIX BT/RR-NM. (#42429)",
+                    mmio_ac_skip_channels.size());
             }
         }
 
@@ -704,6 +810,37 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                      this->get_control_plane_().get_active_ethernet_cores(mmio_id)) {
                     CoreCoord virtual_core = cluster_.get_virtual_coordinate_from_logical_coordinates(
                         mmio_id, logical_core, CoreType::ETH);
+                    // FIX CO (#42429): skip MMIO channels whose non-MMIO ETH peer is a bc_deadlock
+                    // channel on a relay-broken device.  Resetting such a MMIO ERISC causes it to
+                    // enter ROM boot and wait for ETH link training with its peer — but the peer is
+                    // still spinning in fabric firmware at REMOTE_HANDSHAKE_COMPLETE (FIX CA could
+                    // not reach it because the relay is broken).  Link training never completes,
+                    // the MMIO ERISC stays at postcode 0x49705180, and FIX XZ times out after 30s.
+                    // By leaving this MMIO channel running UMD base firmware, next session's
+                    // terminate_stale_erisc_routers sees 0x49706550 (UMD sentinel) and skips it.
+                    if (!mmio_ac_skip_channels.empty()) {
+                        try {
+                            const uint32_t mmio_eth_chan =
+                                cluster_.get_soc_desc(mmio_id).get_eth_channel_for_core(
+                                    logical_core, CoordSystem::LOGICAL);
+                            const uint64_t skip_key = make_mmio_skip_key(mmio_id, mmio_eth_chan);
+                            auto skip_it = mmio_ac_skip_channels.find(skip_key);
+                            if (skip_it != mmio_ac_skip_channels.end()) {
+                                log_warning(
+                                    tt::LogAlways,
+                                    "teardown: FIX CO (#42429) — skipping FIX AC PCIe reset for "
+                                    "MMIO device {} chan={} (ETH peer: non-MMIO device {} chan={} "
+                                    "is bc_deadlock and unreachable via broken relay). (#42429)",
+                                    mmio_id,
+                                    mmio_eth_chan,
+                                    skip_it->second.first,
+                                    skip_it->second.second);
+                                continue;
+                            }
+                        } catch (...) {
+                            // get_eth_channel_for_core failed — proceed with reset (safe fallback).
+                        }
+                    }
                     try {
                         // PCIe-direct for MMIO — safe even with broken relay.
                         cluster_.assert_risc_reset_at_core(
