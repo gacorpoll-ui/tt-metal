@@ -68,6 +68,11 @@ bool EventQuery(const MeshEvent& event) {
             continue;
         }
         auto* physical_device = event.device()->impl().get_device(coord);
+        // If the CQ has been quiesced since this event was recorded, all in-flight
+        // events are implicitly complete (finish_and_reset_in_use drained the CQ).
+        if (physical_device->sysmem_manager().is_quiesced(event.mesh_cq_id())) {
+            continue;
+        }
         event_completed &= physical_device->sysmem_manager().get_last_completed_event(event.mesh_cq_id()) >= event.id();
     }
     return event_completed;

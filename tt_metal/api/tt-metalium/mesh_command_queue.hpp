@@ -81,6 +81,9 @@ public:
     // actually has pending work causes wait_for_pending_events to skip EventSynchronize and can
     // produce use-after-free on buffers destroyed while dispatch is still referencing them.
     virtual bool in_use() const = 0;
+    // Monotonically increasing counter incremented on each finish_and_reset_in_use() cycle.
+    // Used by MeshBuffer to detect stale pending events from a previous quiesce cycle.
+    virtual uint32_t quiesce_epoch() const { return 0; }
     virtual std::optional<MeshTraceId> trace_id() const = 0;
     virtual WorkerConfigBufferMgr& get_config_buffer_mgr(uint32_t index) = 0;
     virtual void enqueue_mesh_workload(MeshWorkload& mesh_workload, bool blocking) = 0;

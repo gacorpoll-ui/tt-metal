@@ -152,11 +152,11 @@ public:
     //
     // In multi-CQ scenarios, operations on one CQ may reference a buffer while another CQ
     // deallocates and reallocates the same address. To prevent this race, we track the latest
-    // pending event ID per CQ (lock-free via std::atomic<uint32_t>).
-    // Wormhole and Blackhole support at most 2 hardware CQs, so a fixed-size array suffices.
+    // pending full-mesh event per supported CQ as a packed (quiesce_epoch, event_id) uint64_t.
+    // Deallocation rejects unsupported CQ IDs rather than silently skipping their events.
     // The buffer's address cannot be safely reused until all pending events complete.
 
-    // Registers a host-visible completion event for work that references this buffer.
+    // Registers a full-mesh host-visible completion event for work that references this buffer.
     // Deallocation will wait for the latest pending event on each CQ before releasing
     // the address back to the allocator.
     void add_pending_event(const MeshEvent& event);
@@ -220,19 +220,31 @@ private:
     using MeshBufferState = std::variant<OwnedBufferState, ExternallyOwnedState, DeallocatedState>;
     MeshBufferState state_;
 
-    // Pending event tracking for multi-CQ safety (lock-free).
-    // Stores the latest in-flight event ID per CQ. 0 = no pending event.
-    // IDs are monotonically increasing; CAS-updated so only the latest is kept.
-    // Wormhole/Blackhole support at most 2 hardware CQs — fixed array, no heap.
+    // Pending event tracking for multi-CQ safety.
+    // Stores the latest in-flight full-mesh event per supported CQ. 0 = no pending event.
+    // Each slot stores (quiesce_epoch << 32 | event_id) so that
+    // wait_for_pending_events() can detect stale events from a previous quiesce
+    // cycle without risking an infinite spin on reset counters.
+    // IDs are monotonically increasing within a cycle; CAS-updated so only the
+    // latest is kept.
+    // This currently supports the two-CQ FD configurations used by Wormhole/Blackhole;
+    // add_pending_event() fails fast if a runtime CQ id is outside this fixed array.
     //
     // Each slot is padded to a full cache line (64 bytes) to prevent false sharing:
     // CQ0 and CQ1 are written by different dispatch threads; without padding they
     // would share a cache line and cause unnecessary coherence traffic.
     static constexpr size_t kMaxMeshCQs = 2;
     struct alignas(64) CacheLinePaddedEventId {
-        std::atomic<uint32_t> value{};
+        std::atomic<uint64_t> value{};
     };
     mutable std::array<CacheLinePaddedEventId, kMaxMeshCQs> pending_event_ids_{};
+
+    // Pack/unpack helpers for the 64-bit (epoch, event_id) encoding.
+    static uint64_t pack_epoch_event(uint32_t epoch, uint32_t event_id) {
+        return (static_cast<uint64_t>(epoch) << 32) | event_id;
+    }
+    static uint32_t unpack_epoch(uint64_t packed) { return static_cast<uint32_t>(packed >> 32); }
+    static uint32_t unpack_event_id(uint64_t packed) { return static_cast<uint32_t>(packed); }
 
     // Deallocation-race sentinel (seq_cst closes the add/drain window).
     // Set to true by deallocate() BEFORE draining pending_event_ids_.

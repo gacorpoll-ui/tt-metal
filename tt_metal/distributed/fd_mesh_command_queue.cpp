@@ -21,7 +21,6 @@
 #include <utility>
 
 #include <tt_stl/assert.hpp>
-#include <tt_stl/cleanup.hpp>
 #include "buffer.hpp"
 #include "buffer_types.hpp"
 #include "device.hpp"
@@ -234,8 +233,12 @@ void FDMeshCommandQueue::clear_expected_num_workers_completed() {
 
     auto sub_device_ids = buffer_dispatch::select_sub_device_ids(mesh_device_, {});
     auto& sysmem_manager = this->reference_sysmem_manager();
-    auto event =
-        MeshEvent(sysmem_manager.get_next_event(id_), mesh_device_, id_, MeshCoordinateRange(mesh_device_->shape()));
+    auto event = MeshEvent(
+        sysmem_manager.get_next_event(id_),
+        mesh_device_,
+        id_,
+        MeshCoordinateRange(mesh_device_->shape()),
+        quiesce_epoch_.load(std::memory_order_acquire));
 
     // Issue commands to clear expected_num_workers_completed counter(s) on the dispatcher
     for (auto* device : mesh_device_->get_devices()) {
@@ -733,7 +736,8 @@ MeshEvent FDMeshCommandQueue::enqueue_record_event_helper(
         sysmem_manager.get_next_event(id_),
         mesh_device_,
         id_,
-        device_range.value_or(MeshCoordinateRange(mesh_device_->shape())));
+        device_range.value_or(MeshCoordinateRange(mesh_device_->shape())),
+        quiesce_epoch_.load(std::memory_order_acquire));
 
     sub_device_ids = buffer_dispatch::select_sub_device_ids(mesh_device_, sub_device_ids);
     auto dispatch_lambda = [this, &event, &sub_device_ids, notify_host](const MeshCoordinate& coord) {
@@ -1503,19 +1507,28 @@ void FDMeshCommandQueue::finish_and_reset_in_use() {
                 id_, is_reference_cq ? UINT32_MAX : 0, UINT32_MAX);
         }
 
-        // Exception-safety: even if finish_nolock() throws (e.g. a fabric/dispatch
-        // timeout propagated as TT_THROW), we MUST publish quiesced=true and clear
-        // in_use_ before unwinding.  Otherwise subsequent mark_in_use() is a no-op
-        // and EventSynchronize() never short-circuits, leaving the CQ permanently
-        // "busy".  A scope-exit guard flips state on every path.
-        auto mark_quiesced_guard = ttsl::make_cleanup([this]() noexcept {
+        try {
+            finish_nolock({});
+        } catch (...) {
+            for (auto* device : mesh_device_->get_devices()) {
+                device->sysmem_manager().set_quiesced(id_, false);
+            }
+            in_use_ = true;
+            throw;
+        }
+
+        // Only a successful finish publishes normal quiesce semantics. If finish_nolock()
+        // throws, callers must handle the dispatch error instead of treating old events as complete.
+        {
             for (auto* device : mesh_device_->get_devices()) {
                 device->sysmem_manager().set_quiesced(id_, true);
             }
             in_use_ = false;
-        });
-
-        finish_nolock({});
+            // Advance quiesce epoch so MeshBuffer can detect stale pending events
+            // from this (now-completed) cycle.  Release pairs with acquire in
+            // quiesce_epoch() and the seq_cst operations in add_pending_event.
+            quiesce_epoch_.fetch_add(1, std::memory_order_release);
+        }
     }
 }
 
