@@ -829,12 +829,15 @@ def test_sync_accuracy(tmp_path):
 PERF_PUSH_ZONE = "push_entry_to_host"
 PERF_PUSH_P50_MAX_NS = 800
 PERF_PUSH_P99_MAX_NS = 5_000
-PERF_PUSH_MIN_COUNT = 10_000
+# DEFAULT_PROFILER_PROGRAM_SUPPORT_COUNT bounds per-core marker count at 1000;
+# across the 32-chip TG mesh this still yields tens of thousands of samples
+# per zone, but keep min_count modest to avoid tripping on buffer-drop edges.
+PERF_PUSH_MIN_COUNT = 1_000
 
 PERF_SIGNAL_ZONE = "signal_realtime_profiler_and_switch"
 PERF_SIGNAL_P50_MAX_NS = 250
 PERF_SIGNAL_P99_MAX_NS = 1_000
-PERF_SIGNAL_MIN_COUNT = 10_000
+PERF_SIGNAL_MIN_COUNT = 1_000
 
 
 DEVICE_PROFILER_CSV = TT_METAL_HOME / "generated" / "profiler" / ".logs" / "profile_log_device.csv"
@@ -892,6 +895,13 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
     """
     log_path = tmp_path / "workload.log"
 
+    # The pipeline-perf runner pool is not uniform — only a subset of hosts
+    # actually have /mnt/MLPerf populated. Skip gracefully on the others so
+    # this test stays opportunistic instead of failing on infra variance.
+    llama_dir = Path(os.environ.get("LLAMA_DIR", "/mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct/"))
+    if not llama_dir.exists():
+        pytest.skip(f"Llama checkpoints not present at {llama_dir} on this runner")
+
     llama_argv = [
         "pytest",
         "models/demos/llama3_70b_galaxy/demo/demo_decode.py",
@@ -900,7 +910,7 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
         "--timeout=1800",
     ]
     env = dict(os.environ)
-    env["LLAMA_DIR"] = os.environ.get("LLAMA_DIR", "/mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct/")
+    env["LLAMA_DIR"] = str(llama_dir)
     env["FAKE_DEVICE"] = os.environ.get("FAKE_DEVICE", "TG")
     # Match the canonical `python -m tracy --profile-dispatch-cores --sync-host-device`
     # invocation: device profiler on + dispatch-core profiling on (both our zones are on

@@ -62,6 +62,16 @@ jobs:
         with:
           submodules: recursive
           path: docker-job
+      - name: Preflight — Llama weights present
+        # pipeline-perf pool is non-uniform; only a subset of runners have
+        # /mnt/MLPerf weka-mounted. Fail fast here (before the 30s+ setup-job
+        # artifact download) so `gh run rerun --failed <run-id>` cheaply
+        # re-rolls until the job lands on a Llama-capable host.
+        run: |
+          if [ ! -d /mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct ]; then
+            echo "::error::Runner $(hostname) is missing /mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct — re-roll with: gh run rerun --failed ${{ github.run_id }}"
+            exit 1
+          fi
       - name: ⬇️  Setup Job
         uses: ./docker-job/.github/actions/setup-job
         timeout-minutes: 10
