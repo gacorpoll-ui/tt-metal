@@ -4,10 +4,16 @@
 
 #pragma once
 
-#include <cstdint>
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+
+#include "core_coord.hpp"
 
 namespace tt::tt_metal {
+
+class IDevice;
 
 /**
  * @brief Expected signature for validating that a telemetry buffer contains dispatch telemetry data.
@@ -42,39 +48,30 @@ constexpr size_t DISPATCH_TELEMETRY_SIZE = std::max(
     sizeof(DispatchTelemetry),
     sizeof(PrefetchTelemetry));
 
-// TODO: fix
-DispatchTelemetry read_dispatch_telemetry(
-    IDevice* device, const CoreCoord& dispatch_logical_core, CoreType core_type = CoreType::WORKER) {
-    // Telemetry lives at a fixed dispatch-core-local L1 offset assigned by DispatchMemMap.
-    const auto& dispatch_mem_map = MetalContext::instance().dispatch_mem_map();
-    uint32_t addr = dispatch_mem_map.get_device_command_queue_addr(CommandQueueDeviceAddrType::DISPATCH_TELEMETRY);
+/**
+ * @brief Read the DispatchTelemetry block from a dispatch core's L1.
+ *
+ * @param device                Device that owns the dispatch core.
+ * @param dispatch_logical_core Logical coord of the dispatch core to sample.
+ * @param core_type             CoreType of the dispatch core (WORKER for tensix-based dispatch,
+ *                              ETH for ethernet-based dispatch).
+ * @return Telemetry data on success, or std::nullopt if the buffer fails signature/version
+ *         validation (a warning is logged in that case).
+ */
+std::optional<DispatchTelemetry> read_dispatch_telemetry(
+    IDevice* device, const CoreCoord& dispatch_logical_core, CoreType core_type = CoreType::WORKER);
 
-    // read_core needs a virtual (noc-addressable) coord, not the logical one the caller has.
-    CoreCoord virtual_core = device->virtual_core_from_logical_core(dispatch_logical_core, core_type);
-
-    // Make sure any in-flight kernel writes to L1 are visible before we sample.
-    tt::Cluster::instance().l1_barrier(device->id());
-
-    DispatchTelemetry out{};
-    tt::Cluster::instance().read_core(
-        &out, sizeof(out), tt_cxy_pair(device->id(), virtual_core), addr);
-
-    // Sanity-check the buffer actually contains a current-version DispatchTelemetry.
-    TT_FATAL(
-        out.signature == DISPATCH_TELEMETRY_SIGNATURE,
-        "DispatchTelemetry signature mismatch on chip {} core ({},{}) @ 0x{:x}: got 0x{:x}",
-        device->id(),
-        dispatch_logical_core.x,
-        dispatch_logical_core.y,
-        addr,
-        out.signature);
-    TT_FATAL(
-        out.version == DISPATCH_TELEMETRY_VERSION,
-        "DispatchTelemetry version mismatch on chip {}: got {}, expected {}",
-        device->id(),
-        out.version,
-        DISPATCH_TELEMETRY_VERSION);
-    return out;
-}
+/**
+ * @brief Read the PrefetchTelemetry block from a prefetch core's L1.
+ *
+ * @param device                Device that owns the prefetch core.
+ * @param prefetch_logical_core Logical coord of the prefetch core to sample.
+ * @param core_type             CoreType of the prefetch core (WORKER for tensix-based prefetch,
+ *                              ETH for ethernet-based prefetch).
+ * @return Telemetry data on success, or std::nullopt if the buffer fails signature/version
+ *         validation (a warning is logged in that case).
+ */
+std::optional<PrefetchTelemetry> read_prefetch_telemetry(
+    IDevice* device, const CoreCoord& prefetch_logical_core, CoreType core_type = CoreType::WORKER);
 
 }  // namespace tt::tt_metal
