@@ -374,6 +374,30 @@ Without an adequate teardown process for Ethernet kernels, in-flight credit mess
 
 In conclusion, for Ethernet kernels, a recommended starting point is to have setup and teardown “handshakes”, where the teardown “handshake” can be as simple as waiting for outstanding credits to reach the sender.
 
+### Simultaneous-Handshake Deadlock
+
+A subtle but real deadlock can occur when both ERISC cores on opposite ends of a link attempt to initiate a setup handshake at the same moment. In the standard handshake protocol one side acts as *initiator* (sends first) and the other as *responder* (waits then replies). If both sides independently decide they are the initiator — for example, because both see a fresh post-reboot state simultaneously — each will block waiting for the other to respond. Neither side ever transitions to responder, so neither send proceeds, and the link hangs indefinitely.
+
+**Conditions for occurrence:**
+
+- Two chips sharing an Ethernet link are both reset (e.g., after a host process crash, SIGKILL, or forced teardown).
+- Both ERISC cores come out of reset in a narrow window and simultaneously enter the handshake initiation path.
+- No higher-level arbiter breaks the symmetry (e.g., no master/slave assignment based on a stable chip-local property, or the assignment relies on state that was lost in the reset).
+
+**Detection and recovery (Phase 5b):**
+
+The fabric initialization sequence includes a Phase 5b health check that detects this condition. After reasserting the mesh, each active ETH channel is polled for expected EDM status transitions within a bounded timeout. If a channel stalls at a pre-`READY_FOR_TRAFFIC` status, Phase 5b classifies it as a simultaneous-handshake candidate and routes it to the force-reset path rather than the normal teardown path, bypassing the 5-second `TERMINATE` poll that would be wasted on a deadlocked channel.
+
+**Mitigation at the kernel level:**
+
+- Assign a deterministic role (master/slave) to each side of a link based on a stable, chip-local property (e.g., MMIO vs. non-MMIO device, physical chip ID) so that both sides cannot simultaneously enter the initiator path.
+- Implement a bounded handshake timeout. If the responder acknowledgement does not arrive within a deadline, the initiator should re-evaluate its role assignment and retry or yield to the other side.
+- Drain all outstanding credits and acks before teardown so that a successor kernel's handshake cannot be confused with in-flight traffic from the prior kernel (see Asynchronous Program Completion above).
+
+**Test coverage:**
+
+`tests/tt_metal/distributed/test_gap81_fixbc_fixbd_simultaneous_handshake_deadlock.cpp` — `SimultaneousHandshakeDeadlockFixture` validates Phase 5b recovery on T3K (≥ 4 devices) by fork+SIGKILL-injecting a predecessor AllGather mid-run, re-opening the mesh, and asserting that Phase 5b completes within 60 s.
+
 ### Fixed Datapath Resources Problem (Through ERISC)
 
 Given that the ERISC core *must* be used to facilitate traffic over Ethernet between chips, for mutl-chip traffic, it becomes analogous to what the NoC is for single-chip traffic. This complicates multichip dataflow and routing because there are certain resource limitations for basic chip-to-chip Ethernet transactions that do not exist with their analogous single-chip NoC commands.

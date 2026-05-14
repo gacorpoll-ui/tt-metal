@@ -68,6 +68,8 @@ For questions and comments please use the [TT-Metalium Scale-Out Discord Server]
 
 [6.2. Bubble Flow Control](#fab_vcs)
 
+[6.3. Simultaneous-Handshake ETH Deadlock](#sim_handshake_deadlock)
+
 [7. TT-Fabric Roadmap](#roadmap)
 
 [7.1. Fabric Node Status Mailbox](#statusqueue)
@@ -913,6 +915,34 @@ While dimension-ordered routing **prevents intra-mesh deadlocks**, **inter-mesh 
 ## 6.2 Bubble Flow Control <a id="fab_vcs"></a>
 
 As stated earlier, to avoid cyclic deadlocks on ring or torus topologies, TT-Fabric uses bubble flow control for injection channels. Packets entering the ring can only enter if two or more free slots are present on the first hop.
+
+## 6.3 Simultaneous-Handshake ETH Deadlock <a id="sim_handshake_deadlock"></a>
+
+The routing-level deadlocks described in 6.1 and 6.2 arise from cyclic buffer dependencies across multiple hops. A separate class of deadlock operates at the single-link level and can occur during fabric bring-up or recovery after a host process crash: the **simultaneous-handshake ETH deadlock**.
+
+### Mechanism
+
+Each Ethernet link requires both ERISC cores to complete a setup handshake before traffic can flow. The protocol assigns one side as *initiator* and the other as *responder*. If both cores reset simultaneously — for example after a SIGKILL or forced teardown — and both come out of reset within a narrow window, each can independently enter the initiator path. Because each side now waits for a response that the other is never going to send, the link deadlocks indefinitely at the ERISC level.
+
+This is distinct from routing deadlocks: it is not caused by a cycle in the network topology. It can occur on a two-chip link with no other traffic present.
+
+### Detection
+
+TT-Fabric's fabric initialization Phase 5b health check polls each active ETH channel for expected EDM status progression after mesh reassertion. A channel that stalls below `READY_FOR_TRAFFIC` beyond a bounded timeout is flagged as a simultaneous-handshake candidate. The check is bounded (≤ 60 s) so that a stuck channel does not indefinitely stall the recovery path.
+
+### Mitigation
+
+1. **Deterministic role assignment** — assign initiator/responder roles based on a stable, chip-local property (e.g., MMIO vs. non-MMIO device, physical chip ID) that survives reset. This prevents both sides from simultaneously entering the initiator path.
+2. **Force-reset bypass** — when Phase 5b detects a deadlocked channel, it routes it directly to the force-reset path and skips the 5 s `TERMINATE` poll, since the channel is not in a clean terminating state.
+3. **Kernel-level credit drain** — ERISC kernels should drain all outstanding credits and acks before teardown to prevent a successor kernel's handshake from being confused with in-flight traffic from the prior kernel (see *BasicEthernetGuide §Asynchronous Program Completion*).
+
+### Relationship to Other Deadlock Types
+
+| Type | Scope | Root cause | Mitigation |
+|---|---|---|---|
+| Cyclic dependency | Multi-hop routing | Buffer cycle across ≥ 3 nodes | Dimension-ordered routing (6.1) |
+| Injection starvation | Ring/torus injection | Buffer exhaustion at first hop | Bubble flow control (6.2) |
+| Simultaneous-handshake | Single ETH link | Both ERISCs enter initiator path after reset | Deterministic role assignment + Phase 5b force-reset |
 
 # 7 TT-Fabric Roadmap <a id="roadmap"></a>
 
