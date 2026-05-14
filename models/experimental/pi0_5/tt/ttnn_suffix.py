@@ -94,7 +94,7 @@ class SuffixEmbeddingTTNN:
 
         # Pre-compute sinusoidal scaling factor (constant across timesteps, saves ~8 ops per call)
         self._sin_scaling_factor = precompute_sinusoidal_scaling_factor(
-            config.expert_width, min_period=4e-3, max_period=4.0, device=device, indices=self.indices
+            config.expert_width, min_period=4e-3, max_period=4.0, indices=self.indices
         )
 
         # Pre-compute constant suffix attention mask for Pi0.5 (batch=1, suffix_len=action_horizon).

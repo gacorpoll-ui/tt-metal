@@ -42,7 +42,7 @@ from models.experimental.pi0_5.common.weight_loader import PI0WeightLoader
 TT_METAL_HOME = os.environ.get("TT_METAL_HOME")
 if not TT_METAL_HOME:
     raise EnvironmentError("TT_METAL_HOME environment variable is not set")
-CHECKPOINT_PATH = os.path.join(TT_METAL_HOME, "models/experimental/pi0_5/weights/pi0_base")
+CHECKPOINT_PATH = "lerobot/pi0_base"
 LIBERO_IMAGES_DIR = DEMO_DIR / "sample_images" / "libero"
 
 # LIBERO task prompts (from the benchmark)
@@ -123,7 +123,7 @@ def main():
 
     # Check paths
     checkpoint_path = Path(CHECKPOINT_PATH)
-    if not checkpoint_path.exists():
+    if checkpoint_path.is_absolute() and not checkpoint_path.exists():
         print(f"❌ Checkpoint not found: {checkpoint_path}")
         sys.exit(1)
 

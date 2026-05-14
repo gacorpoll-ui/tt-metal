@@ -307,5 +307,3 @@ def torch_to_ttnn(
 create_sinusoidal_pos_embedding = create_sinusoidal_pos_embedding_torch
 safe_cat = safe_cat_torch
 compute_position_ids = compute_position_ids_torch
-sample_noise = sample_noise_torch
-sample_time = sample_time_torch

@@ -485,7 +485,6 @@ class PaliGemmaBackboneTTNN:
             )
             if use_cache:
                 new_cache.append(new_kv)
-            pass  # ReadDeviceProfiler removed for performance
 
         # Final norm using TTNN
         if precomputed_final_mod is not None:

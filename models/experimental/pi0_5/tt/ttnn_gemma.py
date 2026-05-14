@@ -96,8 +96,6 @@ def adarms_norm_ttnn(
         Tuple of (normed output, gate tensor)
     """
     batch_size = x.shape[0]
-    seq_len = x.shape[1]
-    hidden_dim = x.shape[2]
 
     # Project conditioning: cond (B, cond_dim) -> modulation (B, hidden_dim * 3)
     cond_2d = ttnn.reshape(cond, (batch_size, 1, -1)) if len(cond.shape) == 2 else cond

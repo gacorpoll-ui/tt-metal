@@ -23,6 +23,12 @@ std::tuple<ttnn::Tensor, ttnn::Tensor> fused_adarms(
     const uint32_t hidden_dim = input_tensor.logical_shape()[-1];
     const uint32_t batch_size = input_tensor.logical_shape()[0];
 
+    TT_FATAL(
+        dense_bias.logical_shape()[-1] == hidden_dim * 3,
+        "dense_bias last dim {} must equal hidden_dim * 3 = {}",
+        dense_bias.logical_shape()[-1],
+        hidden_dim * 3);
+
     // Linear projection: cond → modulation [batch, 1, hidden_dim * 3]
     auto modulation = ttnn::linear(
         cond,
