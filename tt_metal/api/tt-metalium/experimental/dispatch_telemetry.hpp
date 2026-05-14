@@ -20,8 +20,8 @@ constexpr uint32_t DISPATCH_TELEMETRY_VERSION = 1;
 struct PrefetchTelemetry {
     uint32_t version = DISPATCH_TELEMETRY_VERSION;
     uint32_t signature = DISPATCH_TELEMETRY_SIGNATURE;
-    uint64_t blocked_count = 0;
-    uint64_t unblocked_count = 0;
+    uint64_t blocked_by_host_count = 0;
+    uint64_t unblocked_by_host_count = 0;
     uint64_t command_count = 0;
 };
 
@@ -31,8 +31,8 @@ struct PrefetchTelemetry {
 struct DispatchTelemetry {
     uint32_t version = DISPATCH_TELEMETRY_VERSION;
     uint32_t signature = DISPATCH_TELEMETRY_SIGNATURE;
-    uint64_t blocked_count = 0;
-    uint64_t unblocked_count = 0;
+    uint64_t blocked_by_host_count = 0;
+    uint64_t unblocked_by_host_count = 0;
 };
 
 }  // namespace tt::tt_metal

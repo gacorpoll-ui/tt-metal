@@ -9,9 +9,6 @@
 
 #include <cstdint>
 
-// Default type for when telemtry is disabled
-struct NoTelemetry {};
-
 template <typename Telemetry, uint32_t telemetry_addr>
 FORCE_INLINE volatile tt_l1_ptr Telemetry* get_telemetry_ptr() {
     return reinterpret_cast<volatile tt_l1_ptr Telemetry*>(telemetry_addr);
@@ -28,7 +25,7 @@ public:
 
     FORCE_INLINE ~TelemetryBlockGuardImpl() {
         if (blocked_) {
-            telemetry_->unblocked_count++;
+            telemetry_->unblocked_by_host_count++;
         }
     }
 
@@ -39,7 +36,7 @@ public:
 
     FORCE_INLINE void mark_blocked() {
         if (!blocked_) {
-            telemetry_->blocked_count++;
+            telemetry_->blocked_by_host_count++;
             blocked_ = true;
         }
     }

@@ -272,8 +272,9 @@ void init_prefetch_telemetry() {
     auto prefetch_telemetry_ptr = get_telemetry_ptr<PrefetchTelemetry, prefetch_telemetry_base>();
     DEVICE_PRINT("prefetch telemetry: version {}\n", prefetch_telemetry_ptr->version);
     DEVICE_PRINT("prefetch telemetry: signature {}\n", prefetch_telemetry_ptr->signature);
-    DEVICE_PRINT("prefetch telemetry: blocked_count {}\n", prefetch_telemetry_ptr->blocked_count);
-    DEVICE_PRINT("prefetch telemetry: unblocked_count {}\n", prefetch_telemetry_ptr->unblocked_count);
+    DEVICE_PRINT("prefetch telemetry: blocked_by_host_count {}\n", prefetch_telemetry_ptr->blocked_by_host_count);
+    DEVICE_PRINT("prefetch telemetry: unblocked_by_host_count {}\n", prefetch_telemetry_ptr->unblocked_by_host_count);
+    DEVICE_PRINT("prefetch telemetry: command_count {}\n", prefetch_telemetry_ptr->command_count);
 }
 
 
@@ -798,7 +799,7 @@ void fetch_q_get_cmds(uint32_t& fence, uint32_t& cmd_ptr, uint32_t& pcie_read_pt
                 // Nothing to fetch, nothing pending, nothing available, stall on host
                 WAYPOINT("HQW");
                 uint32_t heartbeat = 0U;
-                
+
                 if((fetch_size = *prefetch_q_rd_ptr) == 0U) {
                     PrefetchTelemetryBlockGuard prefetch_telemetry_blocked;
                     prefetch_telemetry_blocked.mark_blocked();

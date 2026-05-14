@@ -172,8 +172,8 @@ void init_dispatch_telemetry() {
     auto dispatch_telemetry_ptr = get_telemetry_ptr<DispatchTelemetry, dispatch_telemetry_base>();
     DEVICE_PRINT("dispatch telemetry: version {}\n", dispatch_telemetry_ptr->version);
     DEVICE_PRINT("dispatch telemetry: signature {}\n", dispatch_telemetry_ptr->signature);
-    DEVICE_PRINT("dispatch telemetry: blocked_count {}\n", dispatch_telemetry_ptr->blocked_count);
-    DEVICE_PRINT("dispatch telemetry: unblocked_count {}\n", dispatch_telemetry_ptr->unblocked_count);
+    DEVICE_PRINT("dispatch telemetry: blocked_by_host_count {}\n", dispatch_telemetry_ptr->blocked_by_host_count);
+    DEVICE_PRINT("dispatch telemetry: unblocked_by_host_count {}\n", dispatch_telemetry_ptr->unblocked_by_host_count);
 }
 
 // Release policies are TU-local so we can use the local relay_client instance
