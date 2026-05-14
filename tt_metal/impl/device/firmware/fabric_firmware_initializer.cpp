@@ -1085,6 +1085,33 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
         std::vector<AssertedChannel> asserted_channels;
 
         for (const auto& ch : pending) {
+            // FIX CN (#42429): bc_deadlock channels cannot be safely reset in
+            // fabric_firmware_init::teardown.  Asserting bc_deadlock MMIO channels
+            // (e.g. Device 1/3 chans 6-9 on T3K) destroys the relay path to their
+            // non-MMIO peers (Device 4/5) because the bc_deadlock dispatch links
+            // (Device 1 chans 8,9 are also bc_deadlock) go into hardware reset.
+            // This leaves non-MMIO peers unreachable for RiscFirmwareInitializer::
+            // teardown FIX CA, and when FIX AC subsequently resets Device 1/3 ERISC,
+            // both sides are stuck in ROM postcode 0x49705180 (ETH link training wait)
+            // with no valid peer — all 24 MMIO ETH channels fail in the next session.
+            //
+            // RiscFirmwareInitializer::teardown FIX AC/AY handles the correct sequence:
+            //   FIX AC: PCIe-reset MMIO ETH channels with fw_launch_addr bypass (relay
+            //           restored to base firmware running)
+            //   FIX AY: use restored relay to write-only-reset non-MMIO ETH channels
+            // Delegating here avoids the broken partial-reset cascade.
+            if (ch.dev->get_bc_deadlock_channels().count(ch.eth_chan_id) > 0) {
+                log_warning(
+                    tt::LogAlways,
+                    "FIX CN (#42429): Device {} chan={} is bc_deadlock — skipping "
+                    "assert/deassert and force_reset_channels_ registration in "
+                    "fabric_firmware_init::teardown; delegating reset to "
+                    "RiscFirmwareInitializer::teardown FIX AC/AY which restores "
+                    "relay before resetting non-MMIO peers.",
+                    ch.dev->id(),
+                    ch.eth_chan_id);
+                continue;
+            }
             // FIX AX (#42429): For non-MMIO channels whose device is already confirmed
             // relay-dead (from a prior channel's failed diagnostic read in this same loop),
             // skip the diagnostic read entirely.  Each diagnostic read on a dead-relay
