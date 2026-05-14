@@ -53,6 +53,7 @@ RingJointSDPAResult ring_joint_scaled_dot_product_attention(
     bool is_causal = false,
     std::optional<float> scale = std::nullopt,
     std::optional<DeviceComputeKernelConfig> compute_kernel_config = std::nullopt,
-    ttnn::ccl::CoreAllocationStrategy core_allocation_strategy = ttnn::ccl::CoreAllocationStrategy::ROW_MAJOR);
+    ttnn::ccl::CoreAllocationStrategy core_allocation_strategy = ttnn::ccl::CoreAllocationStrategy::ROW_MAJOR,
+    bool input_is_zigzag_layout = false);
 
 }  // namespace ttnn::prim

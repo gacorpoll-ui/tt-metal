@@ -1524,7 +1524,11 @@ void sdpa_ring_v2(
     const LightweightMaskContext& lw_mask = {},
     const bool skip_first_half_q = false,
     const bool use_zigzag_balancing = false,
-    const uint32_t causal_q_chunk_boundary = 0) {
+    const uint32_t causal_q_chunk_boundary = 0,
+    const uint32_t total_heads = 0,
+    const bool use_odd_global_q_schedule = false,
+    const uint32_t odd_schedule_pair_slots = 0,
+    const uint32_t odd_schedule_centers_per_core = 0) {
     constexpr uint32_t out_chunk_tiles = Sq_chunk_t * vDHt;
     constexpr bool uniform_format = uniform_dataformat;
     const bool is_causal_iter = is_causal_sdpa && (ring_iter == 0);
@@ -1618,7 +1622,16 @@ void sdpa_ring_v2(
         // Compute Q chunk index (with optional zigzag remapping for causal balancing).
         // num_q_chunks is total per-head chunks (local + joint), matching the divisor the
         // writer/reader use to flatten (batch, head, q_chunk) — see ring_joint_sdpa.cpp.
-        uint32_t q_chunk = remap_q_index(q, num_q_chunks, use_zigzag_balancing) % num_q_chunks;
+        uint32_t q_chunk = remap_ring_joint_q_index(
+                               q,
+                               num_q_chunks,
+                               total_heads,
+                               effective_causal_q_chunk_boundary,
+                               use_zigzag_balancing,
+                               use_odd_global_q_schedule,
+                               odd_schedule_pair_slots,
+                               odd_schedule_centers_per_core) %
+                           num_q_chunks;
 
         // Causal K-chunk limit and Q start tile for this Q chunk
         uint32_t causal_k_limit = num_kv_chunks;

@@ -669,6 +669,7 @@ class ttMLA:
             ccl_core_grid_offset=self.tt_ccl.ring_attention_ccl_core_grid_offset,
             use_column_major_ccl=True,
             is_causal=True,
+            input_is_zigzag_layout=self.is_balanced,
             scale=self.scale,
         )
 

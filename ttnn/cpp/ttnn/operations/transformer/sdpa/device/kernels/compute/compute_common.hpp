@@ -1731,7 +1731,11 @@ void sdpa_inner_loop(
     const bool skip_first_half_q = false,
     const bool use_zigzag_balancing = false,
     const bool is_last_ring_iter = true,
-    const uint32_t causal_q_chunk_boundary = 0) {
+    const uint32_t causal_q_chunk_boundary = 0,
+    const uint32_t ring_total_heads = 0,
+    const bool use_odd_global_q_schedule = false,
+    const uint32_t odd_schedule_pair_slots = 0,
+    const uint32_t odd_schedule_centers_per_core = 0) {
     constexpr uint32_t dst_size = compute_kernel_lib::DEST_AUTO_LIMIT;
     uint32_t KV_chunks_processed_in_iter = 0;
     const uint32_t q_per_core = iter_q_end - iter_q_start;
@@ -1760,7 +1764,16 @@ void sdpa_inner_loop(
                 q_high_tile = Skt;
             }
         } else if (sdpa_type == RING) {
-            uint32_t q_chunk = remap_q_index(q_iter, q_num_chunks, use_zigzag_balancing) % q_num_chunks;
+            uint32_t q_chunk = remap_ring_joint_q_index(
+                                   q_iter,
+                                   q_num_chunks,
+                                   ring_total_heads,
+                                   effective_causal_q_chunk_boundary,
+                                   use_zigzag_balancing,
+                                   use_odd_global_q_schedule,
+                                   odd_schedule_pair_slots,
+                                   odd_schedule_centers_per_core) %
+                               q_num_chunks;
 
             if (is_causal) {
                 q_start_tile = q_chunk * Sq_chunk_t;
@@ -2461,7 +2474,11 @@ void sdpa_ring(
     const bool skip_first_half_q,
     const bool is_last_ring_iter,
     const bool use_zigzag_balancing = false,
-    const uint32_t causal_q_chunk_boundary = 0) {
+    const uint32_t causal_q_chunk_boundary = 0,
+    const uint32_t ring_total_heads = 0,
+    const bool use_odd_global_q_schedule = false,
+    const uint32_t odd_schedule_pair_slots = 0,
+    const uint32_t odd_schedule_centers_per_core = 0) {
     sdpa_inner_loop<
         RING,
         cb_qk_im,
@@ -2540,7 +2557,11 @@ void sdpa_ring(
         skip_first_half_q,
         use_zigzag_balancing,
         is_last_ring_iter,
-        causal_q_chunk_boundary);
+        causal_q_chunk_boundary,
+        ring_total_heads,
+        use_odd_global_q_schedule,
+        odd_schedule_pair_slots,
+        odd_schedule_centers_per_core);
 }
 
 /**

@@ -26,6 +26,7 @@ void kernel_main() {
     constexpr uint32_t Lt = get_compile_time_arg_val(12);
     constexpr uint32_t L = get_compile_time_arg_val(13);
     constexpr uint32_t num_local_q_chunks = get_compile_time_arg_val(14);
+    constexpr uint32_t num_joint_q_chunks = get_compile_time_arg_val(15);
     constexpr uint32_t num_local_k_chunks = get_compile_time_arg_val(16);
     constexpr uint32_t num_joint_k_chunks = get_compile_time_arg_val(17);
     constexpr uint32_t num_q_chunks = get_compile_time_arg_val(18);
@@ -33,8 +34,12 @@ void kernel_main() {
     constexpr uint32_t qk_subblock_h = get_compile_time_arg_val(20);
     constexpr bool use_zigzag_balancing = get_compile_time_arg_val(22) == 1;
     constexpr uint32_t num_q_readers = get_compile_time_arg_val(24);
+    constexpr bool use_zigzag_ring_mapping = get_compile_time_arg_val(25) == 1;
+    constexpr uint32_t odd_schedule_pair_slots = get_compile_time_arg_val(26);
+    constexpr uint32_t odd_schedule_centers_per_core = get_compile_time_arg_val(27);
+    constexpr bool use_sequential_causal_layout = use_zigzag_balancing && !use_zigzag_ring_mapping;
 
-    constexpr auto q_args = TensorAccessorArgs<25>();
+    constexpr auto q_args = TensorAccessorArgs<28>();
     constexpr auto k_args = TensorAccessorArgs<q_args.next_compile_time_args_offset()>();
     constexpr auto v_args = TensorAccessorArgs<k_args.next_compile_time_args_offset()>();
     constexpr auto gathered_k_args = TensorAccessorArgs<v_args.next_compile_time_args_offset()>();
@@ -222,12 +227,16 @@ void kernel_main() {
      */
     uint32_t ring_index = fused_op_receiver.seq.ring_index;
     const uint32_t causal_q_chunk_boundary = num_local_q_chunks / 2;
+    constexpr uint32_t total_heads = B * NH;
+    constexpr bool use_odd_global_q_schedule = use_zigzag_ring_mapping && (NHK == 1) && (num_joint_q_chunks == 0) &&
+                                               (num_q_chunks % 2 != 0) && (odd_schedule_pair_slots != 0) &&
+                                               (odd_schedule_centers_per_core != 0);
     using Straddle = KCausalStraddleInfo<local_padded_Nt, Sk_chunk_t>;
     // Even per-head zigzag chunks are pair-distributed by the factory, so every
     // core has the same skip parity and skipped Q chunks can skip K/V traffic.
-    // Odd counts break that global parity at head boundaries; bypass K/V chains
-    // on those ring iterations and let active Q chunks fetch directly.
-    constexpr bool causal_skip_needs_chain_bypass = (num_q_chunks % 2) != 0;
+    // Odd counts can mix skipped and active Q chunks at the same q_iter across
+    // cores, so skipped chunks stay in the K/V chains as sync-only participants.
+    constexpr bool causal_skip_needs_sync_only = ((num_q_chunks % 2) != 0) && !use_odd_global_q_schedule;
     for (uint32_t ring_iter = 0; ring_iter < ring_size; ++ring_iter) {
         // find out which is the latest ring_id that synchronized
         uint32_t ring_id = fused_op_receiver.get_next_ring_id_and_sync();
@@ -247,9 +256,17 @@ void kernel_main() {
             continue;
         }
 
+        if constexpr (use_sequential_causal_layout) {
+            if (ring_index < ring_id) {
+                // Sequential causal layout: this KV shard belongs to future tokens
+                // for every local Q chunk, so skip the whole ring iteration.
+                continue;
+            }
+        }
+
         uint32_t iter_num_kv_chunks = num_kv_chunks;
 
-        // In causal zigzag case processing KV received from other devices:
+        // In causal cross-chip zigzag layout processing KV received from other devices:
         //
         // We will have two logical chunks of the input sequence, logical indexes are:
         // ring_index and (seq_len / 2 * num_devices) - ring_index
@@ -258,7 +275,7 @@ void kernel_main() {
         // - 1st part of the sequence precedes both chunks on the sender device, 2nd part attends to both
         // - both chunks preced 2nd part of the sequence in received KV
         // Indexes are updated accordingly; compute is skipped
-        if (use_zigzag_balancing && ring_index > ring_id) {
+        if (use_zigzag_ring_mapping && ring_index > ring_id) {
             iter_num_kv_chunks /= 2;
             // Mirror compute's K-loop extension: include the straddle chunk so K/V tiles
             // for it get loaded. Compute -inf-masks its late-half columns via lw_mask.
@@ -267,14 +284,8 @@ void kernel_main() {
             }
         }
 
-        const bool causal_skip_ring_iter =
-            causal_skip_needs_chain_bypass && use_zigzag_balancing && ring_index < ring_id;
-
         // When K mcast is enabled, loop max_q_per_core times to stay synchronized with injector.
-        // On causal-zigzag skip iterations, bypass K/V chains entirely: active cores fetch K/V
-        // directly and skipped Q chunks do no K/V work.
-        const uint32_t loop_q_count =
-            (k_uses_batch_chain && batch_mcast_enabled && !causal_skip_ring_iter) ? max_q_per_core : q_per_core;
+        const uint32_t loop_q_count = (k_uses_batch_chain && batch_mcast_enabled) ? max_q_per_core : q_per_core;
 
         for (uint32_t q_iter = 0; q_iter < loop_q_count; ++q_iter) {
             // Check if this is a real iteration (has actual work) or padded (K mcast sync only)
@@ -283,7 +294,19 @@ void kernel_main() {
             // Calculate global_q_chunk for all iterations (including padded).
             // For padded iterations, global index may be out of bounds, but q_chunk = global_q_chunk % num_q_chunks
             // gives a valid position that correctly determines whether to skip this iteration.
-            uint32_t global_q_chunk = remap_q_index(global_q_start + q_iter, num_q_chunks, use_zigzag_balancing);
+            const uint32_t linear_q_index = global_q_start + q_iter;
+            uint32_t global_q_chunk = remap_ring_joint_q_index(
+                linear_q_index,
+                num_q_chunks,
+                total_heads,
+                causal_q_chunk_boundary,
+                use_zigzag_balancing,
+                use_odd_global_q_schedule,
+                odd_schedule_pair_slots,
+                odd_schedule_centers_per_core);
+            const bool odd_center_slot =
+                use_odd_global_q_schedule &&
+                ring_joint_is_odd_center_slot(linear_q_index, odd_schedule_pair_slots, odd_schedule_centers_per_core);
 
             // global_q_chunk is index into `B * NH * num_q_chunks`. Need to get nb, nq, q_chunk from this.
             const uint32_t nb = global_q_chunk / (NH * num_q_chunks);
@@ -293,9 +316,11 @@ void kernel_main() {
             const bool is_joint_q = q_chunk >= num_local_q_chunks;
 
             const bool causal_skip_q =
-                q_chunk < causal_q_chunk_boundary && use_zigzag_balancing && ring_index < ring_id;
-            if (!causal_skip_needs_chain_bypass && causal_skip_q) {
-                continue;
+                q_chunk < causal_q_chunk_boundary && use_zigzag_ring_mapping && ring_index < ring_id;
+            if constexpr (!causal_skip_needs_sync_only) {
+                if (causal_skip_q && !odd_center_slot) {
+                    continue;
+                }
             }
 
             Slice q_slice;
@@ -365,12 +390,13 @@ void kernel_main() {
                 }
 
                 // Sync-only iterations can receive/fetch/forward chain data without
-                // pushing K/V/Q to compute. Odd-Q causal skip ring iters bypass the
-                // chains entirely because active cores fetch K/V directly.
+                // pushing K/V/Q to compute.
                 const bool sync_only_iter = is_padded_iter || causal_skip_q;
+                const bool odd_center_q = odd_center_slot;
+                const bool odd_center_uses_direct_k = false;
 
                 // K: either read locally (injector or not participant) or receive from chain.
-                const bool use_k_chain = !causal_skip_ring_iter;
+                const bool use_k_chain = !odd_center_uses_direct_k;
                 const bool k_should_receive = use_k_chain && k_chain.should_receive(nb, nq);
                 const bool k_should_forward = use_k_chain && k_chain.should_forward(nb, nq, q_iter_local);
                 const bool k_needs_data = !sync_only_iter || k_should_receive || k_should_forward;
@@ -445,7 +471,7 @@ void kernel_main() {
                 }
 
                 // V: either read locally (injector or not participant) or receive from chain.
-                const bool use_v_chain = !causal_skip_ring_iter;
+                const bool use_v_chain = !odd_center_q;
                 const bool v_should_receive = use_v_chain && v_chain.should_receive(nb, nq);
                 const bool v_should_forward = use_v_chain && v_chain.should_forward(nb, nq, q_iter_local);
                 const bool v_needs_data = !causal_skip_q || v_should_receive || v_should_forward;

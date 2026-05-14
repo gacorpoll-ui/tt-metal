@@ -118,6 +118,37 @@ inline uint32_t find_last_active_ring_iter(
 }
 
 /**
+ * Find the last ring iteration that performs actual KV computation for
+ * sequentially laid-out causal inputs.
+ *
+ * In sequential layout, a chip only attends to shards with ring_id <= its own
+ * ring_index. The alternating ring transfer order does not visit those shards
+ * monotonically, so the answer must be the last active iteration, not just a
+ * numeric ring_id.
+ */
+inline uint32_t find_last_active_sequential_causal_ring_iter(
+    RingIdSequencer seq, uint32_t local_padded_Nt, uint32_t global_n_tile_id, uint32_t L) {
+    uint32_t last_active = 0;
+    const uint32_t local_ring_index = seq.ring_index;
+    auto no_sync = [](uint32_t, uint32_t) {};
+
+    for (uint32_t t = 0; t < seq.ring_size; ++t) {
+        uint32_t ring_id = seq.get_next_ring_id(no_sync);
+        if (ring_id > local_ring_index) {
+            continue;
+        }
+        bool does_joint = (ring_id == seq.ring_size - 1);
+        uint32_t kv_start = ring_id * local_padded_Nt;
+        bool does_work = (kv_start <= global_n_tile_id) || (does_joint && L != 0);
+        if (does_work) {
+            last_active = t;
+        }
+    }
+
+    return last_active;
+}
+
+/**
  * Count valid (non-skipped) K chunks for a ring iteration.
  * Same skip logic as compute: local K chunks whose global start tile >= logical_nt are skipped.
  *

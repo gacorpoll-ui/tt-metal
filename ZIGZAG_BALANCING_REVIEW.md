@@ -1,69 +1,76 @@
 # Causal Zigzag Balancing Readiness
 
-This is the current follow-up list from the causal ring-joint SDPA zigzag review.
+Current follow-up list for causal ring-joint SDPA zigzag balancing.
 
 ## Resolved
 
 - Fixed the causal ring-joint runtime hang.
-  - Even per-head Q chunk counts now use pair-aligned zigzag Q distribution, preserving the fast skipped-Q path without desynchronizing K/V multicast chains.
+  - Even per-head Q chunk counts use pair-aligned zigzag Q distribution, preserving the fast skipped-Q path without desynchronizing K/V multicast chains.
   - Odd per-head Q chunk counts use the reader's chain-bypass fallback for skipped causal ring iterations so active cores fetch K/V directly instead of waiting on a bypassed chain hop.
-  - The causal smoke test now passes:
-    `scripts/run_safe_pytest.sh tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_sdpa_accuracy[mla_100k-q160-k256] -s`
 
 - Clarified causal + joint attention.
   - The op validation rejects causal + joint attention today.
-  - Added a regression test for this contract:
-    `scripts/run_safe_pytest.sh tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_rejects_causal_joint_attention -s`
+  - Regression coverage exists in `test_ring_joint_attention_rejects_causal_joint_attention`.
 
-- Collapsed duplicate ring-joint zigzag compile-time flags.
-  - Reader, writer, and compute now consume a single `use_zigzag_balancing` flag for both Q-index remapping and causal skip behavior.
-  - The host factory no longer passes two identical zigzag flags into the ring-joint kernels.
+- Split the causal layout contract from local zigzag work balancing.
+  - Causal ring-joint always enables local per-chip Q zigzag scheduling for load balance.
+  - `input_is_zigzag_layout` now only describes the physical cross-chip input layout.
+  - Sequential input layout skips future KV shards numerically across chips, while zigzag input layout keeps the existing cross-chip half-shard behavior.
 
-- Made the causal Q skip boundary explicit.
-  - Reader, writer, and ring-joint compute derive the skip boundary from `num_local_q_chunks / 2`.
-  - Shared compute helpers still default to `num_q_chunks / 2`, but ring-joint passes the local causal boundary explicitly.
+- Fixed sequential causal finalization order.
+  - Sequential layout now scans the actual alternating ring order to find the last active non-future KV iteration.
+  - This prevents local shards from normalizing too early on chips that still need earlier sequential KV shards later in the ring order.
 
-- Restored the default Blackhole worker L1 setup.
-  - Removed the temporary 4 KiB extra kernel-code reserve from ring-joint SDPA and DeepSeek MLA tests.
-  - Causal even and odd ring-joint smoke coverage passed with a fresh `TT_METAL_CACHE` and `0/64` JIT cache hits, confirming the kernels fit without the worker-L1 reduction.
+## Remaining Work
 
-## Blockers
+- Resolve code size back to the default worker-L1 setup.
+  - Current bring-up uses `RING_JOINT_WORKER_L1_SIZE = 1457664` on Blackhole causal ring-joint tests.
+  - The default kernel-config buffer was too small for at least the cold sequential `q128/k320` kernel variant.
 
-- Align the causal ring-joint layout contract.
-  - The op now enables zigzag whenever `args.is_causal` is true in `ring_joint_sdpa_program_factory.cpp`.
-  - Higher-level DeepSeek paths still expose `is_balanced=False` and can prepare sequential input/RoPE/cache/output mappings.
-  - Either force causal ring-joint callers to prepare zigzag layout, or remove/rename the remaining layout flag so sequential causal layout cannot accidentally call the always-zigzag kernel.
+- Clean up naming in tests/model code.
+  - Python-side `is_balanced` now means physical zigzag input layout, not whether the op balances causal work.
+  - Rename to `input_is_zigzag_layout` or `use_zigzag_layout` where practical.
 
-## Correctness Cleanup
+- Keep tracking ring-joint perf as code-size work continues.
+  - Existing perf coverage `test_ring_joint_attention_perf_check[mla_100k-q160-k320-ring4]` passes with zigzag physical layout.
+  - MLA-like misaligned zigzag coverage now exists as `test_ring_joint_attention_perf_check[mla_100k-q160-k320-zigzag_misaligned-ring4]`.
+    - This keeps the q160/k320 tiling from the MLA gate but uses local sequence length `3136`, so the physical zigzag half is not aligned to Q chunks.
+  - Odd local-Q-chunk zigzag coverage now exists as `test_ring_joint_attention_perf_check[mla_100k-q160-k320-zigzag_odd_qchunks-ring4]`.
+    - This keeps the q160/k320 tiling from the MLA gate and uses local sequence length `3328`, so each local shard has 21 Q chunks and 11 K chunks.
+  - Sequential physical layout correctness passes, but expectedly has lower utilization because causal work is imbalanced across chips when the physical input is not cross-chip zigzagged.
+  - DeepSeek MLA perf parametrization now includes sequential and zigzag layouts, but the local 4-device setup cannot run the `2x4` perf mesh directly.
 
-- Clean up remaining naming in tests/model code.
-  - `is_balanced` now means physical zigzag layout in Python-side data prep, not an op mode.
-  - Rename to something like `use_zigzag_layout` where practical to avoid confusing it with the removed op argument.
+## Validation Status
 
-## Validation Plan
-
-- Re-run build:
+- Passed:
   - `./build_metal.sh --release`
-  - Current status: passed after the default worker-L1 code-size cleanup.
-
-- Re-run the causal ring-joint smoke test first:
-  - `scripts/run_safe_pytest.sh tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_sdpa_accuracy[mla_100k-q160-k256] -s`
-  - Current status: passed.
-
-- Re-run remaining causal ring-joint MLA chunks and odd chunk tests:
-  - `mla_100k-q160-k160`, `mla_100k-q160-k320`
-  - `mla_100k-odd-total-qchunks-q128-k256`, `mla_100k-odd-total-qchunks-q128-k320`
-  - Current status: passed.
-
-- Re-run post-cleanup targeted coverage:
-  - `scripts/run_safe_pytest.sh 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_sdpa_accuracy[mla_100k-q160-k320]' 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_odd_num_q_chunks[mla_100k-odd-total-qchunks-q128-k320]' -s`
-  - `env TT_METAL_CACHE=/tmp/tt_metal_cache_ring_joint_codesize_<fresh> scripts/run_safe_pytest.sh 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_sdpa_accuracy[mla_100k-q160-k320]' 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_odd_num_q_chunks[mla_100k-odd-total-qchunks-q128-k320]' -s`
-  - `scripts/run_safe_pytest.sh tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_rejects_causal_joint_attention -s`
-  - `scripts/run_safe_pytest.sh 'models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_ring_joint_mla.py::test_mla_sdpa[blackhole-zigzag-rpxup-2x2-line-1link-skip_pcc-no_trace-single_run-1-128-1-576-128-seq100k-q_bf16_kv_bf8]' -s`
-  - Current status: passed. The fresh-cache code-size run passed with `0/64` JIT cache hits.
-
-- Then run the requested SDPA suites:
   - `scripts/run_safe_pytest.sh tests/ttnn/unit_tests/operations/sdpa`
-    - Current status: passed, 29 passed and 3 skipped.
-  - `scripts/run_safe_pytest.sh tests/ttnn/nightly/unit_tests/operations/sdpa/`
-    - Current status: not completed in this pass; the directory collected 1813 cases and was stopped after initial passing MLA decode/prefill coverage because it is too broad for this ring-joint iteration.
+    - Result: 29 passed, 3 skipped.
+  - `env TT_METAL_CACHE=/tmp/tt_metal_cache_zigzag_expanded_odd_<fresh> scripts/run_safe_pytest.sh 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_odd_num_q_chunks' -s`
+  - `env TT_METAL_CACHE=/tmp/tt_metal_cache_zigzag_contract_pair_<fresh> scripts/run_safe_pytest.sh 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_causal_layout_contract[sequential-layout]' 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_causal_layout_contract[zigzag-layout]' -s`
+  - `env TT_METAL_CACHE=/tmp/tt_metal_cache_zigzag_mla_smoke_<fresh> scripts/run_safe_pytest.sh 'models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_ring_joint_mla.py::test_mla_sdpa[blackhole-sequential-rpxup-2x2-line-1link-pcc_check-no_trace-single_run-1-128-1-576-128-seq100k-q_bf16_kv_bf8]' 'models/demos/deepseek_v3_d_p/tests/op_unit_tests/test_ring_joint_mla.py::test_mla_sdpa[blackhole-zigzag-rpxup-2x2-line-1link-pcc_check-no_trace-single_run-1-128-1-576-128-seq100k-q_bf16_kv_bf8]' -s`
+  - `env TT_METAL_CACHE=/tmp/tt_metal_cache_zigzag_correctness_<fresh> scripts/run_safe_pytest.sh 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_causal_layout_contract[sequential-layout]' 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_causal_layout_contract[zigzag-layout]' 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_odd_num_q_chunks' 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_rejects_causal_joint_attention' -s`
+    - Result: 7 passed.
+    - Sequential layout: PCC `0.9995729864655006`, RMSE `0.006618`.
+    - Zigzag layout: PCC `0.9995719113461311`, RMSE `0.006626`.
+  - `env SDPA_PERF_CHECKS=1 scripts/run_safe_pytest.sh 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_perf_check[mla_100k-q160-k320-ring4]' -s`
+    - Result: passed, duration `5.165 ms`, math utilization `58.56%`, expected band `[58.11%, 58.69%]`.
+  - `scripts/run_safe_pytest.sh 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_zigzag_odd_qchunk_perf_impl[mla_100k-local3328-q160-k320-zigzag-odd-qchunks]' -s`
+    - Result: passed.
+  - `env SDPA_PERF_CHECKS=1 scripts/run_safe_pytest.sh 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_perf_check[mla_100k-q160-k320-zigzag_odd_qchunks-ring4]' -s`
+    - Result: passed, duration `6.875 ms`, math utilization `47.59%`, expected band `[47.26%, 47.74%]`.
+  - `scripts/run_safe_pytest.sh 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_zigzag_misaligned_perf_impl[mla_100k-local3136-q160-k320-zigzag-misaligned]' -s`
+    - Result: passed.
+  - Checked accuracy for the same misaligned q160/k320 setup:
+    - Result: passed, PCC `0.9955360699990052`, RMSE `0.021219`.
+  - `env SDPA_PERF_CHECKS=1 scripts/run_safe_pytest.sh 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_perf_check[mla_100k-q160-k320-zigzag_misaligned-ring4]' -s`
+    - Result: passed, duration `5.119 ms`, math utilization `56.75%`, expected band `[56.52%, 57.08%]`.
+    - Device durations were balanced: `[5.119, 5.110, 5.069, 5.097] ms`.
+  - `env SDPA_PERF_CHECKS=1 scripts/run_safe_pytest.sh 'tests/nightly/blackhole/sdpa/test_ring_joint_sdpa.py::test_ring_joint_attention_perf_check[mla_100k-q160-k320-ring4]' -s`
+    - Result: passed after perf-check dispatch refactor, duration `5.167 ms`, math utilization `58.54%`.
+  - One-off Tracy profile for sequential physical layout contract case:
+    - Result: passed, duration `8.149 ms`, math utilization `37.12%`.
+
+- Pending:
+  - Full requested nightly SDPA sweep:
+    - `scripts/run_safe_pytest.sh tests/ttnn/nightly/unit_tests/operations/sdpa/`

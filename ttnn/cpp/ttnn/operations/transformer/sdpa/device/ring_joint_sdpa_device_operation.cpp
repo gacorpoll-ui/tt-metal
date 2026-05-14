@@ -276,6 +276,7 @@ ttsl::hash::hash_t RingJointSDPADeviceOperation::compute_program_hash(
         args.joint_strategy,
         args.scale,
         args.is_causal,
+        args.input_is_zigzag_layout,
         args.logical_n,
         args.ring_size,
         args.compute_kernel_config,
@@ -363,7 +364,8 @@ RingJointSDPAResult ring_joint_scaled_dot_product_attention(
     const bool is_causal,
     const std::optional<float> scale,
     const std::optional<DeviceComputeKernelConfig> compute_kernel_config,
-    const ttnn::ccl::CoreAllocationStrategy core_allocation_strategy) {
+    const ttnn::ccl::CoreAllocationStrategy core_allocation_strategy,
+    const bool input_is_zigzag_layout) {
     using OperationType = ttnn::prim::RingJointSDPADeviceOperation;
 
     auto kernel_config_val = init_device_compute_kernel_config(
@@ -411,6 +413,7 @@ RingJointSDPAResult ring_joint_scaled_dot_product_attention(
         joint_strategy,
         scale,
         is_causal,
+        input_is_zigzag_layout,
         logical_n,
         num_devices,
         tt::tt_metal::operation::DEFAULT_OUTPUT_MEMORY_CONFIG,
