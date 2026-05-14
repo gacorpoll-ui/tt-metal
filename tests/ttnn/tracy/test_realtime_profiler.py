@@ -833,6 +833,10 @@ PERF_PUSH_P99_MAX_NS = 5_000
 # across the 32-chip TG mesh this still yields tens of thousands of samples
 # per zone, but keep min_count modest to avoid tripping on buffer-drop edges.
 PERF_PUSH_MIN_COUNT = 1_000
+# Rate of outlier pushes (the only regression signal not captured by p99 once
+# p99 ≈ p50 ≈ ~420ns). 500ns is just above the 425ns bulk + small jitter band.
+PERF_PUSH_SLOW_THRESHOLD_NS = 500
+PERF_PUSH_SLOW_RATE_MAX = 0.01  # 1%; loose initial bound, tighten after baseline
 
 PERF_SIGNAL_ZONE = "signal_realtime_profiler_and_switch"
 PERF_SIGNAL_P50_MAX_NS = 250
@@ -876,13 +880,14 @@ def _parse_device_profiler_zone_durations(csv_path: Path, zone_names: set[str]) 
 
 def _zone_stats(durations: list[int]) -> dict:
     if not durations:
-        return {"count": 0, "p50": 0, "p99": 0}
+        return {"count": 0, "p50": 0, "p99": 0, "max": 0}
     s = sorted(durations)
     n = len(s)
     return {
         "count": n,
         "p50": s[n // 2],
         "p99": s[min(n - 1, int(n * 0.99))],
+        "max": s[-1],
     }
 
 
@@ -919,6 +924,10 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
     env["TT_METAL_DEVICE_PROFILER"] = "1"
     env["TT_METAL_DEVICE_PROFILER_DISPATCH"] = "1"
     env["TT_METAL_PROFILER_SYNC"] = "1"
+    # Default per-RISC profiler buffer holds 1000 programs (~93k push samples
+    # across the TG dispatch mesh). Bump 10× so slow-push rate resolution
+    # drops from ~11 ppm to ~1 ppm. DRAM cost scales linearly.
+    env["TT_METAL_PROFILER_PROGRAM_SUPPORT_COUNT"] = "10000"
 
     # Start clean — the device profiler appends to profile_log_device.csv if it exists.
     if DEVICE_PROFILER_CSV.exists():
@@ -958,7 +967,7 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
         (PERF_SIGNAL_ZONE, PERF_SIGNAL_P50_MAX_NS, PERF_SIGNAL_P99_MAX_NS, PERF_SIGNAL_MIN_COUNT),
     ]:
         st = _zone_stats(durs_by_zone.get(zone, []))
-        print(f"[{zone}] count={st['count']} p50={st['p50']}ns p99={st['p99']}ns")
+        print(f"[{zone}] count={st['count']} p50={st['p50']}ns p99={st['p99']}ns max={st['max']}ns")
         if st["count"] < min_count:
             failures.append(f"{zone}: too few samples ({st['count']} < {min_count})")
             continue
@@ -966,5 +975,19 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
             failures.append(f"{zone}: p50 {st['p50']}ns > budget {p50_max}ns")
         if st["p99"] > p99_max:
             failures.append(f"{zone}: p99 {st['p99']}ns > budget {p99_max}ns")
+
+    push_durs = durs_by_zone.get(PERF_PUSH_ZONE, [])
+    if len(push_durs) >= PERF_PUSH_MIN_COUNT:
+        slow = sum(1 for d in push_durs if d > PERF_PUSH_SLOW_THRESHOLD_NS)
+        rate = slow / len(push_durs)
+        print(
+            f"[{PERF_PUSH_ZONE}] slow(>{PERF_PUSH_SLOW_THRESHOLD_NS}ns): "
+            f"{slow}/{len(push_durs)} = {rate * 100:.4f}% ({rate * 1e6:.1f} ppm)"
+        )
+        if rate > PERF_PUSH_SLOW_RATE_MAX:
+            failures.append(
+                f"{PERF_PUSH_ZONE}: slow-rate {rate * 100:.4f}% "
+                f"({slow}/{len(push_durs)}) > budget {PERF_PUSH_SLOW_RATE_MAX * 100:.4f}%"
+            )
 
     assert not failures, "Dispatch-zone perf gate failed:\n  " + "\n  ".join(failures)
