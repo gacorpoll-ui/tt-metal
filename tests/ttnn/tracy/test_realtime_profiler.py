@@ -925,9 +925,12 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
     env["TT_METAL_DEVICE_PROFILER_DISPATCH"] = "1"
     env["TT_METAL_PROFILER_SYNC"] = "1"
     # Default per-RISC profiler buffer holds 1000 programs (~93k push samples
-    # across the TG dispatch mesh). Bump 10× so slow-push rate resolution
-    # drops from ~11 ppm to ~1 ppm. DRAM cost scales linearly.
-    env["TT_METAL_PROFILER_PROGRAM_SUPPORT_COUNT"] = "10000"
+    # across the TG dispatch mesh). 10× regressed Llama mini-stress wallclock
+    # 600s → >2100s (DRAM contention). 3× is the bisection midpoint: ~280k
+    # samples / ~4 ppm slow-rate resolution with ~450 MB/chip extra (vs ~1.5 GB
+    # at 10×). MID_RUN_DUMP would be the right knob but TT_FATALs with
+    # dispatch profiling at tt_metal_profiler.cpp:928.
+    env["TT_METAL_PROFILER_PROGRAM_SUPPORT_COUNT"] = "3000"
 
     # Start clean — the device profiler appends to profile_log_device.csv if it exists.
     if DEVICE_PROFILER_CSV.exists():
