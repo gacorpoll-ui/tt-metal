@@ -65,7 +65,7 @@ jobs:
         # time get a permanently empty /mnt/MLPerf inside the container.
         uses: ./.github/actions/ensure-active-weka-mount
       - name: Run profiler regression tests
-        timeout-minutes: 60
+        timeout-minutes: 75
         uses: ./.github/actions/docker-run
         with:
           docker_image: ${{ inputs.docker-image }}
@@ -96,5 +96,8 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           prefix: "test_reports_"
+          path: ${{ github.workspace }}/generated/test_reports/
       - uses: tenstorrent/tt-metal/.github/actions/cleanup@main
         if: always()
+        with:
+          path: ${{ github.workspace }}

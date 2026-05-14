@@ -54,7 +54,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Common paths / constants
 # ---------------------------------------------------------------------------
@@ -891,7 +890,7 @@ def _zone_stats(durations: list[int]) -> dict:
     }
 
 
-@pytest.mark.timeout(2400)
+@pytest.mark.timeout(3600)
 def test_realtime_profiler_perf_llama_tg(tmp_path):
     """
     Galaxy-only perf gate: run Llama-70B mini-stress with the device profiler on
@@ -912,7 +911,7 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
         "models/demos/llama3_70b_galaxy/demo/demo_decode.py",
         "-k",
         "mini-stress-test",
-        "--timeout=1800",
+        "--timeout=3000",
     ]
     env = dict(os.environ)
     env["LLAMA_DIR"] = str(llama_dir)
@@ -931,6 +930,13 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
     # at 10×). MID_RUN_DUMP would be the right knob but TT_FATALs with
     # dispatch profiling at tt_metal_profiler.cpp:928.
     env["TT_METAL_PROFILER_PROGRAM_SUPPORT_COUNT"] = "3000"
+    # NoC event tracing — capture per-event NoC traffic so tt-npe (separate
+    # repo) can post-mortem who else is writing to PCIe during the 86 ms
+    # push_entry_to_host outliers. Output drops alongside profile_log_device.csv;
+    # we copy the whole .logs dir into artifacts at end of test.
+    noc_trace_dir = TT_METAL_HOME / "generated" / "profiler" / ".logs"
+    env["TT_METAL_DEVICE_PROFILER_NOC_EVENTS"] = "1"
+    env["TT_METAL_DEVICE_PROFILER_NOC_EVENTS_RPT_PATH"] = str(noc_trace_dir)
 
     # Start clean — the device profiler appends to profile_log_device.csv if it exists.
     if DEVICE_PROFILER_CSV.exists():
@@ -941,7 +947,7 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
             llama_argv,
             env=env,
             cwd=str(TT_METAL_HOME),
-            timeout=2100,
+            timeout=3300,
             stdout=log_f,
             stderr=subprocess.STDOUT,
         )
@@ -950,6 +956,8 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
         "test_realtime_profiler_perf_llama_tg",
         **{"profile_log_device.csv": DEVICE_PROFILER_CSV, "workload_output.log": log_path},
     )
+    if noc_trace_dir.exists():
+        shutil.copytree(noc_trace_dir, artifact_dir / "noc_traces", dirs_exist_ok=True)
 
     if proc.returncode != 0:
         tail = log_path.read_text()[-8000:] if log_path.exists() else "<no log captured>"
@@ -981,12 +989,19 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
 
     push_durs = durs_by_zone.get(PERF_PUSH_ZONE, [])
     if len(push_durs) >= PERF_PUSH_MIN_COUNT:
-        slow = sum(1 for d in push_durs if d > PERF_PUSH_SLOW_THRESHOLD_NS)
+        slow_durs = sorted(d for d in push_durs if d > PERF_PUSH_SLOW_THRESHOLD_NS)
+        slow = len(slow_durs)
         rate = slow / len(push_durs)
         print(
             f"[{PERF_PUSH_ZONE}] slow(>{PERF_PUSH_SLOW_THRESHOLD_NS}ns): "
             f"{slow}/{len(push_durs)} = {rate * 100:.4f}% ({rate * 1e6:.1f} ppm)"
         )
+        # Dump every outlier timing when the slow-event count is tractable;
+        # otherwise just the worst 20 so logs don't blow up.
+        if 0 < slow <= 250:
+            print(f"[{PERF_PUSH_ZONE}] slow values (ns, sorted): " + ", ".join(str(d) for d in slow_durs))
+        elif slow > 250:
+            print(f"[{PERF_PUSH_ZONE}] top-20 slow values (ns): " + ", ".join(str(d) for d in slow_durs[-20:]))
         if rate > PERF_PUSH_SLOW_RATE_MAX:
             failures.append(
                 f"{PERF_PUSH_ZONE}: slow-rate {rate * 100:.4f}% "
