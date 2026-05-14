@@ -7,8 +7,32 @@
 #include "strided_all_gather_async_device_operation_types.hpp"
 #include "ttnn/device_operation.hpp"
 
+#include <tt-metalium/program.hpp>
+#include <tt-metalium/program_descriptors.hpp>
+
+#include <optional>
+
 namespace ttnn::experimental::prim {
 
+// Descriptor-based mesh-workload factory.
+//
+// - create_descriptor: Per-coord descriptor build invoked by the framework via
+//   the DescriptorMeshWorkloadFactoryAdapter.  All buffer-address runtime args
+//   are registered via emplace_runtime_args(Buffer*) so the framework patches
+//   them on every dispatch -- no override_runtime_arguments hook is required.
+//   GlobalSemaphores are owned by the caller and live on
+//   StridedAllGatherAsyncParams, so no prepare_resources hook is required
+//   either.  Matmul-fusion (fused_op_signaler) is NOT supported in this
+//   code path.
+//
+// - shared_variables_t / strided_all_gather_async_minimal_default_helper /
+//   override_runtime_arguments_per_program: legacy Program&-based helpers,
+//   preserved verbatim as a parallel API for the matmul-fusion consumer
+//   (experimental/ccl/strided_all_gather_minimal_matmul_async).  These are
+//   NOT invoked from create_descriptor; the descriptor path is a
+//   self-contained re-implementation.  Once the matmul-fusion variant is
+//   migrated to ProgramDescriptor, the helper and shared_variables_t can be
+//   removed.
 struct StridedAllGatherAsyncProgramFactory {
     struct shared_variables_t {
         std::vector<tt::tt_metal::KernelHandle> reader_kernel_ids;
@@ -21,19 +45,11 @@ struct StridedAllGatherAsyncProgramFactory {
         uint32_t num_cores_per_link;
     };
 
-    using cached_mesh_workload_t = ttnn::device_operation::AdaptedCachedMeshWorkload<shared_variables_t>;
-
-    static cached_mesh_workload_t create_mesh_workload(
+    static tt::tt_metal::ProgramDescriptor create_descriptor(
         const StridedAllGatherAsyncParams& operation_attributes,
-        const ttnn::MeshCoordinateRangeSet& tensor_coords,
         const StridedAllGatherAsyncInputs& tensor_args,
-        Tensor& tensor_return_value);
-
-    static ttnn::device_operation::CachedProgram<shared_variables_t> create_at(
-        const StridedAllGatherAsyncParams& operation_attributes,
-        const ttnn::MeshCoordinate& mesh_coordinate,
-        const StridedAllGatherAsyncInputs& tensor_args,
-        Tensor& output_tensor);
+        Tensor& output_tensor,
+        const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate);
 
     static shared_variables_t strided_all_gather_async_minimal_default_helper(
         tt::tt_metal::Program& program,
@@ -61,12 +77,6 @@ struct StridedAllGatherAsyncProgramFactory {
         const shared_variables_t& shared_variables,
         tt::tt_metal::Program& program,
         const StridedAllGatherAsyncParams& attributes,
-        const StridedAllGatherAsyncInputs& tensor_args,
-        Tensor& output_tensor);
-
-    static void override_runtime_arguments(
-        cached_mesh_workload_t& cached_workload,
-        const StridedAllGatherAsyncParams& operation_attributes,
         const StridedAllGatherAsyncInputs& tensor_args,
         Tensor& output_tensor);
 };
