@@ -9,8 +9,11 @@
 #include <tt-metalium/global_semaphore.hpp>
 #include <tt-metalium/mesh_coord.hpp>
 #include <tt-metalium/mesh_device.hpp>
+#include <tt-metalium/program_descriptors.hpp>
 #include "ttnn/types.hpp"
 #include "ttnn/device_operation.hpp"
+
+#include <optional>
 
 namespace ttnn {
 namespace operations::point_to_point {
@@ -39,39 +42,37 @@ struct PointToPointOp {
     using tensor_return_value_t = std::array<ttnn::Tensor, 2>;
 
     struct SendReceive {
-        struct shared_variables_t {
-            tt::tt_metal::KernelHandle send_unary_reader_kernel_id;
-            tt::tt_metal::KernelHandle send_unary_writer_kernel_id;
-            std::vector<CoreCoord> sender_cores;
-
-            tt::tt_metal::KernelHandle receive_unary_reader_kernel_id;
-            tt::tt_metal::KernelHandle receive_unary_writer_kernel_id;
-            std::vector<CoreCoord> receiver_cores;
-            const tt::tt_metal::GlobalSemaphore semaphore;
+        // Workload-level resources allocated once per cache miss in prepare_resources()
+        // and re-passed to every per-coord create_descriptor() call.  The single
+        // GlobalSemaphore is shared between the send and receive programs on the
+        // two endpoint devices — both reference its absolute address in runtime
+        // args.  GlobalSemaphore has no default constructor (it owns a device
+        // allocation), so the framework's `resource_t{}` value-init in
+        // DescriptorMeshWorkloadFactoryAdapter would fail with a raw member.
+        // Wrap in std::optional<>; prepare_resources() always populates it
+        // before create_descriptor() reads it.
+        struct Resources {
+            std::optional<tt::tt_metal::GlobalSemaphore> semaphore;
         };
 
-        // AdaptedCachedMeshWorkload this maps device coordinates to sets of shared variables.
-        // CachedMeshWorkload has a common set for all devices.
-        using cached_mesh_workload_t = ttnn::device_operation::AdaptedCachedMeshWorkload<shared_variables_t>;
-
-        static cached_mesh_workload_t create_mesh_workload(
+        // Allocates the GlobalSemaphore and runs the cross-device Synchronize
+        // barrier.  Invoked ONCE per workload (before any per-coord program
+        // build) by the DescriptorMeshWorkloadFactoryAdapter.
+        static Resources prepare_resources(
             const operation_attributes_t& operation_attributes,
-            const ttnn::MeshCoordinateRangeSet& tensor_coords,
             const tensor_args_t& tensor_args,
             tensor_return_value_t& tensor_return_value);
 
-        static ttnn::device_operation::CachedProgram<shared_variables_t> create_at(
+        // Per-coord program build.  workload_resources is the value returned
+        // from prepare_resources(); mesh_dispatch_coordinate identifies which
+        // device in the mesh this program targets (used to dispatch to either
+        // the send or receive sub-program factory).
+        static tt::tt_metal::ProgramDescriptor create_descriptor(
             const operation_attributes_t& operation_attributes,
-            const ttnn::MeshCoordinate& mesh_coordinate,
             const tensor_args_t& tensor_args,
             tensor_return_value_t& tensor_return_value,
-            const tt::tt_metal::GlobalSemaphore& semaphore);
-
-        static void override_runtime_arguments(
-            cached_mesh_workload_t& cached_workload,
-            const operation_attributes_t& operation_attributes,
-            const tensor_args_t& tensor_args,
-            tensor_return_value_t& tensor_return_value);
+            Resources& workload_resources,
+            const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate);
     };
 
     using program_factory_t = std::variant<SendReceive>;
@@ -120,7 +121,7 @@ Fabric1DRoute fabric_1d_routing(
 
 }  // namespace detail
 
-device_operation::CachedProgram<PointToPointOp::SendReceive::shared_variables_t> send_program_factory(
+tt::tt_metal::ProgramDescriptor send_program_factory(
     const PointToPointOp::tensor_args_t& tensor_args,
     const PointToPointOp::operation_attributes_t& operation_attributes,
     const MeshCoordinate& send_coord,
@@ -128,7 +129,7 @@ device_operation::CachedProgram<PointToPointOp::SendReceive::shared_variables_t>
     PointToPointOp::tensor_return_value_t& output_tensor,
     const tt::tt_metal::GlobalSemaphore& semaphore);
 
-device_operation::CachedProgram<PointToPointOp::SendReceive::shared_variables_t> receive_program_factory(
+tt::tt_metal::ProgramDescriptor receive_program_factory(
     const PointToPointOp::operation_attributes_t& operation_attributes,
     PointToPointOp::tensor_return_value_t& output_tensor,
     const tt::tt_metal::GlobalSemaphore& semaphore);
