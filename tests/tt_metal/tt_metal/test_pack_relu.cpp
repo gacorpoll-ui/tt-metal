@@ -20,12 +20,12 @@
 using namespace tt;
 using namespace tt::tt_metal;
 
-// ReluType encoding (matches ckernel::ReluType)
+// ReluType encoding (matches ckernel::ReluType underlying values)
 enum class PackReluMode : uint32_t {
-    ReluType::NO_RELU = 0,
-    ReluType::ZERO_RELU = 1,
-    ReluType::MIN_THRESHOLD_RELU = 2,
-    ReluType::MAX_THRESHOLD_RELU = 3,
+    NO_RELU = 0,
+    ZERO_RELU = 1,
+    MIN_THRESHOLD_RELU = 2,
+    MAX_THRESHOLD_RELU = 3,
 };
 
 // Pack relu config: mode in bits [1:0], bfloat16 threshold in bits [31:16]
