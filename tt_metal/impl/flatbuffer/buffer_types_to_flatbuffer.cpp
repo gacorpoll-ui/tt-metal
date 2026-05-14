@@ -6,6 +6,8 @@
 #include "flatbuffer/program_types_to_flatbuffer.hpp"
 #include "lightmetal/lightmetal_capture.hpp"  // For LightMetalCaptureContext
 
+#include <vector>
+
 namespace tt::tt_metal {
 
 // Original types defined in buffer_types.hpp
@@ -52,6 +54,17 @@ flatbuffers::Offset<flatbuffer::CircularBufferConfig> to_flatbuffer(
         return builder.CreateVectorOfStructs(vec);
     };
 
+    auto create_fb_vec_of_unpack_face_geometry = [&](const auto& array) {
+        std::vector<flatbuffer::CBConfigUnpackFaceGeometry> vec;
+        for (size_t i = 0; i < array.size(); i++) {
+            if (array[i]) {
+                vec.push_back(flatbuffer::CBConfigUnpackFaceGeometry{
+                    static_cast<uint32_t>(i), array[i]->first, array[i]->second});
+            }
+        }
+        return builder.CreateVectorOfStructs(vec);
+    };
+
     // Convert unordered_set of uint8_t to FlatBuffer vector
     auto create_fb_vec_of_uint8 = [&](const auto& set) {
         return builder.CreateVector(std::vector<uint8_t>(set.begin(), set.end()));
@@ -83,7 +96,8 @@ flatbuffers::Offset<flatbuffer::CircularBufferConfig> to_flatbuffer(
         create_fb_vec_of_uint8(config.remote_buffer_indices()),
         config.dynamic_cb(),
         config.max_size(),
-        config.buffer_size());
+        config.buffer_size(),
+        create_fb_vec_of_unpack_face_geometry(config.unpack_face_geometry()));
 }
 
 // TODO: Opportunity to share with TTNN. This was straight up copied from tensor_spec_flatbuffer.cpp

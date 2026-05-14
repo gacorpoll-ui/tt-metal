@@ -55,7 +55,6 @@ void kernel_main() {
     constexpr bool use_split_reader = split_reader;
 
     constexpr bool last_tile_is_partial = in_c % TILE_WIDTH != 0;
-    constexpr uint32_t face_r_dim = window_size_hw < FACE_HEIGHT ? window_size_hw : FACE_HEIGHT;
     constexpr uint32_t num_faces_in_input_tile =
         (max_sticks_for_reduction < TILE_HEIGHT || window_size_hw <= FACE_HEIGHT) ? 2 : 4;
     // "Single partial tile per core that fits in one face": when there is only one output tile
