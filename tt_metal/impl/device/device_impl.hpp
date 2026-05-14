@@ -235,6 +235,13 @@ public:
     void set_fabric_channels_not_ready_for_traffic() override {
         fabric_channels_not_ready_for_traffic_.store(true);
     }
+    const std::unordered_set<uint32_t>& get_bc_deadlock_channels() const override {
+        return bc_deadlock_channels_;
+    }
+    void add_bc_deadlock_channel(uint32_t eth_chan_id) override {
+        bc_deadlock_channels_.insert(eth_chan_id);
+    }
+    void clear_bc_deadlock_channels() override { bc_deadlock_channels_.clear(); }
     bool is_fabric_ring_sync_timed_out() const override { return fabric_ring_sync_timed_out_.load(); }
     void set_fabric_ring_sync_timed_out() override { fabric_ring_sync_timed_out_.store(true); }
     // FIX ST (#42429): Returns the effective (post-FIX-RR) pre-dead ETH channel set.
@@ -420,6 +427,14 @@ private:
     // before running AllGather operations that require full fabric readiness.
     // Cleared unconditionally at the top of configure_fabric().
     std::atomic<bool> fabric_channels_not_ready_for_traffic_{false};
+
+    // FIX CJ (#42429): ETH channel IDs identified by FIX BC as stuck in simultaneous-
+    // handshake deadlock (REMOTE_HANDSHAKE_COMPLETE, 0xa1b1c1d1).  These channels cannot
+    // process TERMINATE — FabricFirmwareInitializer::teardown() routes them to immediate
+    // force-reset instead of the 5s TERMINATE poll.  Protected by the same serialization
+    // invariant as quiescing_device_ids_ (single-threaded quiesce path).
+    // Cleared unconditionally at the top of configure_fabric().
+    std::unordered_set<uint32_t> bc_deadlock_channels_;
 
     // FIX TK (#42429): Set by FabricFirmwareInitializer::verify_all_fabric_channels_healthy()
     // when fabric_channels_not_ready_for_traffic_ was set due to ring sync timeout (FIX TI path),

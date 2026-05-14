@@ -433,6 +433,7 @@ void Device::configure_fabric(
     // fabric firmware on all channels, so after this call all channels will go through the
     // full handshake again in the next quiesce cycle.
     fabric_channels_not_ready_for_traffic_ = false;
+    clear_bc_deadlock_channels();  // FIX CJ (#42429): fresh session, clear deadlock channel set.
     // FIX TK (#42429): Clear ring-sync-timed-out flag — a fresh configure_fabric() means we are
     // starting a new init cycle and any previous ring sync result no longer applies.
     fabric_ring_sync_timed_out_ = false;
@@ -3400,6 +3401,19 @@ bool Device::phase5b_erisc_health_check(
                             truly_unhealthy.size(),
                             deadlock_details);
                         fabric_channels_not_ready_for_traffic_ = true;
+                        // FIX CJ (#42429): Record deadlocked channel IDs so FabricFirmwareInitializer::
+                        // teardown() can bypass the fruitless 5s TERMINATE poll for these channels.
+                        // Per FIX BH: "They will never advance past REMOTE_HANDSHAKE_COMPLETE until
+                        // hardware-reset."  Route them directly to force-reset at teardown time.
+                        for (const auto& u : truly_unhealthy) {
+                            add_bc_deadlock_channel(u.eth_chan_id);
+                        }
+                        log_warning(
+                            tt::LogMetal,
+                            "wait_for_fabric_workers_ready: Device {} FIX CJ (#42429): registered {} "
+                            "deadlocked channel(s) for immediate force-reset at teardown (skipping TERMINATE poll).",
+                            this->id(),
+                            truly_unhealthy.size());
                         return true;
                     }
                     // AUDIT-L5: FIX AK-3 guard suppressed FIX AP — all unhealthy channels are

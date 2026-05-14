@@ -242,6 +242,19 @@ public:
     // tests (e.g. AllGather fixtures) detect the broken state and issue GTEST_SKIP() instead of
     // hanging.
     virtual void set_fabric_channels_not_ready_for_traffic() {}
+    // FIX CJ (#42429): Returns the set of ETH channel IDs that FIX BC identified as
+    // stuck in simultaneous-handshake deadlock (REMOTE_HANDSHAKE_COMPLETE, 0xa1b1c1d1).
+    // These channels are spinning in the EDM handshake wait loop and cannot process
+    // TERMINATE signals — per FIX BH: "They will never advance past REMOTE_HANDSHAKE_COMPLETE
+    // until hardware-reset."  FabricFirmwareInitializer::teardown() uses this to route
+    // them directly to immediate force-reset, skipping the fruitless 5s TERMINATE poll.
+    // Cleared unconditionally at the top of configure_fabric().
+    virtual const std::unordered_set<uint32_t>& get_bc_deadlock_channels() const {
+        static const std::unordered_set<uint32_t> empty;
+        return empty;
+    }
+    virtual void add_bc_deadlock_channel(uint32_t eth_chan_id) {}
+    virtual void clear_bc_deadlock_channels() {}
     // FIX TK (#42429): Set by FabricFirmwareInitializer::verify_all_fabric_channels_healthy()
     // when a device's ring sync timed out during base-UMD channel quiesce (FIX TI path).
     // Distinguishes FIX TI (ring barrier timeout — relay still alive) from FIX AM (ERISC in

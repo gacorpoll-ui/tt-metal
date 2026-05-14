@@ -908,6 +908,20 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
                     // Skip relay-broken channels from the poll loop; queue for direct force-reset.
                     relay_broken_force_reset.push_back(ch);
                     relay_dead_devices.insert(dev->id());
+                } else if (dev->get_bc_deadlock_channels().count(eth_chan_id) > 0) {
+                    // FIX CJ (#42429): FIX BC identified this channel as stuck in simultaneous-
+                    // handshake deadlock (REMOTE_HANDSHAKE_COMPLETE, 0xa1b1c1d1).  Per FIX BH,
+                    // these channels can never process TERMINATE — skip the 5s poll and force-reset
+                    // immediately.  This saves the full global-deadline wait + FIX XZ 30s heartbeat
+                    // poll timeout that otherwise follow the fruitless TERMINATE wait.
+                    log_warning(
+                        tt::LogMetal,
+                        "FabricFirmwareInitializer::teardown: Device {} chan={} FIX CJ (#42429): "
+                        "channel in bc_deadlock_channels_ — bypassing TERMINATE poll, routing to "
+                        "immediate force-reset.",
+                        dev->id(),
+                        eth_chan_id);
+                    relay_broken_force_reset.push_back(ch);
                 } else {
                     pending.push_back(ch);
                 }
