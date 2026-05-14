@@ -968,24 +968,28 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
             }
         }
 
-        // FIX PE (GAP-56): Clear fw_launch_addr for channels that terminated cleanly.
-        // These channels passed the TERMINATE handshake but fw_launch_addr is never
-        // zeroed by the ERISC on clean exit.  Without this clear, erisc_app_still_running()
-        // in the next test's reset_cores() sees a non-zero fw_launch_addr and fires a
-        // false-positive 500ms wait → force-reset cascade on every subsequent test.
+        // FIX BZ (#42429): write fw_launch_addr_value instead of 0 — keeps ERISC bootable after any
+        // subsequent deassert.  FIX PE previously zeroed fw_launch_addr here so that
+        // erisc_app_still_running() would not see a non-zero value and fire a false-positive 500ms
+        // wait.  However, any subsequent deassert_risc_reset_at_core (e.g. Phase 2.5
+        // quiesce_and_restart_fabric_workers) would then cause ERISC ROM to read fw_launch_addr=0
+        // and hang at postcode 0x49705180 indefinitely.  Write fw_launch_addr_value instead:
+        // erisc_app_still_running() may incur a ~500ms extra wait for cleanly-terminated channels,
+        // which is acceptable versus a full teardown hang cascade.
         if (!cleanly_terminated.empty()) {
             const auto aeth_idx = hal_.get_programmable_core_type_index(HalProgrammableCoreType::ACTIVE_ETH);
             const uint32_t fw_launch_addr_val = hal_.get_jit_build_config(aeth_idx, 0, 0).fw_launch_addr;
+            const uint32_t fw_launch_addr_value = hal_.get_jit_build_config(aeth_idx, 0, 0).fw_launch_addr_value;
             for (const auto& ch : cleanly_terminated) {
                 try {
                     const auto virtual_eth_coord = cluster_.get_virtual_coordinate_from_logical_coordinates(
                         ch.dev->id(), ch.eth_logical_core, CoreType::ETH);
                     cluster_.write_core_immediate(
-                        ch.dev->id(), virtual_eth_coord, std::vector<uint32_t>{0}, fw_launch_addr_val);
+                        ch.dev->id(), virtual_eth_coord, std::vector<uint32_t>{fw_launch_addr_value}, fw_launch_addr_val);
                     log_debug(
                         tt::LogMetal,
-                        "FabricFirmwareInitializer::teardown: Device {} chan={} FIX PE — "
-                        "cleared fw_launch_addr after clean TERMINATE acknowledgment",
+                        "FabricFirmwareInitializer::teardown: Device {} chan={} FIX BZ — "
+                        "wrote fw_launch_addr_value (not 0) after clean TERMINATE acknowledgment",
                         ch.dev->id(),
                         ch.eth_chan_id);
                 } catch (...) {
@@ -1346,20 +1350,22 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
                                 mc.nonzero_seen = true;
                                 // UMD base firmware writes static 0xABCDxxxx marker — never increments.
                                 if ((hb_val >> 16) == 0xABCDu) {
-                                    // FIX BN (#42429): write fw_launch_addr=0 only after base firmware
-                                    // is confirmed running.  FIX PC (removed) wrote this immediately
-                                    // after deassert_risc_reset_at_core, racing with ERISC ROM reading
-                                    // fw_launch_addr_value.  Now we write it here, after ERISC has
-                                    // already read the entry point and jumped to firmware successfully.
+                                    // FIX BZ (#42429): write fw_launch_addr_value instead of 0 — keeps ERISC bootable after any
+                                    // subsequent deassert.  FIX BN previously zeroed fw_launch_addr here after confirming
+                                    // base firmware is running; however any subsequent deassert_risc_reset_at_core
+                                    // (e.g. Phase 2.5 quiesce_and_restart_fabric_workers) would cause ERISC ROM to read
+                                    // fw_launch_addr=0 and hang at 0x49705180 indefinitely.
                                     try {
                                         const auto aeth_idx = hal_.get_programmable_core_type_index(
                                             HalProgrammableCoreType::ACTIVE_ETH);
                                         const uint32_t fw_launch_addr =
                                             hal_.get_jit_build_config(aeth_idx, 0, 0).fw_launch_addr;
+                                        const uint32_t fw_launch_addr_value =
+                                            hal_.get_jit_build_config(aeth_idx, 0, 0).fw_launch_addr_value;
                                         cluster_.write_core_immediate(
                                             mc.target.chip,
                                             CoreCoord{mc.target.x, mc.target.y},
-                                            std::vector<uint32_t>{0},
+                                            std::vector<uint32_t>{fw_launch_addr_value},
                                             fw_launch_addr);
                                     } catch (...) {
                                     }
@@ -1367,17 +1373,19 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
                                 }
                             }
                         } else if ((hb_val >> 16) == 0xABCDu || hb_val != mc.prev_hb) {
-                            // FIX BN (#42429): see comment above — write fw_launch_addr=0 only
-                            // after base firmware heartbeat is confirmed (ABCD marker or increment).
+                            // FIX BZ (#42429): write fw_launch_addr_value instead of 0 — keeps ERISC bootable after any
+                            // subsequent deassert.  See comment in first FIX BZ block above for full rationale.
                             try {
                                 const auto aeth_idx = hal_.get_programmable_core_type_index(
                                     HalProgrammableCoreType::ACTIVE_ETH);
                                 const uint32_t fw_launch_addr =
                                     hal_.get_jit_build_config(aeth_idx, 0, 0).fw_launch_addr;
+                                const uint32_t fw_launch_addr_value =
+                                    hal_.get_jit_build_config(aeth_idx, 0, 0).fw_launch_addr_value;
                                 cluster_.write_core_immediate(
                                     mc.target.chip,
                                     CoreCoord{mc.target.x, mc.target.y},
-                                    std::vector<uint32_t>{0},
+                                    std::vector<uint32_t>{fw_launch_addr_value},
                                     fw_launch_addr);
                             } catch (...) {
                             }
