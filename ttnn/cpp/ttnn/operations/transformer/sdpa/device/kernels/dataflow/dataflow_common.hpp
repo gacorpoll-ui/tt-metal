@@ -1082,6 +1082,10 @@ void fetch_block(
                     fill_zeros_async(write_ptr, cat_addr_generator.reader.page_size);
                 }
                 write_ptr += inner_ptr_stride;
+                if (barrier_threshold > 0 && ++barrier_count == barrier_threshold) {
+                    noc_async_read_barrier();
+                    barrier_count = 0;
+                }
             }
         }
     } else {
