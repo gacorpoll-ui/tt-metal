@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttnn/operations/experimental/ccl/all_gather_concat_heads_fused/device/all_gather_concat_device_operation.hpp"
+#include "ttnn/device_operation.hpp"
 #include "ttnn/operations/functions.hpp"
 #include "ttnn/operations/math.hpp"
 #include "ttnn/operations/core/core.hpp"
@@ -76,27 +77,6 @@ AllGatherConcatDeviceOperation::tensor_return_value_t AllGatherConcatDeviceOpera
     const operation_attributes_t& operation_attributes, const tensor_args_t& tensor_args) {
     auto spec = compute_output_specs(operation_attributes, tensor_args);
     return create_device_tensor(spec, tensor_args.input_tensor.device());
-}
-
-ttsl::hash::hash_t AllGatherConcatDeviceOperation::compute_program_hash(
-    const operation_attributes_t& args, const tensor_args_t& tensor_args) {
-    log_trace(tt::LogOp, "AllGatherConcatDeviceOperation::compute_program_hash is called");
-
-    auto subdevice_id = args.sub_device_id;
-    auto* mesh_device = tensor_args.input_tensor.device();
-    auto sd_id = subdevice_id.value_or(mesh_device->get_sub_device_ids().at(0));
-    auto subdevice_core_range_set = mesh_device->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sd_id);
-    return tt::tt_metal::operation::hash_operation<AllGatherConcatDeviceOperation>(
-        args.dim,
-        args.num_links,
-        args.ring_size,
-        args.output_mem_config,
-        args.topology,
-        args.num_heads,
-        args.use_noc1_only,
-        args.cluster_axis,
-        subdevice_core_range_set,
-        tensor_args);
 }
 
 Tensor all_gather_concat(

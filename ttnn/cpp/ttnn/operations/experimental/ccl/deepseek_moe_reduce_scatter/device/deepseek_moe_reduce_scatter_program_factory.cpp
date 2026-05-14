@@ -6,7 +6,10 @@
 #include <optional>
 #include <vector>
 
+#include <tt-metalium/buffer.hpp>
 #include <tt-metalium/experimental/fabric/fabric.hpp>
+#include <tt-metalium/host_api.hpp>
+#include <tt-metalium/program_descriptors.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
 
 #include "ttnn/operations/experimental/ccl/deepseek_moe_reduce_scatter/device/deepseek_moe_reduce_scatter_device_operation_types.hpp"
@@ -19,8 +22,6 @@
 
 using namespace tt::constants;
 using namespace tt::tt_metal;
-
-using ttnn::experimental::prim::DeepseekMoEReduceScatterProgramArtifacts;
 
 namespace {
 
@@ -94,19 +95,71 @@ std::tuple<uint32_t, CoreRangeSet, std::vector<CoreCoord>> get_cores(
     return {clamped_num_links, worker_core_range_set, worker_cores};
 }
 
-DeepseekMoEReduceScatterProgramArtifacts build_deepseek_moe_reduce_scatter_program_artifacts(
-    tt::tt_metal::Program& program,
-    const std::vector<ttnn::Tensor>& input_tensors,
-    const std::vector<ttnn::Tensor>& intermediate_slice_tensors,
-    const ttnn::Tensor& output_tensor,
-    const ttnn::MeshCoordinate& sender_coord,
-    const std::optional<ttnn::MeshCoordinate>& forward_coord,
-    const std::optional<ttnn::MeshCoordinate>& backward_coord,
-    uint32_t ring_index,
-    const tt::tt_metal::GlobalSemaphore& op_semaphore,
-    const tt::tt_metal::GlobalSemaphore& pre_op_barrier_semaphore,
-    uint32_t num_links) {
+}  // namespace
+
+namespace ttnn::experimental::prim {
+
+DeepseekMoEReduceScatterMeshWorkloadFactory::Resources DeepseekMoEReduceScatterMeshWorkloadFactory::prepare_resources(
+    const DeepseekMoEReduceScatterParams& /*operation_attributes*/,
+    const DeepseekMoEReduceScatterInputs& tensor_args,
+    std::vector<ttnn::Tensor>& /*tensor_return_value*/) {
+    auto* mesh_device = tensor_args.input_tensors.at(0).device();
+    auto sd_id = mesh_device->get_sub_device_ids().at(0);
+    auto available_cores = mesh_device->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sd_id);
+
+    // 1 semaphore used for within op synchronizations
+    tt::tt_metal::GlobalSemaphore op_semaphore =
+        ttnn::global_semaphore::create_global_semaphore(mesh_device, available_cores, 0);
+
+    // 1 semaphore used for pre op synchronization to ensure intermediate/output tensors are allocated
+    tt::tt_metal::GlobalSemaphore pre_op_semaphore_barrier =
+        ttnn::global_semaphore::create_global_semaphore(mesh_device, available_cores, 0);
+
+    ttnn::SmallVector<tt::tt_metal::SubDeviceId> sub_device_ids = {sd_id};
+    tt::tt_metal::distributed::Synchronize(mesh_device, std::nullopt, sub_device_ids);
+
+    Resources resources;
+    resources.op_semaphore = std::move(op_semaphore);
+    resources.pre_op_barrier_semaphore = std::move(pre_op_semaphore_barrier);
+    return resources;
+}
+
+tt::tt_metal::ProgramDescriptor DeepseekMoEReduceScatterMeshWorkloadFactory::create_descriptor(
+    const DeepseekMoEReduceScatterParams& operation_attributes,
+    const DeepseekMoEReduceScatterInputs& tensor_args,
+    std::vector<ttnn::Tensor>& tensor_return_value,
+    Resources& workload_resources,
+    const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate) {
+    TT_FATAL(
+        mesh_dispatch_coordinate.has_value(),
+        "DeepseekMoEReduceScatterMeshWorkloadFactory::create_descriptor requires a mesh dispatch coordinate");
+    const ttnn::MeshCoordinate mesh_coordinate = mesh_dispatch_coordinate.value();
+    const tt::tt_metal::GlobalSemaphore& op_semaphore = workload_resources.op_semaphore.value();
+    const tt::tt_metal::GlobalSemaphore& pre_op_barrier_semaphore = workload_resources.pre_op_barrier_semaphore.value();
+
+    const std::vector<ttnn::Tensor>& input_tensors = tensor_args.input_tensors;
+    const std::vector<ttnn::Tensor> intermediate_slice_tensors(
+        tensor_return_value.begin(), tensor_return_value.end() - 1);  // first 8 are intermediate tensors
+    const ttnn::Tensor& output_tensor = tensor_return_value.back();   // last is the output tensor
+
+    std::optional<uint32_t> cluster_axis = operation_attributes.cluster_axis;
+
+    const std::optional<ttnn::MeshCoordinate> forward_coordinate =
+        ::ttnn::ccl::get_physical_neighbor_from_physical_coord(
+            input_tensors.at(0), mesh_coordinate, 1, tt::tt_fabric::Topology::Ring, cluster_axis);
+    const std::optional<ttnn::MeshCoordinate> backward_coordinate =
+        ::ttnn::ccl::get_physical_neighbor_from_physical_coord(
+            input_tensors.at(0), mesh_coordinate, -1, tt::tt_fabric::Topology::Ring, cluster_axis);
+    TT_FATAL(
+        forward_coordinate.has_value() && backward_coordinate.has_value(),
+        "DEBUG: forward_coord or backward_coord is null");
+
+    uint32_t ring_index =
+        ttnn::ccl::get_linearized_index_from_physical_coord(input_tensors.at(0), mesh_coordinate, cluster_axis);
+    log_debug(tt::LogOp, "Device index for {} is {}", mesh_coordinate, ring_index);
+
     auto* mesh_device = input_tensors.at(0).device();
+    const uint32_t num_links = operation_attributes.num_links;
 
     // hardcoded constants
     const uint32_t ring_size = 8;
@@ -154,155 +207,55 @@ DeepseekMoEReduceScatterProgramArtifacts build_deepseek_moe_reduce_scatter_progr
 
     uint32_t compute_cb_id = tt::CBIndex::c_16;
 
-    // input CBs
-    tt::tt_metal::CircularBufferConfig input_slice_0_cb_config =
-        tt::tt_metal::CircularBufferConfig(compute_input_cb_num_pages * page_size, {{input_slice_0_cb_id, data_format}})
-            .set_page_size(input_slice_0_cb_id, page_size)
-            .set_globally_allocated_address(*input_tensors.at(0).buffer());
-    tt::tt_metal::CBHandle input_slice_0_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, input_slice_0_cb_config);
+    tt::tt_metal::ProgramDescriptor desc;
 
-    tt::tt_metal::CircularBufferConfig input_slice_1_cb_config =
-        tt::tt_metal::CircularBufferConfig(compute_input_cb_num_pages * page_size, {{input_slice_1_cb_id, data_format}})
-            .set_page_size(input_slice_1_cb_id, page_size)
-            .set_globally_allocated_address(*input_tensors.at(1).buffer());
-    tt::tt_metal::CBHandle input_slice_1_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, input_slice_1_cb_config);
-
-    tt::tt_metal::CircularBufferConfig input_slice_2_cb_config =
-        tt::tt_metal::CircularBufferConfig(compute_input_cb_num_pages * page_size, {{input_slice_2_cb_id, data_format}})
-            .set_page_size(input_slice_2_cb_id, page_size)
-            .set_globally_allocated_address(*input_tensors.at(2).buffer());
-    tt::tt_metal::CBHandle input_slice_2_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, input_slice_2_cb_config);
-
-    tt::tt_metal::CircularBufferConfig input_slice_3_cb_config =
-        tt::tt_metal::CircularBufferConfig(compute_input_cb_num_pages * page_size, {{input_slice_3_cb_id, data_format}})
-            .set_page_size(input_slice_3_cb_id, page_size)
-            .set_globally_allocated_address(*input_tensors.at(3).buffer());
-    tt::tt_metal::CBHandle input_slice_3_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, input_slice_3_cb_config);
-
-    tt::tt_metal::CircularBufferConfig input_slice_4_cb_config =
-        tt::tt_metal::CircularBufferConfig(compute_input_cb_num_pages * page_size, {{input_slice_4_cb_id, data_format}})
-            .set_page_size(input_slice_4_cb_id, page_size)
-            .set_globally_allocated_address(*input_tensors.at(4).buffer());
-    tt::tt_metal::CBHandle input_slice_4_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, input_slice_4_cb_config);
-
-    tt::tt_metal::CircularBufferConfig input_slice_5_cb_config =
-        tt::tt_metal::CircularBufferConfig(compute_input_cb_num_pages * page_size, {{input_slice_5_cb_id, data_format}})
-            .set_page_size(input_slice_5_cb_id, page_size)
-            .set_globally_allocated_address(*input_tensors.at(5).buffer());
-    tt::tt_metal::CBHandle input_slice_5_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, input_slice_5_cb_config);
-
-    tt::tt_metal::CircularBufferConfig input_slice_6_cb_config =
-        tt::tt_metal::CircularBufferConfig(compute_input_cb_num_pages * page_size, {{input_slice_6_cb_id, data_format}})
-            .set_page_size(input_slice_6_cb_id, page_size)
-            .set_globally_allocated_address(*input_tensors.at(6).buffer());
-    tt::tt_metal::CBHandle input_slice_6_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, input_slice_6_cb_config);
-
-    tt::tt_metal::CircularBufferConfig input_slice_7_cb_config =
-        tt::tt_metal::CircularBufferConfig(compute_input_cb_num_pages * page_size, {{input_slice_7_cb_id, data_format}})
-            .set_page_size(input_slice_7_cb_id, page_size)
-            .set_globally_allocated_address(*input_tensors.at(7).buffer());
-    tt::tt_metal::CBHandle input_slice_7_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, input_slice_7_cb_config);
-
-    std::vector<tt::tt_metal::CBHandle> input_cb_handles = {
-        input_slice_0_cb_handle,
-        input_slice_1_cb_handle,
-        input_slice_2_cb_handle,
-        input_slice_3_cb_handle,
-        input_slice_4_cb_handle,
-        input_slice_5_cb_handle,
-        input_slice_6_cb_handle,
-        input_slice_7_cb_handle,
+    // Helper: declare a dynamically-addressed CB bound to a specific buffer.  The
+    // framework patches the CB base address on every dispatch from `buffer`'s
+    // current allocation (replaces the legacy set_globally_allocated_address +
+    // UpdateDynamicCircularBufferAddress dance from override_runtime_arguments).
+    auto push_tensor_cb = [&](uint32_t cb_id, uint32_t num_pages, tt::tt_metal::Buffer* buffer) {
+        desc.cbs.push_back(tt::tt_metal::CBDescriptor{
+            .total_size = num_pages * page_size,
+            .core_ranges = worker_core_range_set,
+            .format_descriptors = {{tt::tt_metal::CBFormatDescriptor{
+                .buffer_index = static_cast<uint8_t>(cb_id),
+                .data_format = data_format,
+                .page_size = page_size,
+            }}},
+            .buffer = buffer,
+        });
     };
 
-    // intermediate CBs
-    tt::tt_metal::CircularBufferConfig intermediate_slice_0_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            compute_input_cb_num_pages * page_size, {{intermediate_slice_0_cb_id, data_format}})
-            .set_page_size(intermediate_slice_0_cb_id, page_size)
-            .set_globally_allocated_address(*intermediate_slice_tensors.at(0).buffer());
-    tt::tt_metal::CBHandle intermediate_slice_0_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, intermediate_slice_0_cb_config);
+    // input CBs (globally-allocated to input tensor buffers)
+    push_tensor_cb(input_slice_0_cb_id, compute_input_cb_num_pages, input_tensors.at(0).buffer());
+    push_tensor_cb(input_slice_1_cb_id, compute_input_cb_num_pages, input_tensors.at(1).buffer());
+    push_tensor_cb(input_slice_2_cb_id, compute_input_cb_num_pages, input_tensors.at(2).buffer());
+    push_tensor_cb(input_slice_3_cb_id, compute_input_cb_num_pages, input_tensors.at(3).buffer());
+    push_tensor_cb(input_slice_4_cb_id, compute_input_cb_num_pages, input_tensors.at(4).buffer());
+    push_tensor_cb(input_slice_5_cb_id, compute_input_cb_num_pages, input_tensors.at(5).buffer());
+    push_tensor_cb(input_slice_6_cb_id, compute_input_cb_num_pages, input_tensors.at(6).buffer());
+    push_tensor_cb(input_slice_7_cb_id, compute_input_cb_num_pages, input_tensors.at(7).buffer());
 
-    tt::tt_metal::CircularBufferConfig intermediate_slice_1_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            compute_input_cb_num_pages * page_size, {{intermediate_slice_1_cb_id, data_format}})
-            .set_page_size(intermediate_slice_1_cb_id, page_size)
-            .set_globally_allocated_address(*intermediate_slice_tensors.at(1).buffer());
-    tt::tt_metal::CBHandle intermediate_slice_1_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, intermediate_slice_1_cb_config);
+    // intermediate CBs (globally-allocated to intermediate slice tensor buffers)
+    push_tensor_cb(intermediate_slice_0_cb_id, compute_input_cb_num_pages, intermediate_slice_tensors.at(0).buffer());
+    push_tensor_cb(intermediate_slice_1_cb_id, compute_input_cb_num_pages, intermediate_slice_tensors.at(1).buffer());
+    push_tensor_cb(intermediate_slice_2_cb_id, compute_input_cb_num_pages, intermediate_slice_tensors.at(2).buffer());
+    push_tensor_cb(intermediate_slice_3_cb_id, compute_input_cb_num_pages, intermediate_slice_tensors.at(3).buffer());
+    push_tensor_cb(intermediate_slice_4_cb_id, compute_input_cb_num_pages, intermediate_slice_tensors.at(4).buffer());
+    push_tensor_cb(intermediate_slice_5_cb_id, compute_input_cb_num_pages, intermediate_slice_tensors.at(5).buffer());
+    push_tensor_cb(intermediate_slice_6_cb_id, compute_input_cb_num_pages, intermediate_slice_tensors.at(6).buffer());
+    push_tensor_cb(intermediate_slice_7_cb_id, compute_input_cb_num_pages, intermediate_slice_tensors.at(7).buffer());
 
-    tt::tt_metal::CircularBufferConfig intermediate_slice_2_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            compute_input_cb_num_pages * page_size, {{intermediate_slice_2_cb_id, data_format}})
-            .set_page_size(intermediate_slice_2_cb_id, page_size)
-            .set_globally_allocated_address(*intermediate_slice_tensors.at(2).buffer());
-    tt::tt_metal::CBHandle intermediate_slice_2_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, intermediate_slice_2_cb_config);
-
-    tt::tt_metal::CircularBufferConfig intermediate_slice_3_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            compute_input_cb_num_pages * page_size, {{intermediate_slice_3_cb_id, data_format}})
-            .set_page_size(intermediate_slice_3_cb_id, page_size)
-            .set_globally_allocated_address(*intermediate_slice_tensors.at(3).buffer());
-    tt::tt_metal::CBHandle intermediate_slice_3_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, intermediate_slice_3_cb_config);
-
-    tt::tt_metal::CircularBufferConfig intermediate_slice_4_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            compute_input_cb_num_pages * page_size, {{intermediate_slice_4_cb_id, data_format}})
-            .set_page_size(intermediate_slice_4_cb_id, page_size)
-            .set_globally_allocated_address(*intermediate_slice_tensors.at(4).buffer());
-    tt::tt_metal::CBHandle intermediate_slice_4_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, intermediate_slice_4_cb_config);
-
-    tt::tt_metal::CircularBufferConfig intermediate_slice_5_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            compute_input_cb_num_pages * page_size, {{intermediate_slice_5_cb_id, data_format}})
-            .set_page_size(intermediate_slice_5_cb_id, page_size)
-            .set_globally_allocated_address(*intermediate_slice_tensors.at(5).buffer());
-    tt::tt_metal::CBHandle intermediate_slice_5_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, intermediate_slice_5_cb_config);
-
-    tt::tt_metal::CircularBufferConfig intermediate_slice_6_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            compute_input_cb_num_pages * page_size, {{intermediate_slice_6_cb_id, data_format}})
-            .set_page_size(intermediate_slice_6_cb_id, page_size)
-            .set_globally_allocated_address(*intermediate_slice_tensors.at(6).buffer());
-    tt::tt_metal::CBHandle intermediate_slice_6_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, intermediate_slice_6_cb_config);
-
-    tt::tt_metal::CircularBufferConfig intermediate_slice_7_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            compute_input_cb_num_pages * page_size, {{intermediate_slice_7_cb_id, data_format}})
-            .set_page_size(intermediate_slice_7_cb_id, page_size)
-            .set_globally_allocated_address(*intermediate_slice_tensors.at(7).buffer());
-    tt::tt_metal::CBHandle intermediate_slice_7_cb_handle =
-        CreateCircularBuffer(program, worker_core_range_set, intermediate_slice_7_cb_config);
-
-    std::vector<tt::tt_metal::CBHandle> intermediate_cb_handles = {
-        intermediate_slice_0_cb_handle,
-        intermediate_slice_1_cb_handle,
-        intermediate_slice_2_cb_handle,
-        intermediate_slice_3_cb_handle,
-        intermediate_slice_4_cb_handle,
-        intermediate_slice_5_cb_handle,
-        intermediate_slice_6_cb_handle,
-        intermediate_slice_7_cb_handle,
-    };
-
-    // compute CB
-    tt::tt_metal::CircularBufferConfig cb_compute_output_config =
-        tt::tt_metal::CircularBufferConfig(compute_ouput_cb_num_pages * page_size, {{compute_cb_id, data_format}})
-            .set_page_size(compute_cb_id, page_size);
-    CreateCircularBuffer(program, worker_core_range_set, cb_compute_output_config);
+    // compute CB (locally allocated; no buffer binding)
+    desc.cbs.push_back(tt::tt_metal::CBDescriptor{
+        .total_size = compute_ouput_cb_num_pages * page_size,
+        .core_ranges = worker_core_range_set,
+        .format_descriptors = {{tt::tt_metal::CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(compute_cb_id),
+            .data_format = data_format,
+            .page_size = page_size,
+        }}},
+    });
 
     // reader
     std::vector<uint32_t> reader_ct_args = {
@@ -327,12 +280,14 @@ DeepseekMoEReduceScatterProgramArtifacts build_deepseek_moe_reduce_scatter_progr
         intermediate_slice_7_cb_id,
     };
 
-    std::string reader_kernel_path =
+    tt::tt_metal::KernelDescriptor reader_kernel_desc;
+    reader_kernel_desc.kernel_source =
         "ttnn/cpp/ttnn/operations/experimental/ccl/deepseek_moe_reduce_scatter/device/kernels/"
         "deepseek_moe_reduce_scatter_reader.cpp";
-
-    auto reader_kernel_id = tt::tt_metal::CreateKernel(
-        program, reader_kernel_path, worker_core_range_set, tt::tt_metal::ReaderDataMovementConfig(reader_ct_args));
+    reader_kernel_desc.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
+    reader_kernel_desc.core_ranges = worker_core_range_set;
+    reader_kernel_desc.compile_time_args = std::move(reader_ct_args);
+    reader_kernel_desc.config = tt::tt_metal::ReaderConfigDescriptor{};
 
     // writer
     std::vector<uint32_t> writer_ct_args = {
@@ -360,16 +315,23 @@ DeepseekMoEReduceScatterProgramArtifacts build_deepseek_moe_reduce_scatter_progr
     tt::tt_metal::TensorAccessorArgs(intermediate_slice_tensors.at(7).buffer()).append_to(writer_ct_args);
     tt::tt_metal::TensorAccessorArgs(output_tensor.buffer()).append_to(writer_ct_args);
 
-    std::string writer_kernel_path =
+    tt::tt_metal::KernelDescriptor writer_kernel_desc;
+    writer_kernel_desc.kernel_source =
         "ttnn/cpp/ttnn/operations/experimental/ccl/deepseek_moe_reduce_scatter/device/kernels/"
         "deepseek_moe_reduce_scatter_writer.cpp";
-
-    auto writer_kernel_id = tt::tt_metal::CreateKernel(
-        program, writer_kernel_path, worker_core_range_set, tt::tt_metal::WriterDataMovementConfig(writer_ct_args));
+    writer_kernel_desc.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
+    writer_kernel_desc.core_ranges = worker_core_range_set;
+    writer_kernel_desc.compile_time_args = std::move(writer_ct_args);
+    writer_kernel_desc.config = tt::tt_metal::WriterConfigDescriptor{};
 
     // reduce
-    auto reduce_kernel_config = tt::tt_metal::ComputeConfig{};
-    reduce_kernel_config.compile_args = {
+    tt::tt_metal::KernelDescriptor reduce_kernel_desc;
+    reduce_kernel_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/experimental/ccl/deepseek_moe_reduce_scatter/device/kernels/"
+        "deepseek_moe_reduce_scatter_reduction.cpp";
+    reduce_kernel_desc.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
+    reduce_kernel_desc.core_ranges = worker_core_range_set;
+    reduce_kernel_desc.compile_time_args = {
         ring_index,        // my_chip_id
         ring_size,         // ring_size
         tile_granularity,  // tile_granularity
@@ -391,13 +353,18 @@ DeepseekMoEReduceScatterProgramArtifacts build_deepseek_moe_reduce_scatter_progr
         intermediate_slice_7_cb_id,
         compute_cb_id,
     };
+    reduce_kernel_desc.config = tt::tt_metal::ComputeConfigDescriptor{};
 
-    std::string reduce_kernel_path =
-        "ttnn/cpp/ttnn/operations/experimental/ccl/deepseek_moe_reduce_scatter/device/kernels/"
-        "deepseek_moe_reduce_scatter_reduction.cpp";
-
-    auto reduce_kernel_id =
-        tt::tt_metal::CreateKernel(program, reduce_kernel_path, worker_core_range_set, reduce_kernel_config);
+    // Push kernel descriptors NOW (before per-link runtime-args loop) so we can
+    // refer to them by stable index for both emplace_runtime_args() and the
+    // fabric helper, which expects a KernelHandle that indexes into desc.kernels
+    // for the ProgramDescriptor overload.
+    desc.kernels.push_back(std::move(reader_kernel_desc));
+    desc.kernels.push_back(std::move(writer_kernel_desc));
+    desc.kernels.push_back(std::move(reduce_kernel_desc));
+    tt::tt_metal::KernelHandle reader_kernel_id = 0;
+    tt::tt_metal::KernelHandle writer_kernel_id = 1;
+    tt::tt_metal::KernelHandle reduce_kernel_id = 2;
 
     // runtime args
     for (uint32_t link = 0; link < clamped_num_links; link++) {
@@ -422,27 +389,37 @@ DeepseekMoEReduceScatterProgramArtifacts build_deepseek_moe_reduce_scatter_progr
             uint32_t start_tiles_to_read = num_pages_per_shard * (worker_id + 1);
             start_tiles_to_read = std::min(start_tiles_to_read, num_pages_per_slice);
 
-            // reader
-            std::vector<uint32_t> reader_rt_args = {
-                op_semaphore.address(),  // op_semaphore
-                direction,               // direction
-                start_tiles_read,        // start_tiles_read
-                start_tiles_to_read,     // start_tiles_to_read
-            };
+            // reader: op_semaphore absolute address is copied on every dispatch
+            // via apply_descriptor_runtime_args (the GlobalSemaphore device-side
+            // allocation is owned by workload_resources and lives for the
+            // lifetime of the cached workload).  GlobalSemaphore::address()
+            // returns DeviceAddr (uint64_t); narrow to uint32_t to match the
+            // descriptor's variant<uint32_t, Buffer*> arg type — the legacy code
+            // narrowed the same way via the std::vector<uint32_t> rt-args buffer.
+            tt::tt_metal::KernelDescriptor::RTArgList reader_rt_args_builder;
+            reader_rt_args_builder.reserve(4);
+            reader_rt_args_builder.push_back(static_cast<uint32_t>(op_semaphore.address()));  // op_semaphore
+            reader_rt_args_builder.push_back(direction);                                      // direction
+            reader_rt_args_builder.push_back(start_tiles_read);                               // start_tiles_read
+            reader_rt_args_builder.push_back(start_tiles_to_read);                            // start_tiles_to_read
+            desc.kernels[reader_kernel_id].emplace_runtime_args(core, reader_rt_args_builder);
 
-            tt::tt_metal::SetRuntimeArgs(program, reader_kernel_id, {core}, reader_rt_args);
-
-            // writer
+            // writer: build the rt-arg vector first (so the fabric helper can
+            // append its own connection args), then promote to an RTArgList that
+            // upgrades the intermediate/output buffer base addresses to Buffer*
+            // entries.  The framework records BufferBindings at those positions
+            // and patches them on cache hit, removing the need for
+            // override_runtime_arguments.
             std::vector<uint32_t> writer_rt_args = {
-                intermediate_slice_tensors.at(0).buffer()->address(),  // intermediate_slice_0_address
-                intermediate_slice_tensors.at(1).buffer()->address(),  // intermediate_slice_1_address
-                intermediate_slice_tensors.at(2).buffer()->address(),  // intermediate_slice_2_address
-                intermediate_slice_tensors.at(3).buffer()->address(),  // intermediate_slice_3_address
-                intermediate_slice_tensors.at(4).buffer()->address(),  // intermediate_slice_4_address
-                intermediate_slice_tensors.at(5).buffer()->address(),  // intermediate_slice_5_address
-                intermediate_slice_tensors.at(6).buffer()->address(),  // intermediate_slice_6_address
-                intermediate_slice_tensors.at(7).buffer()->address(),  // intermediate_slice_7_address
-                output_tensor.buffer()->address(),                     // output_address
+                intermediate_slice_tensors.at(0).buffer()->address(),  // intermediate_slice_0_address (placeholder)
+                intermediate_slice_tensors.at(1).buffer()->address(),  // intermediate_slice_1_address (placeholder)
+                intermediate_slice_tensors.at(2).buffer()->address(),  // intermediate_slice_2_address (placeholder)
+                intermediate_slice_tensors.at(3).buffer()->address(),  // intermediate_slice_3_address (placeholder)
+                intermediate_slice_tensors.at(4).buffer()->address(),  // intermediate_slice_4_address (placeholder)
+                intermediate_slice_tensors.at(5).buffer()->address(),  // intermediate_slice_5_address (placeholder)
+                intermediate_slice_tensors.at(6).buffer()->address(),  // intermediate_slice_6_address (placeholder)
+                intermediate_slice_tensors.at(7).buffer()->address(),  // intermediate_slice_7_address (placeholder)
+                output_tensor.buffer()->address(),                     // output_address (placeholder)
                 virtual_core.x,                                        // op_semaphore_noc0_x
                 virtual_core.y,                                        // op_semaphore_noc0_y
                 op_semaphore.address(),                                // op_semaphore
@@ -454,230 +431,56 @@ DeepseekMoEReduceScatterProgramArtifacts build_deepseek_moe_reduce_scatter_progr
                 start_tiles_to_read,                                   // tiles_to_read
             };
 
-            const auto sender_fabric_node_id = mesh_device->get_fabric_node_id(sender_coord);
+            const auto sender_fabric_node_id = mesh_device->get_fabric_node_id(mesh_coordinate);
             std::vector<tt::tt_fabric::FabricNodeId> dst_nodes;
             dst_nodes.reserve(1);
             if (direction == 0) {
                 // backward
-                const auto backward_coord_fabric_node_id = mesh_device->get_fabric_node_id(backward_coord.value());
+                const auto backward_coord_fabric_node_id = mesh_device->get_fabric_node_id(backward_coordinate.value());
                 dst_nodes.push_back(backward_coord_fabric_node_id);
             } else {
                 // forward
-                const auto forward_coord_fabric_node_id = mesh_device->get_fabric_node_id(forward_coord.value());
+                const auto forward_coord_fabric_node_id = mesh_device->get_fabric_node_id(forward_coordinate.value());
                 dst_nodes.push_back(forward_coord_fabric_node_id);
             }
-            append_routing_plane_connection_manager_rt_args(
-                sender_fabric_node_id, dst_nodes, {link}, program, writer_kernel_id, {core}, writer_rt_args);
+            // The fabric helper's ProgramDescriptor specialization indexes into
+            // desc.kernels via the KernelHandle to add per-kernel defines and
+            // appends additional fabric connection args onto writer_rt_args.
+            tt::tt_fabric::append_routing_plane_connection_manager_rt_args<tt::tt_metal::ProgramDescriptor>(
+                sender_fabric_node_id, dst_nodes, {link}, desc, writer_kernel_id, core, writer_rt_args);
 
-            tt::tt_metal::SetRuntimeArgs(program, writer_kernel_id, {core}, writer_rt_args);
+            // Promote writer RT args to the descriptor.  Indices 0..7 are the
+            // intermediate slice buffer addresses; index 8 is the output buffer
+            // address — push all nine as Buffer* so the framework records a
+            // BufferBinding at each position and patches them on cache hit.  All
+            // other positions remain plain uint32_t.
+            tt::tt_metal::KernelDescriptor::RTArgList writer_rt_args_builder;
+            writer_rt_args_builder.reserve(writer_rt_args.size());
+            writer_rt_args_builder.push_back(intermediate_slice_tensors.at(0).buffer());
+            writer_rt_args_builder.push_back(intermediate_slice_tensors.at(1).buffer());
+            writer_rt_args_builder.push_back(intermediate_slice_tensors.at(2).buffer());
+            writer_rt_args_builder.push_back(intermediate_slice_tensors.at(3).buffer());
+            writer_rt_args_builder.push_back(intermediate_slice_tensors.at(4).buffer());
+            writer_rt_args_builder.push_back(intermediate_slice_tensors.at(5).buffer());
+            writer_rt_args_builder.push_back(intermediate_slice_tensors.at(6).buffer());
+            writer_rt_args_builder.push_back(intermediate_slice_tensors.at(7).buffer());
+            writer_rt_args_builder.push_back(output_tensor.buffer());
+            for (size_t i = 9; i < writer_rt_args.size(); ++i) {
+                writer_rt_args_builder.push_back(writer_rt_args[i]);
+            }
+            desc.kernels[writer_kernel_id].emplace_runtime_args(core, writer_rt_args_builder);
 
             // reduce
-            std::vector<uint32_t> reduce_rt_args = {
-                start_tiles_read,     // start_tiles_read
-                start_tiles_to_read,  // start_tiles_to_read
-                direction};           // direction
-            tt::tt_metal::SetRuntimeArgs(program, reduce_kernel_id, {core}, reduce_rt_args);
+            tt::tt_metal::KernelDescriptor::RTArgList reduce_rt_args_builder;
+            reduce_rt_args_builder.reserve(3);
+            reduce_rt_args_builder.push_back(start_tiles_read);     // start_tiles_read
+            reduce_rt_args_builder.push_back(start_tiles_to_read);  // start_tiles_to_read
+            reduce_rt_args_builder.push_back(direction);            // direction
+            desc.kernels[reduce_kernel_id].emplace_runtime_args(core, reduce_rt_args_builder);
         }
     }
 
-    return {
-        reader_kernel_id,
-        writer_kernel_id,
-        worker_cores,
-        clamped_num_links,
-        num_directions_per_link,
-        input_cb_handles,
-        intermediate_cb_handles};
-}
-
-void deepseek_moe_reduce_scatter_helper_override_runtime_arguments(
-    tt::tt_metal::Program& program,
-    const tt::tt_metal::KernelHandle reader_kernel_id,
-    const tt::tt_metal::KernelHandle writer_kernel_id,
-    const std::vector<tt::tt_metal::CoreCoord>& all_cores,
-    uint32_t clamped_num_links,
-    uint32_t num_directions_per_link,
-    const std::vector<tt::tt_metal::CBHandle>& input_cb_handles,
-    const std::vector<tt::tt_metal::CBHandle>& intermediate_cb_handles,
-    const tt::tt_metal::GlobalSemaphore& op_semaphore,
-    const tt::tt_metal::GlobalSemaphore& pre_op_barrier_semaphore,
-    const std::vector<ttnn::Tensor>& input_tensors,
-    const std::vector<ttnn::Tensor>& intermediate_slice_tensors,
-    const ttnn::Tensor& output_tensor) {
-    // input CB handles
-    UpdateDynamicCircularBufferAddress(program, input_cb_handles.at(0), *input_tensors.at(0).buffer());
-    UpdateDynamicCircularBufferAddress(program, input_cb_handles.at(1), *input_tensors.at(1).buffer());
-    UpdateDynamicCircularBufferAddress(program, input_cb_handles.at(2), *input_tensors.at(2).buffer());
-    UpdateDynamicCircularBufferAddress(program, input_cb_handles.at(3), *input_tensors.at(3).buffer());
-    UpdateDynamicCircularBufferAddress(program, input_cb_handles.at(4), *input_tensors.at(4).buffer());
-    UpdateDynamicCircularBufferAddress(program, input_cb_handles.at(5), *input_tensors.at(5).buffer());
-    UpdateDynamicCircularBufferAddress(program, input_cb_handles.at(6), *input_tensors.at(6).buffer());
-    UpdateDynamicCircularBufferAddress(program, input_cb_handles.at(7), *input_tensors.at(7).buffer());
-
-    // intermediate CB handles
-    UpdateDynamicCircularBufferAddress(
-        program, intermediate_cb_handles.at(0), *intermediate_slice_tensors.at(0).buffer());
-    UpdateDynamicCircularBufferAddress(
-        program, intermediate_cb_handles.at(1), *intermediate_slice_tensors.at(1).buffer());
-    UpdateDynamicCircularBufferAddress(
-        program, intermediate_cb_handles.at(2), *intermediate_slice_tensors.at(2).buffer());
-    UpdateDynamicCircularBufferAddress(
-        program, intermediate_cb_handles.at(3), *intermediate_slice_tensors.at(3).buffer());
-    UpdateDynamicCircularBufferAddress(
-        program, intermediate_cb_handles.at(4), *intermediate_slice_tensors.at(4).buffer());
-    UpdateDynamicCircularBufferAddress(
-        program, intermediate_cb_handles.at(5), *intermediate_slice_tensors.at(5).buffer());
-    UpdateDynamicCircularBufferAddress(
-        program, intermediate_cb_handles.at(6), *intermediate_slice_tensors.at(6).buffer());
-    UpdateDynamicCircularBufferAddress(
-        program, intermediate_cb_handles.at(7), *intermediate_slice_tensors.at(7).buffer());
-
-    // update senders
-    for (uint32_t link = 0; link < clamped_num_links; link++) {
-        for (uint32_t direction = 0; direction < num_directions_per_link; direction++) {
-            uint32_t worker_id = (link * num_directions_per_link) + direction;
-            CoreCoord core = all_cores[worker_id];
-            std::vector<std::vector<RuntimeArgsData>> reader_runtime_args = GetRuntimeArgs(program, reader_kernel_id);
-            std::vector<std::vector<RuntimeArgsData>> writer_runtime_args = GetRuntimeArgs(program, writer_kernel_id);
-
-            // reader
-            auto& reader_rt_args = reader_runtime_args[core.x][core.y];
-            reader_rt_args[0] = op_semaphore.address();
-
-            // writer
-            auto& writer_rt_args = writer_runtime_args[core.x][core.y];
-            writer_rt_args[0] = intermediate_slice_tensors.at(0).buffer()->address();
-            writer_rt_args[1] = intermediate_slice_tensors.at(1).buffer()->address();
-            writer_rt_args[2] = intermediate_slice_tensors.at(2).buffer()->address();
-            writer_rt_args[3] = intermediate_slice_tensors.at(3).buffer()->address();
-            writer_rt_args[4] = intermediate_slice_tensors.at(4).buffer()->address();
-            writer_rt_args[5] = intermediate_slice_tensors.at(5).buffer()->address();
-            writer_rt_args[6] = intermediate_slice_tensors.at(6).buffer()->address();
-            writer_rt_args[7] = intermediate_slice_tensors.at(7).buffer()->address();
-            writer_rt_args[8] = output_tensor.buffer()->address();
-            writer_rt_args[11] = op_semaphore.address();
-            writer_rt_args[14] = pre_op_barrier_semaphore.address();
-        }
-    }
-}
-
-}  // namespace
-
-namespace ttnn::experimental::prim {
-
-DeepseekMoEReduceScatterMeshWorkloadFactory::cached_mesh_workload_t
-DeepseekMoEReduceScatterMeshWorkloadFactory::create_mesh_workload(
-    const DeepseekMoEReduceScatterParams& operation_attributes,
-    const ttnn::MeshCoordinateRangeSet& tensor_coords,
-    const DeepseekMoEReduceScatterInputs& tensor_args,
-    std::vector<ttnn::Tensor>& tensor_return_value) {
-    tt::tt_metal::distributed::MeshWorkload mesh_workload;
-    std::unordered_map<ttnn::MeshCoordinateRange, shared_variables_t> shared_variables;
-
-    auto* mesh_device = tensor_args.input_tensors.at(0).device();
-    auto sd_id = mesh_device->get_sub_device_ids().at(0);
-    auto available_cores = mesh_device->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, sd_id);
-
-    // 1 semaphore used for within op synchronizations
-    tt::tt_metal::GlobalSemaphore op_semaphore =
-        ttnn::global_semaphore::create_global_semaphore(mesh_device, available_cores, 0);
-
-    // 1 semaphore used for pre op synchronization to ensure intermediate/output tensors are allocated
-    tt::tt_metal::GlobalSemaphore pre_op_semaphore_barrier =
-        ttnn::global_semaphore::create_global_semaphore(mesh_device, available_cores, 0);
-
-    ttnn::SmallVector<tt::tt_metal::SubDeviceId> sub_device_ids = {sd_id};
-    tt::tt_metal::distributed::Synchronize(mesh_device, std::nullopt, sub_device_ids);
-
-    for (const auto& coord : tensor_coords.coords()) {
-        auto cached_program = create_at(
-            operation_attributes, coord, tensor_args, tensor_return_value, op_semaphore, pre_op_semaphore_barrier);
-        mesh_workload.add_program(ttnn::MeshCoordinateRange(coord), std::move(cached_program.program));
-        shared_variables.emplace(ttnn::MeshCoordinateRange(coord), std::move(cached_program.shared_variables));
-    }
-
-    return {std::move(mesh_workload), std::move(shared_variables)};
-}
-
-ttnn::device_operation::CachedProgram<DeepseekMoEReduceScatterMeshWorkloadFactory::shared_variables_t>
-DeepseekMoEReduceScatterMeshWorkloadFactory::create_at(
-    const DeepseekMoEReduceScatterParams& operation_attributes,
-    const ttnn::MeshCoordinate& mesh_coordinate,
-    const DeepseekMoEReduceScatterInputs& tensor_args,
-    std::vector<ttnn::Tensor>& tensor_return_value,
-    const tt::tt_metal::GlobalSemaphore& op_semaphore,
-    const tt::tt_metal::GlobalSemaphore& pre_op_barrier_semaphore) {
-    const std::vector<ttnn::Tensor>& input_tensors = tensor_args.input_tensors;
-    const std::vector<ttnn::Tensor> intermediate_slice_tensors(
-        tensor_return_value.begin(), tensor_return_value.end() - 1);  // first 8 are intermediate tensors
-    const ttnn::Tensor& output_tensor = tensor_return_value.back();   // last is the output tensor
-
-    std::optional<uint32_t> cluster_axis = operation_attributes.cluster_axis;
-
-    const std::optional<ttnn::MeshCoordinate> forward_coordinate =
-        ::ttnn::ccl::get_physical_neighbor_from_physical_coord(
-            input_tensors.at(0), mesh_coordinate, 1, tt::tt_fabric::Topology::Ring, cluster_axis);
-    const std::optional<ttnn::MeshCoordinate> backward_coordinate =
-        ::ttnn::ccl::get_physical_neighbor_from_physical_coord(
-            input_tensors.at(0), mesh_coordinate, -1, tt::tt_fabric::Topology::Ring, cluster_axis);
-    TT_FATAL(
-        forward_coordinate.has_value() && backward_coordinate.has_value(),
-        "DEBUG: forward_coord or backward_coord is null");
-
-    uint32_t device_index =
-        ttnn::ccl::get_linearized_index_from_physical_coord(input_tensors.at(0), mesh_coordinate, cluster_axis);
-    log_debug(tt::LogOp, "Device index for {} is {}", mesh_coordinate, device_index);
-
-    tt::tt_metal::Program program{};
-    auto deepseek_moe_reduce_scatter_program_artifacts = build_deepseek_moe_reduce_scatter_program_artifacts(
-        program,
-        input_tensors,
-        intermediate_slice_tensors,
-        output_tensor,
-        mesh_coordinate,
-        forward_coordinate,
-        backward_coordinate,
-        device_index,
-        op_semaphore,
-        pre_op_barrier_semaphore,
-        operation_attributes.num_links);
-
-    shared_variables_t shared_vars{
-        .op_semaphore = op_semaphore,
-        .pre_op_barrier_semaphore = pre_op_barrier_semaphore,
-        .program_artifacts = deepseek_moe_reduce_scatter_program_artifacts};
-
-    return {std::move(program), std::move(shared_vars)};
-}
-
-void DeepseekMoEReduceScatterMeshWorkloadFactory::override_runtime_arguments(
-    cached_mesh_workload_t& cached_workload,
-    const DeepseekMoEReduceScatterParams&,
-    const DeepseekMoEReduceScatterInputs& tensor_args,
-    std::vector<ttnn::Tensor>& tensor_return_value) {
-    const std::vector<ttnn::Tensor>& input_tensors = tensor_args.input_tensors;
-    const std::vector<ttnn::Tensor> intermediate_slice_tensors(
-        tensor_return_value.begin(), tensor_return_value.end() - 1);  // first 8 are intermediate tensors
-    const ttnn::Tensor& output_tensor = tensor_return_value.back();   // last is the output tensor
-
-    for (auto& [coordinate_range, program] : cached_workload.workload.get_programs()) {
-        auto& shared_vars = cached_workload.shared_variables.at(coordinate_range);
-
-        deepseek_moe_reduce_scatter_helper_override_runtime_arguments(
-            program,
-            shared_vars.program_artifacts.reader_kernel_id,
-            shared_vars.program_artifacts.writer_kernel_id,
-            shared_vars.program_artifacts.all_cores,
-            shared_vars.program_artifacts.clamped_num_links,
-            shared_vars.program_artifacts.num_directions_per_link,
-            shared_vars.program_artifacts.input_cb_handles,
-            shared_vars.program_artifacts.intermediate_cb_handles,
-            shared_vars.op_semaphore,
-            shared_vars.pre_op_barrier_semaphore,
-            input_tensors,
-            intermediate_slice_tensors,
-            output_tensor);
-    }
+    return desc;
 }
 
 }  // namespace ttnn::experimental::prim

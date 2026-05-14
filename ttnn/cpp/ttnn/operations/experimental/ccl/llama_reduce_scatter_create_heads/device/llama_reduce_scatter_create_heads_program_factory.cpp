@@ -12,6 +12,7 @@
 #include "ttnn/operations/ccl/sharding_addrgen_helper.hpp"
 #include <tt-metalium/core_coord.hpp>
 #include "ttnn/operations/ccl/common/host/ccl_worker_builder.hpp"
+#include <tt-metalium/program_descriptors.hpp>
 #include <tt-metalium/sub_device.hpp>
 #include <tt-metalium/experimental/fabric/fabric.hpp>
 
@@ -256,33 +257,24 @@ CoreRangeSet get_worker_cores(const CoreRangeSet& available_cores, const uint32_
 
 }  // namespace detail::rs_heads_fusion
 
-LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cached_mesh_workload_t
-LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::create_mesh_workload(
+tt::tt_metal::ProgramDescriptor
+LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::create_descriptor(
     const operation_attributes_t& operation_attributes,
-    const ttnn::MeshCoordinateRangeSet& tensor_coords,
     const tensor_args_t& tensor_args,
-    tensor_return_value_t& tensor_return_value) {
-    tt::tt_metal::distributed::MeshWorkload workload;
-    std::unordered_map<ttnn::MeshCoordinateRange, shared_variables_t> shared_variables;
-    for (const auto& coord : tensor_coords.coords()) {
-        auto cached_program = create_at(operation_attributes, coord, tensor_args, tensor_return_value);
-        workload.add_program(ttnn::MeshCoordinateRange(coord), std::move(cached_program.program));
-        shared_variables.emplace(coord, std::move(cached_program.shared_variables));
-    }
-    return cached_mesh_workload_t(std::move(workload), std::move(shared_variables));
-}
-
-ttnn::device_operation::CachedProgram<
-    LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::shared_variables_t>
-LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::create_at(
-    const operation_attributes_t& operation_attributes,
-    const ttnn::MeshCoordinate& mesh_coordinate,
-    const tensor_args_t& tensor_args,
-    tensor_return_value_t& tensor_return_value) {
+    tensor_return_value_t& tensor_return_value,
+    const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate) {
     using namespace tt;
     using namespace tt::tt_metal;
     using namespace tt::tt_fabric;
     using namespace ttnn::ccl;
+
+    TT_FATAL(
+        mesh_dispatch_coordinate.has_value(),
+        "LlamaReduceScatterCreateHeads::create_descriptor requires a mesh dispatch coordinate");
+    const ttnn::MeshCoordinate mesh_coordinate = mesh_dispatch_coordinate.value();
+
+    ProgramDescriptor desc;
+
     // uint32_t ring_size = operation_attributes.ring_devices;
     // uint32_t num_devices = ring_size;
 
@@ -333,7 +325,8 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
     std::string device_order =
         detail::rs_heads_fusion::device_order_array_string(ring_size, ring_index, operation_attributes.topology);
 
-    std::map<std::string, std::string> reader_defines = {{"DEVICE_ORDER", device_order}};
+    KernelDescriptor::Defines reader_defines;
+    reader_defines.emplace_back("DEVICE_ORDER", device_order);
 
     const auto& input_shape = input_tensor.logical_shape();
     auto& q_output_tensor = tensor_return_value[0];
@@ -406,8 +399,6 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
         tt::tt_metal::HalProgrammableCoreType::TENSIX,
         operation_attributes.subdevice_id.value_or(mesh_device->get_sub_device_ids().at(0)));
 
-    tt::tt_metal::Program program{};
-
     auto fabric_max_packet_size = tt::tt_fabric::get_tt_fabric_channel_buffer_size_bytes();
     size_t packet_size_bytes =
         input_tensor.dtype() == DataType::BFLOAT16 ? std::bit_floor(fabric_max_packet_size) : fabric_max_packet_size;
@@ -458,20 +449,32 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
     // accumulator before we perform the reduction
     uint32_t accumulator_cb_index = tt::CBIndex::c_5;
 
-    tt::tt_metal::CircularBufferConfig cb_input_tensor_config =
-        tt::tt_metal::CircularBufferConfig(1 * input_block_size, {{input_tensor_cb_id, cb_data_format}})
-            .set_page_size(input_tensor_cb_id, input_block_size)
-            .set_globally_allocated_address(*input_tensor_buffer);
+    // Globally-allocated CB backed by input_tensor.buffer(); the descriptor framework
+    // patches the address automatically on every dispatch when .buffer is set.
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = 1 * input_block_size,
+        .core_ranges = all_cores_grid,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(input_tensor_cb_id),
+            .data_format = cb_data_format,
+            .page_size = input_block_size,
+        }}},
+        .buffer = input_tensor_buffer,
+    });
 
     constexpr uint32_t buffering_factor = 2;
     // Allocate space for the client interface
     static constexpr auto num_packet_headers_storable = 8;
     auto packet_header_size_bytes = tt::tt_fabric::get_tt_fabric_packet_header_size_bytes();
-    tt::tt_metal::CircularBufferConfig packet_header_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            num_packet_headers_storable * packet_header_size_bytes * buffering_factor,
-            {{packet_header_cb_index, DataFormat::RawUInt32}})
-            .set_page_size(packet_header_cb_index, packet_header_size_bytes);
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = num_packet_headers_storable * packet_header_size_bytes * buffering_factor,
+        .core_ranges = all_cores_grid,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(packet_header_cb_index),
+            .data_format = DataFormat::RawUInt32,
+            .page_size = packet_header_size_bytes,
+        }}},
+    });
 
     uint32_t max_shards_per_worker = detail::rs_heads_fusion::max_shards_per_worker(schedule);
     uint32_t num_shards_total = max_shards_per_worker * (num_devices - 1);
@@ -500,10 +503,15 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
     Device 1 last 2 packets and the atomic increment packet
     Device 2 last 2 packets and the atomic increment packet
     */
-    tt::tt_metal::CircularBufferConfig fabric_sender_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            num_pages_total * input_block_size, {{fabric_sender_cb_index, cb_data_format}})
-            .set_page_size(fabric_sender_cb_index, input_block_size);
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = num_pages_total * input_block_size,
+        .core_ranges = all_cores_grid,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(fabric_sender_cb_index),
+            .data_format = cb_data_format,
+            .page_size = input_block_size,
+        }}},
+    });
 
     // buffer for receiving packets from the other devices.
     // each core handles one packet from each device
@@ -542,11 +550,18 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
     Page 3
     --------------------------------------
     */
-    tt::tt_metal::CircularBufferConfig fabric_receiver_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            num_blocks_per_packet * num_devices * input_block_size, {{fabric_receiver_cb_index, cb_data_format}})
-            .set_page_size(fabric_receiver_cb_index, input_block_size)
-            .set_globally_allocated_address(*packet_buffer);
+    // Globally-allocated CB backed by packet_buffer; the descriptor framework
+    // patches the address automatically on every dispatch when .buffer is set.
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = num_blocks_per_packet * num_devices * input_block_size,
+        .core_ranges = all_cores_grid,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(fabric_receiver_cb_index),
+            .data_format = cb_data_format,
+            .page_size = input_block_size,
+        }}},
+        .buffer = packet_buffer,
+    });
 
     // After reduction, the data will be packed into the accumulator cb
     /*
@@ -557,21 +572,15 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
     Page 3 reduced across all devices
     --------------------------------------
     */
-    tt::tt_metal::CircularBufferConfig accumulator_cb_config =
-        tt::tt_metal::CircularBufferConfig(
-            buffering_factor * num_blocks_per_packet * 1 * input_block_size * num_devices,
-            {{accumulator_cb_index, cb_data_format}})
-            .set_page_size(accumulator_cb_index, input_block_size);
-
-    auto cb_input_tensor_handle =
-        tt::tt_metal::CreateCircularBuffer(program, all_cores_grid, cb_input_tensor_config);  // input buffer
-    // auto cb_output_tensor_handle =
-    //     tt::tt_metal::CreateCircularBuffer(program, all_cores_grid, cb_output_tensor_config);  // output buffer
-    tt::tt_metal::CreateCircularBuffer(program, all_cores_grid, packet_header_cb_config);  // client interface
-    auto cb_fabric_receiver_handle =
-        tt::tt_metal::CreateCircularBuffer(program, all_cores_grid, fabric_receiver_cb_config);
-    tt::tt_metal::CreateCircularBuffer(program, all_cores_grid, fabric_sender_cb_config);
-    tt::tt_metal::CreateCircularBuffer(program, all_cores_grid, accumulator_cb_config);
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = buffering_factor * num_blocks_per_packet * 1 * input_block_size * num_devices,
+        .core_ranges = all_cores_grid,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(accumulator_cb_index),
+            .data_format = cb_data_format,
+            .page_size = input_block_size,
+        }}},
+    });
 
     auto input_cores =
         corerange_to_cores(input_grid, std::nullopt, input_shard_spec.orientation == ShardOrientation::ROW_MAJOR);
@@ -631,34 +640,47 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
         total_num_read_txns};
 
     if (packet_worker_cores_grid.num_cores() == 1) {
-        reader_defines["SKIP_MCAST"] = "1";
+        reader_defines.emplace_back("SKIP_MCAST", "1");
     }
-    reader_defines["INPUT_CORE_XY"] =
-        detail::rs_heads_fusion::cores_to_string(to_worker_cores(input_cores, ncores_input));
-    reader_defines["Q_OUTPUT_CORE_XY"] =
-        detail::rs_heads_fusion::cores_to_string(to_worker_cores(q_output_cores, ncores_output));
-    reader_defines["K_OUTPUT_CORE_XY"] =
-        detail::rs_heads_fusion::cores_to_string(to_worker_cores(k_output_cores, ncores_output));
-    reader_defines["V_OUTPUT_CORE_XY"] =
-        detail::rs_heads_fusion::cores_to_string(to_worker_cores(v_output_cores, ncores_output));
-    reader_defines["PACKET_WORKER_CORES"] =
-        detail::rs_heads_fusion::cores_to_string(to_worker_cores(packet_worker_cores));
-    reader_defines["SCHEDULE"] = schedule_string;
-    // create local semaphore
-    auto local_semaphore = tt::tt_metal::CreateSemaphore(program, all_cores_grid, INVALID);
+    reader_defines.emplace_back(
+        "INPUT_CORE_XY", detail::rs_heads_fusion::cores_to_string(to_worker_cores(input_cores, ncores_input)));
+    reader_defines.emplace_back(
+        "Q_OUTPUT_CORE_XY", detail::rs_heads_fusion::cores_to_string(to_worker_cores(q_output_cores, ncores_output)));
+    reader_defines.emplace_back(
+        "K_OUTPUT_CORE_XY", detail::rs_heads_fusion::cores_to_string(to_worker_cores(k_output_cores, ncores_output)));
+    reader_defines.emplace_back(
+        "V_OUTPUT_CORE_XY", detail::rs_heads_fusion::cores_to_string(to_worker_cores(v_output_cores, ncores_output)));
+    reader_defines.emplace_back(
+        "PACKET_WORKER_CORES", detail::rs_heads_fusion::cores_to_string(to_worker_cores(packet_worker_cores)));
+    reader_defines.emplace_back("SCHEDULE", schedule_string);
 
-    tt::tt_metal::KernelHandle unary_reader_kernel_id = tt::tt_metal::CreateKernel(
-        program,
+    // create local semaphore.  Translate CreateSemaphore(program, all_cores_grid, INVALID)
+    // to a SemaphoreDescriptor entry; the descriptor framework allocates the real
+    // semaphore id on cache miss.  INVALID == 0, so initial_value = 0 matches.
+    uint32_t local_semaphore = static_cast<uint32_t>(desc.semaphores.size());
+    desc.semaphores.push_back(SemaphoreDescriptor{
+        .id = local_semaphore,
+        .core_type = tt::CoreType::WORKER,
+        .core_ranges = all_cores_grid,
+        .initial_value = 0,
+    });
+
+    KernelDescriptor reader_kernel_desc;
+    reader_kernel_desc.kernel_source =
         "ttnn/cpp/ttnn/operations/experimental/ccl/llama_reduce_scatter_create_heads/device/kernels/dataflow/"
-        "reader_llama_reduce_scatter.cpp",
-        all_cores_grid,
-        tt_metal::DataMovementConfig{
-            .processor = DataMovementProcessor::RISCV_1,
-            .noc = operation_attributes.use_noc1_only ? NOC::NOC_1 : NOC::RISCV_1_default,
-            .noc_mode = (operation_attributes.use_noc1_only) ? tt_metal::NOC_MODE::DM_DYNAMIC_NOC
-                                                             : tt_metal::NOC_MODE::DM_DEDICATED_NOC,
-            .compile_args = reader_compile_time_args,
-            .defines = reader_defines});
+        "reader_llama_reduce_scatter.cpp";
+    reader_kernel_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
+    reader_kernel_desc.core_ranges = all_cores_grid;
+    reader_kernel_desc.compile_time_args = reader_compile_time_args;
+    reader_kernel_desc.defines = reader_defines;
+    reader_kernel_desc.config = DataMovementConfigDescriptor{
+        .processor = DataMovementProcessor::RISCV_1,
+        .noc = operation_attributes.use_noc1_only ? NOC::NOC_1 : NOC::RISCV_1_default,
+        .noc_mode = operation_attributes.use_noc1_only ? tt_metal::NOC_MODE::DM_DYNAMIC_NOC
+                                                       : tt_metal::NOC_MODE::DM_DEDICATED_NOC,
+    };
+    desc.kernels.push_back(std::move(reader_kernel_desc));
+    KernelHandle unary_reader_kernel_id = desc.kernels.size() - 1;
 
     auto packet_receiver_worker_core = to_worker_cores({packet_receiver_core}).at(0);
     auto num_packet_worker_cores = packet_worker_cores.size();
@@ -683,18 +705,22 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
         operation_attributes.topology == ttnn::ccl::Topology::Linear ? 0 : 1};
 
     auto writer_defines = reader_defines;
-    tt::tt_metal::KernelHandle unary_writer_kernel_id = tt::tt_metal::CreateKernel(
-        program,
+    KernelDescriptor writer_kernel_desc;
+    writer_kernel_desc.kernel_source =
         "ttnn/cpp/ttnn/operations/experimental/ccl/llama_reduce_scatter_create_heads/device/kernels/dataflow/"
-        "writer_llama_reduce_scatter.cpp",
-        all_cores_grid,
-        tt_metal::DataMovementConfig{
-            .processor = DataMovementProcessor::RISCV_0,
-            .noc = operation_attributes.use_noc1_only ? NOC::NOC_1 : NOC::RISCV_0_default,
-            .noc_mode = (operation_attributes.use_noc1_only) ? tt_metal::NOC_MODE::DM_DYNAMIC_NOC
-                                                             : tt_metal::NOC_MODE::DM_DEDICATED_NOC,
-            .compile_args = writer_compile_time_args,
-            .defines = writer_defines});
+        "writer_llama_reduce_scatter.cpp";
+    writer_kernel_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
+    writer_kernel_desc.core_ranges = all_cores_grid;
+    writer_kernel_desc.compile_time_args = writer_compile_time_args;
+    writer_kernel_desc.defines = writer_defines;
+    writer_kernel_desc.config = DataMovementConfigDescriptor{
+        .processor = DataMovementProcessor::RISCV_0,
+        .noc = operation_attributes.use_noc1_only ? NOC::NOC_1 : NOC::RISCV_0_default,
+        .noc_mode = operation_attributes.use_noc1_only ? tt_metal::NOC_MODE::DM_DYNAMIC_NOC
+                                                       : tt_metal::NOC_MODE::DM_DEDICATED_NOC,
+    };
+    desc.kernels.push_back(std::move(writer_kernel_desc));
+    KernelHandle unary_writer_kernel_id = desc.kernels.size() - 1;
 
     auto output_cb_index = accumulator_cb_index;
     const std::vector<uint32_t> compute_compile_time_args = {
@@ -704,15 +730,23 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
     const auto* const compute_kernel_file =
         "ttnn/cpp/ttnn/operations/experimental/ccl/llama_reduce_scatter_create_heads/device/kernels/compute/"
         "reduction.cpp";
-    const auto compute_kernel_id = tt_metal::CreateKernel(
-        program,
-        compute_kernel_file,
-        packet_worker_cores_grid,
-        tt_metal::ComputeConfig{.fp32_dest_acc_en = fp32_dest_acc_en, .compile_args = compute_compile_time_args});
+    KernelDescriptor compute_kernel_desc;
+    compute_kernel_desc.kernel_source = compute_kernel_file;
+    compute_kernel_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
+    compute_kernel_desc.core_ranges = packet_worker_cores_grid;
+    compute_kernel_desc.compile_time_args = compute_compile_time_args;
+    compute_kernel_desc.config = ComputeConfigDescriptor{.fp32_dest_acc_en = fp32_dest_acc_en};
+    desc.kernels.push_back(std::move(compute_kernel_desc));
+    [[maybe_unused]] KernelHandle compute_kernel_id = desc.kernels.size() - 1;
 
     uint32_t offset_for_input = chip_id * ncores_input * 1;  // needs to be updated for row slicing.
     uint32_t local_page = 0;
 
+    // Reader runtime args template.  Slot 0 (cross_device_semaphore->address()) is a
+    // GlobalSemaphore address -- the descriptor framework re-runs apply_descriptor_runtime_args
+    // on every dispatch so this picks up address changes automatically.  Slots 10..12
+    // are q/k/v buffer base addresses; we substitute Buffer* below so the framework
+    // records BufferBindings for the cache-hit fast path.
     std::vector<uint32_t> reader_runtime_args = {
         cross_device_semaphore->address(), local_semaphore, false, false, 0, 0, false, 0, 0, 0, 0, 0, 0};
     uint32_t is_reader_sender_core_idx = 2;
@@ -752,6 +786,42 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
         backward_fabric_connection = true;
     }
 
+    // Helper to convert a per-core uint32_t runtime arg vector into an RTArgList,
+    // substituting Buffer* at q/k/v base address indices so the framework can
+    // patch them directly on cache hits.
+    auto build_reader_rt_args = [&](const std::vector<uint32_t>& src) {
+        KernelDescriptor::RTArgList out;
+        out.reserve(src.size());
+        for (size_t i = 0; i < src.size(); ++i) {
+            if (i == reader_q_base_addr_idx) {
+                out.push_back(q_output_tensor.buffer());
+            } else if (i == reader_k_base_addr_idx) {
+                out.push_back(k_output_tensor.buffer());
+            } else if (i == reader_v_base_addr_idx) {
+                out.push_back(v_output_tensor.buffer());
+            } else {
+                out.push_back(src[i]);
+            }
+        }
+        return out;
+    };
+    auto build_writer_rt_args = [&](const std::vector<uint32_t>& src) {
+        KernelDescriptor::RTArgList out;
+        out.reserve(src.size());
+        for (size_t i = 0; i < src.size(); ++i) {
+            if (i == writer_q_base_addr_idx) {
+                out.push_back(q_output_tensor.buffer());
+            } else if (i == writer_k_base_addr_idx) {
+                out.push_back(k_output_tensor.buffer());
+            } else if (i == writer_v_base_addr_idx) {
+                out.push_back(v_output_tensor.buffer());
+            } else {
+                out.push_back(src[i]);
+            }
+        }
+        return out;
+    };
+
     for (auto core : all_cores) {
         std::vector<uint32_t> writer_runtime_args = {
             cross_device_semaphore->address(), local_semaphore, false, false, 0, 0, 0, 0, 0, 0, 0};
@@ -785,11 +855,11 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
             writer_runtime_args.push_back(forward_fabric_connection);
             if (forward_fabric_connection) {
                 const auto target_device_fabric_node_id = mesh_device->get_fabric_node_id(mesh_coordinate);
-                tt::tt_fabric::append_fabric_connection_rt_args(
+                tt::tt_fabric::append_fabric_connection_rt_args<ProgramDescriptor>(
                     target_device_fabric_node_id,
                     forward_fabric_node_id.value(),
                     link_idx,
-                    program,
+                    desc,
                     core,
                     writer_runtime_args);
             }
@@ -797,11 +867,11 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
             writer_runtime_args.push_back(backward_fabric_connection);
             if (backward_fabric_connection) {
                 const auto target_device_fabric_node_id = mesh_device->get_fabric_node_id(mesh_coordinate);
-                tt::tt_fabric::append_fabric_connection_rt_args(
+                tt::tt_fabric::append_fabric_connection_rt_args<ProgramDescriptor>(
                     target_device_fabric_node_id,
                     backward_fabric_node_id.value(),
                     link_idx,
-                    program,
+                    desc,
                     core,
                     writer_runtime_args);
             }
@@ -836,65 +906,11 @@ LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::cre
             writer_runtime_args[is_writer_sender_core_idx] = false;
             writer_runtime_args[is_writer_worker_core_idx] = false;
         }
-        tt::tt_metal::SetRuntimeArgs(program, unary_reader_kernel_id, core, reader_runtime_args);
-        tt::tt_metal::SetRuntimeArgs(program, unary_writer_kernel_id, core, writer_runtime_args);
+        desc.kernels[unary_reader_kernel_id].emplace_runtime_args(core, build_reader_rt_args(reader_runtime_args));
+        desc.kernels[unary_writer_kernel_id].emplace_runtime_args(core, build_writer_rt_args(writer_runtime_args));
     }
 
-    return {
-        std::move(program),
-        {.unary_reader_kernel_id = unary_reader_kernel_id,
-         .unary_writer_kernel_id = unary_writer_kernel_id,
-         .compute_kernel_id = compute_kernel_id,
-         .cb_handles = {cb_input_tensor_handle, cb_fabric_receiver_handle},
-         .core_range = all_cores_grid}};
-}
-
-void LlamaReduceScatterCreateHeadsDeviceOperation::LlamaReduceScatterCreateHeads::override_runtime_arguments(
-    cached_mesh_workload_t& cached_workload,
-    const operation_attributes_t& operation_attributes,
-    const tensor_args_t& tensor_args,
-    tensor_return_value_t& tensor_return_value) {
-    for (auto& [range, program] : cached_workload.workload.get_programs()) {
-        const auto& shared_variables = cached_workload.shared_variables.at(range);
-
-        const auto& unary_reader_kernel_id = shared_variables.unary_reader_kernel_id;
-        const auto& unary_writer_kernel_id = shared_variables.unary_writer_kernel_id;
-
-        const auto& input_tensor = tensor_args.input_tensor;
-        const auto& intermediate_packet_buffer = tensor_args.intermediate_packet_buffer;
-        auto& output_tensors = tensor_return_value;
-        auto& output_tensor_q = output_tensors.at(0);
-        auto& output_tensor_k = output_tensors.at(1);
-        auto& output_tensor_v = output_tensors.at(2);
-
-        uint32_t q_base_addr = output_tensor_q.buffer()->address();
-        uint32_t k_base_addr = output_tensor_k.buffer()->address();
-        uint32_t v_base_addr = output_tensor_v.buffer()->address();
-
-        auto* input_tensor_buffer = input_tensor.buffer();
-        auto* packet_buffer = intermediate_packet_buffer.buffer();
-
-        const auto& all_cores_grid = shared_variables.core_range;
-
-        auto cores = corerange_to_cores(all_cores_grid, std::nullopt);
-
-        UpdateDynamicCircularBufferAddress(program, shared_variables.cb_handles[0], *input_tensor_buffer);
-        UpdateDynamicCircularBufferAddress(program, shared_variables.cb_handles[1], *packet_buffer);
-
-        for (const auto& core : cores) {
-            auto& writer_runtime_args = tt::tt_metal::GetRuntimeArgs(program, unary_writer_kernel_id, core);
-            writer_runtime_args[0] = (uint32_t)operation_attributes.cross_device_semaphore->address();
-            writer_runtime_args[8] = q_base_addr;
-            writer_runtime_args[9] = k_base_addr;
-            writer_runtime_args[10] = v_base_addr;
-
-            auto& reader_runtime_args = tt::tt_metal::GetRuntimeArgs(program, unary_reader_kernel_id, core);
-            reader_runtime_args[0] = (uint32_t)operation_attributes.cross_device_semaphore->address();
-            reader_runtime_args[10] = q_base_addr;
-            reader_runtime_args[11] = k_base_addr;
-            reader_runtime_args[12] = v_base_addr;
-        }
-    }
+    return desc;
 }
 
 }  // namespace ttnn::operations::experimental::ccl

@@ -13,6 +13,7 @@
 #include "ttnn/types.hpp"
 #include "ttnn/global_semaphore.hpp"
 #include "ttnn/operations/ccl/ccl_common.hpp"
+#include <tt-metalium/program_descriptors.hpp>
 #include <tt-metalium/sub_device.hpp>
 
 namespace ttnn::operations::experimental::ccl {
@@ -45,35 +46,15 @@ struct LlamaReduceScatterCreateHeadsDeviceOperation {
     using tensor_return_value_t = std::vector<ttnn::Tensor>;
 
     struct LlamaReduceScatterCreateHeads {
-        // Shared variables are the variables that are shared between the create and override_runtime_arguments methods
-        struct shared_variables_t {
-            tt::tt_metal::KernelHandle unary_reader_kernel_id;
-            tt::tt_metal::KernelHandle unary_writer_kernel_id;
-            tt::tt_metal::KernelHandle quaternary_reduce_reader_kernel_id;
-            tt::tt_metal::KernelHandle quaternary_reduce_writer_kernel_id;
-            tt::tt_metal::KernelHandle compute_kernel_id;
-            std::vector<tt::tt_metal::CBHandle> cb_handles;
-            CoreRangeSet core_range;
-        };
-        using cached_mesh_workload_t = ttnn::device_operation::AdaptedCachedMeshWorkload<shared_variables_t>;
-
-        static cached_mesh_workload_t create_mesh_workload(
-            const operation_attributes_t& operation_attributes,
-            const ttnn::MeshCoordinateRangeSet& tensor_coords,
-            const tensor_args_t& tensor_args,
-            tensor_return_value_t& tensor_return_value);
-
-        static ttnn::device_operation::CachedProgram<shared_variables_t> create_at(
-            const operation_attributes_t& operation_attributes,
-            const ttnn::MeshCoordinate& mesh_coordinate,
-            const tensor_args_t& tensor_args,
-            tensor_return_value_t& tensor_return_value);
-
-        static void override_runtime_arguments(
-            cached_mesh_workload_t& cached_workload,
+        // Per-coord program build.  The GlobalSemaphore lives on operation_attributes
+        // (allocated by the caller), so no prepare_resources hook is required -- the
+        // semaphore is passed through and its address is written into runtime args
+        // every dispatch via the normal apply_descriptor_runtime_args path.
+        static tt::tt_metal::ProgramDescriptor create_descriptor(
             const operation_attributes_t& operation_attributes,
             const tensor_args_t& tensor_args,
-            tensor_return_value_t& tensor_return_value);
+            tensor_return_value_t& tensor_return_value,
+            const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate);
     };
 
     using program_factory_t = std::variant<LlamaReduceScatterCreateHeads>;
@@ -83,9 +64,6 @@ struct LlamaReduceScatterCreateHeadsDeviceOperation {
     // Select the program factory based on the operation attributes and tensor args
     // Validate the operation when it creates a program.
     static void validate_on_program_cache_miss(const operation_attributes_t&, const tensor_args_t&);
-
-    // Empty as there doesn't seem to be any complicated hashing requirement
-    static void validate_on_program_cache_hit(const operation_attributes_t&, const tensor_args_t&);
 
     // Compute the output shapes based on the operation attributes and tensor args
     static spec_return_value_t compute_output_specs(const operation_attributes_t&, const tensor_args_t&);

@@ -5,37 +5,30 @@
 #pragma once
 
 #include "send_async_op_device_operation_types.hpp"
-#include "ttnn/device_operation.hpp"
+
+#include <tt-metalium/program_descriptors.hpp>
+
+#include <optional>
+#include <vector>
 
 namespace ttnn::experimental::prim {
 
-struct SendAsyncSharedVariables {
-    std::vector<tt::tt_metal::CoreCoord> sender_core_coords;
-    tt::tt_metal::KernelHandle reader_kernel_id{};
-    tt::tt_metal::KernelHandle writer_kernel_id{};
-};
-
 struct SendAsyncMeshWorkloadFactory {
-    using shared_variables_t = SendAsyncSharedVariables;
-    using cached_mesh_workload_t = ttnn::device_operation::AdaptedCachedMeshWorkload<shared_variables_t>;
-
-    static cached_mesh_workload_t create_mesh_workload(
-        const SendAsyncParams& operation_attributes,
-        const ttnn::MeshCoordinateRangeSet& tensor_coords,
-        const Tensor& tensor_args,
-        std::vector<Tensor>& tensor_return_value);
-
-    static ttnn::device_operation::CachedProgram<shared_variables_t> create_at(
-        const SendAsyncParams& operation_attributes,
-        const ttnn::MeshCoordinate& mesh_coordinate,
-        const Tensor& tensor_args,
-        std::vector<Tensor>& tensor_return_value);
-
-    static void override_runtime_arguments(
-        cached_mesh_workload_t& cached_workload,
+    // Per-coord program build.  The MeshSocket lives on SendAsyncParams (caller
+    // allocated) so this factory needs no prepare_resources hook — the socket
+    // config buffer address is written into the writer runtime args every
+    // dispatch via the normal apply_descriptor_runtime_args path.
+    //
+    // For coordinates that are not sender devices for the socket, an empty
+    // ProgramDescriptor is returned: no kernels, no CBs.  The legacy
+    // create_mesh_workload pre-filtered such coords out via
+    // get_workload_coords; in the descriptor pattern the framework iterates
+    // every tensor coord, so we emit a no-op program for non-sender coords.
+    static tt::tt_metal::ProgramDescriptor create_descriptor(
         const SendAsyncParams& operation_attributes,
         const Tensor& tensor_args,
-        std::vector<Tensor>& tensor_return_value);
+        std::vector<Tensor>& tensor_return_value,
+        const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate);
 };
 
 }  // namespace ttnn::experimental::prim

@@ -5,52 +5,44 @@
 #pragma once
 
 #include "neighbor_pad_async_device_operation_types.hpp"
-#include "ttnn/device_operation.hpp"
 #include "ttnn/distributed/types.hpp"
+
+#include <tt-metalium/program_descriptors.hpp>
+
+#include <optional>
 
 namespace ttnn::experimental::prim {
 
-struct NeighborPadAsyncSharedVariables {
-    // H fabric (1 consolidated reader kernel, 1 consolidated writer kernel)
-    tt::tt_metal::KernelHandle h_reader_kernel_id = 0;
-    tt::tt_metal::KernelHandle h_writer_kernel_id = 0;
-
-    // Local copy (1 consolidated reader kernel, 1 consolidated writer kernel)
-    tt::tt_metal::KernelHandle local_reader_kernel_id = 0;
-    tt::tt_metal::KernelHandle local_writer_kernel_id = 0;
-
-    // W fabric (1 consolidated reader kernel, 1 consolidated writer kernel)
-    tt::tt_metal::KernelHandle w_reader_kernel_id = 0;
-    tt::tt_metal::KernelHandle w_writer_kernel_id = 0;
-
-    bool has_local_copy = false;
-    bool has_w_fabric = false;
-};
-
 struct NeighborPadAsyncMeshWorkloadFactory {
-    using shared_variables_t = NeighborPadAsyncSharedVariables;
-    using cached_mesh_workload_t = ttnn::device_operation::AdaptedCachedMeshWorkload<shared_variables_t>;
+    // Workload-level resources.  The three GlobalSemaphores live on
+    // NeighborPadAsyncParams (allocated by the Python-level caller) so we do
+    // NOT need to allocate any resources here.  prepare_resources() is still
+    // used so the cross-device Synchronize() barrier — required to flush
+    // fabric writes from prior ops before any neighbor_pad program is built —
+    // runs exactly once per workload (before any per-coord create_descriptor()
+    // call), matching the legacy behaviour where Synchronize() lived at the
+    // top of create_mesh_workload().
+    struct Resources {};
 
-    static cached_mesh_workload_t create_mesh_workload(
+    // Runs the cross-device Synchronize() barrier exactly once per workload.
+    // Invoked by DescriptorMeshWorkloadFactoryAdapter before any per-coord
+    // program build.
+    static Resources prepare_resources(
         const NeighborPadAsyncParams& operation_attributes,
-        const ttnn::MeshCoordinateRangeSet& tensor_coords,
         const NeighborPadAsyncInputs& tensor_args,
         Tensor& tensor_return_value);
 
-    static void override_runtime_arguments(
-        cached_mesh_workload_t& cached_workload,
+    // Per-coord program build.  workload_resources is unused but present so
+    // the adapter dispatches to the prepare_resources + create_descriptor
+    // overload; mesh_dispatch_coordinate identifies which device in the mesh
+    // this program targets (used to derive forward/backward neighbor coords
+    // for the H- and W-fabric exchanges).
+    static tt::tt_metal::ProgramDescriptor create_descriptor(
         const NeighborPadAsyncParams& operation_attributes,
         const NeighborPadAsyncInputs& tensor_args,
-        Tensor& tensor_return_value);
-
-private:
-    using cached_program_t = ttnn::device_operation::CachedProgram<shared_variables_t>;
-
-    static cached_program_t create_at(
-        const NeighborPadAsyncParams& operation_attributes,
-        const ttnn::MeshCoordinate& mesh_coordinate,
-        const NeighborPadAsyncInputs& tensor_args,
-        Tensor& tensor_return_value);
+        Tensor& tensor_return_value,
+        Resources& workload_resources,
+        const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate);
 };
 
 }  // namespace ttnn::experimental::prim

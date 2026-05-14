@@ -8,49 +8,38 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <utility>
 #include <vector>
 
 #include <tt-metalium/buffer.hpp>
 #include <tt-metalium/experimental/fabric/fabric.hpp>
+#include <tt-metalium/program_descriptors.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
 #include <tt-metalium/tt_align.hpp>
 #include "ttnn/operations/experimental/ccl/send_recv_async/send_recv_utils.hpp"
+
 using namespace tt::constants;
+using namespace tt::tt_metal;
 
 namespace ttnn::experimental::prim {
 
-SendAsyncMeshWorkloadFactory::cached_mesh_workload_t SendAsyncMeshWorkloadFactory::create_mesh_workload(
+ProgramDescriptor SendAsyncMeshWorkloadFactory::create_descriptor(
     const SendAsyncParams& operation_attributes,
-    const ttnn::MeshCoordinateRangeSet& tensor_coords,
     const Tensor& tensor_args,
-    std::vector<Tensor>& tensor_return_value) {
-    tt::tt_metal::distributed::MeshWorkload workload;
-    std::unordered_map<ttnn::MeshCoordinateRange, shared_variables_t> shared_variables;
-    ttnn::MeshCoordinateRangeSet workload_coords =
-    ttnn::send_recv_utils::get_workload_coords<tt::tt_metal::distributed::SocketEndpoint::SENDER>(
-        tensor_coords, operation_attributes.mesh_socket);
+    [[maybe_unused]] std::vector<Tensor>& tensor_return_value,
+    const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate) {
+    TT_FATAL(
+        mesh_dispatch_coordinate.has_value(),
+        "SendAsyncMeshWorkloadFactory::create_descriptor requires a mesh dispatch coordinate");
+    const ttnn::MeshCoordinate mesh_coordinate = mesh_dispatch_coordinate.value();
 
-    for (const auto& coord : workload_coords.coords()) {
-        auto cached_program = create_at(operation_attributes, coord, tensor_args, tensor_return_value);
-        workload.add_program(ttnn::MeshCoordinateRange(coord), std::move(cached_program.program));
-        shared_variables.emplace(ttnn::MeshCoordinateRange(coord), std::move(cached_program.shared_variables));
-    }
-    return cached_mesh_workload_t{std::move(workload), std::move(shared_variables)};
-}
-
-ttnn::device_operation::CachedProgram<SendAsyncMeshWorkloadFactory::shared_variables_t>
-SendAsyncMeshWorkloadFactory::create_at(
-    const SendAsyncParams& operation_attributes,
-    const ttnn::MeshCoordinate& mesh_coordinate,
-    const Tensor& tensor_args,
-    std::vector<Tensor>& /*tensor_return_value*/) {
     auto mesh_socket = operation_attributes.mesh_socket;
     const auto& input_tensor = tensor_args;
     auto* mesh_device = input_tensor.device();
     IDevice* target_device = mesh_device ? mesh_device->get_device(mesh_coordinate) : tensor_args.device();
 
-    tt::tt_metal::Program program{};
+    ProgramDescriptor desc;
     const auto* socket_mesh_device = mesh_socket.get_config_buffer()->device();
     const auto& socket_connection_config = mesh_socket.get_config().socket_connection_config;
 
@@ -74,8 +63,17 @@ SendAsyncMeshWorkloadFactory::create_at(
     }
     uint32_t num_cores = sender_core_coords.size();
 
+    // Coords without any sender connections to this device get a no-op
+    // program.  The legacy create_mesh_workload filtered these out via
+    // get_workload_coords; in the descriptor pattern the framework iterates
+    // every tensor coord, so return an empty ProgramDescriptor here to
+    // preserve the legacy "do nothing on this device" behavior.
+    if (num_cores == 0) {
+        return desc;
+    }
+
     // cores must not exceed available fabric links
-    if (num_cores > 0) {
+    {
         const auto& receiver_fabric_node_id = receiver_fabric_node_ids[0];
         const auto& sender_fabric_node_id = sender_fabric_node_ids[0];
         auto available_link_indices =
@@ -126,29 +124,36 @@ SendAsyncMeshWorkloadFactory::create_at(
 
     auto src0_cb_index = tt::CBIndex::c_0;
 
-    tt::tt_metal::CircularBufferConfig cb_src0_config =
-        tt::tt_metal::CircularBufferConfig(cb_num_pages * cb_page_size, {{src0_cb_index, df}})
-            .set_page_size(src0_cb_index, cb_page_size);
-
     std::set<CoreRange> sender_core_ranges;
     for (const auto& core : sender_core_coords) {
         sender_core_ranges.insert(CoreRange(core));
     }
     CoreRangeSet sender_core_range_set(sender_core_ranges);
 
-    CreateCircularBuffer(program, sender_core_range_set, cb_src0_config);
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = cb_num_pages * cb_page_size,
+        .core_ranges = sender_core_range_set,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(src0_cb_index),
+            .data_format = df,
+            .page_size = cb_page_size,
+        }}},
+    });
 
     uint32_t packet_header_cb_num_pages = 2;  // One for data, one for sync
     uint32_t packet_header_cb_page_size = tt::tt_fabric::get_tt_fabric_packet_header_size_bytes();
 
     auto packet_header_cb_index = tt::CBIndex::c_1;
 
-    tt::tt_metal::CircularBufferConfig cb_packet_header_config =
-        tt::tt_metal::CircularBufferConfig(
-            packet_header_cb_num_pages * packet_header_cb_page_size, {{packet_header_cb_index, tt::DataFormat::UInt32}})
-            .set_page_size(packet_header_cb_index, packet_header_cb_page_size);
-
-    CreateCircularBuffer(program, sender_core_range_set, cb_packet_header_config);
+    desc.cbs.push_back(CBDescriptor{
+        .total_size = packet_header_cb_num_pages * packet_header_cb_page_size,
+        .core_ranges = sender_core_range_set,
+        .format_descriptors = {{CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(packet_header_cb_index),
+            .data_format = tt::DataFormat::UInt32,
+            .page_size = packet_header_cb_page_size,
+        }}},
+    });
 
     bool socket_storage_in_dram =
         mesh_socket.get_config().socket_mem_config.socket_storage_type == tt::tt_metal::BufferType::DRAM;
@@ -166,11 +171,15 @@ SendAsyncMeshWorkloadFactory::create_at(
     };
     reader_compile_args.insert(reader_compile_args.end(), compile_time_args.begin(), compile_time_args.end());
 
-    auto reader_kernel_id = tt::tt_metal::CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/experimental/ccl/send_recv_async/send_async/device/kernels/sender_reader.cpp",
-        sender_core_range_set,
-        tt::tt_metal::ReaderDataMovementConfig(reader_compile_args));
+    KernelDescriptor reader_kernel_desc;
+    reader_kernel_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/experimental/ccl/send_recv_async/send_async/device/kernels/sender_reader.cpp";
+    reader_kernel_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
+    reader_kernel_desc.core_ranges = sender_core_range_set;
+    reader_kernel_desc.compile_time_args = std::move(reader_compile_args);
+    reader_kernel_desc.config = ReaderConfigDescriptor{};
+    desc.kernels.push_back(std::move(reader_kernel_desc));
+    KernelHandle reader_kernel_id = desc.kernels.size() - 1;
 
     std::vector<uint32_t> writer_compile_args = {
         src0_cb_index,               // cb0_id
@@ -184,11 +193,15 @@ SendAsyncMeshWorkloadFactory::create_at(
         socket_storage_in_dram,      // is_dram
     };
 
-    auto writer_kernel_id = tt::tt_metal::CreateKernel(
-        program,
-        "ttnn/cpp/ttnn/operations/experimental/ccl/send_recv_async/send_async/device/kernels/sender_writer.cpp",
-        sender_core_range_set,
-        tt::tt_metal::WriterDataMovementConfig(writer_compile_args));
+    KernelDescriptor writer_kernel_desc;
+    writer_kernel_desc.kernel_source =
+        "ttnn/cpp/ttnn/operations/experimental/ccl/send_recv_async/send_async/device/kernels/sender_writer.cpp";
+    writer_kernel_desc.source_type = KernelDescriptor::SourceType::FILE_PATH;
+    writer_kernel_desc.core_ranges = sender_core_range_set;
+    writer_kernel_desc.compile_time_args = std::move(writer_compile_args);
+    writer_kernel_desc.config = WriterConfigDescriptor{};
+    desc.kernels.push_back(std::move(writer_kernel_desc));
+    KernelHandle writer_kernel_id = desc.kernels.size() - 1;
 
     for (uint32_t core_idx = 0; core_idx < num_cores; ++core_idx) {
         const auto& sender_core_coord = sender_core_coords[core_idx];
@@ -201,6 +214,14 @@ SendAsyncMeshWorkloadFactory::create_at(
             num_whole_packets = pages_for_this_core / num_pages_per_packet;
             num_pages_remainder = pages_for_this_core % num_pages_per_packet;
         }
+
+        // Reader RT args.  Pushed as plain uint32_t (no Buffer* bindings)
+        // because the writer needs to refresh mesh_socket.get_config_buffer()
+        // every dispatch and that buffer is not part of tensor_args.  Mixing
+        // bindings with non-binding dynamic addresses is unsafe (the fast
+        // path would skip the non-binding positions), so we keep the whole
+        // factory on the slow path: framework re-calls create_descriptor on
+        // cache hit, which re-reads buffer->address() correctly.
         std::vector<uint32_t> reader_rt_args = {
             input_tensor.buffer()->address(),  // input_base_addr
             pages_for_this_core,               // num_pages
@@ -208,7 +229,7 @@ SendAsyncMeshWorkloadFactory::create_at(
             num_whole_packets,                 // num_whole_packets
             num_pages_remainder,               // num_pages_remainder
         };
-        tt::tt_metal::SetRuntimeArgs(program, reader_kernel_id, sender_core_coord, reader_rt_args);
+        desc.kernels[reader_kernel_id].runtime_args.emplace_back(sender_core_coord, std::move(reader_rt_args));
 
         // TODO #24995: These parameters should be derived from the expected tensor/socket configuration
         uint32_t bank_id = 0;
@@ -222,6 +243,12 @@ SendAsyncMeshWorkloadFactory::create_at(
             auto num_dram_banks = target_device->allocator()->get_num_banks(tt::tt_metal::BufferType::DRAM);
             bank_id = core_idx % num_dram_banks;
         }
+
+        // Writer RT args.  Pushed as plain uint32_t (no Buffer* bindings):
+        // index 0 is the socket config buffer base address, which is not a
+        // tensor and therefore can't be bound.  See the reader comment above
+        // for the rationale.  Slow path correctly refreshes both addresses
+        // on every dispatch.
         std::vector<uint32_t> writer_rt_args = {
             mesh_socket.get_config_buffer()->address(),  // socket_config_addr
             bank_id,                                     // bank_id
@@ -236,51 +263,18 @@ SendAsyncMeshWorkloadFactory::create_at(
         auto link_indices = tt::tt_fabric::get_forwarding_link_indices(sender_fabric_node_id, receiver_fabric_node_id);
 
         uint32_t selected_link_index = link_indices[core_idx % link_indices.size()];
-        tt::tt_fabric::append_fabric_connection_rt_args(
+        tt::tt_fabric::append_fabric_connection_rt_args<ProgramDescriptor>(
             sender_fabric_node_id,
             receiver_fabric_node_id,
             selected_link_index,
-            program,
+            desc,
             sender_core_coord,
             writer_rt_args);
 
-        tt::tt_metal::SetRuntimeArgs(program, writer_kernel_id, sender_core_coord, writer_rt_args);
+        desc.kernels[writer_kernel_id].runtime_args.emplace_back(sender_core_coord, std::move(writer_rt_args));
     }
 
-    return {
-        std::move(program),
-        shared_variables_t{
-            .sender_core_coords = sender_core_coords,
-            .reader_kernel_id = reader_kernel_id,
-            .writer_kernel_id = writer_kernel_id,
-        }};
-}
-
-void SendAsyncMeshWorkloadFactory::override_runtime_arguments(
-    cached_mesh_workload_t& cached_workload,
-    const SendAsyncParams& operation_attributes,
-    const Tensor& tensor_args,
-    [[maybe_unused]] std::vector<Tensor>& tensor_return_value) {
-    // Update runtime arguments for each program in the mesh workload
-    for (auto& [coordinate_range, program] : cached_workload.workload.get_programs()) {
-        auto& shared_vars = cached_workload.shared_variables.at(coordinate_range);
-
-        // auto& shared_vars = cached_workload.shared_variables;
-        auto& sender_core_coords = shared_vars.sender_core_coords;
-        const auto& reader_kernel_id = shared_vars.reader_kernel_id;
-        const auto& writer_kernel_id = shared_vars.writer_kernel_id;
-
-        const auto& mesh_socket = operation_attributes.mesh_socket;
-        const auto& input_tensor = tensor_args;
-
-        for (const auto& sender_core_coord : sender_core_coords) {
-            auto& reader_runtime_args = GetRuntimeArgs(program, reader_kernel_id, sender_core_coord);
-            auto& writer_runtime_args = GetRuntimeArgs(program, writer_kernel_id, sender_core_coord);
-
-            reader_runtime_args[0] = input_tensor.buffer()->address();
-            writer_runtime_args[0] = mesh_socket.get_config_buffer()->address();
-        }
-    }
+    return desc;
 }
 
 }  // namespace ttnn::experimental::prim

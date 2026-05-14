@@ -4,12 +4,15 @@
 
 #pragma once
 
-// Device operation header for AllGatherConcat (heads-fused) using the TMP pattern.
+// Device operation header for AllGatherConcat (heads-fused) using the
+// ProgramDescriptor pattern.
 
 #include "ttnn/operations/experimental/ccl/all_gather_concat_heads_fused/device/all_gather_concat_device_operation_types.hpp"
-#include "ttnn/operations/experimental/ccl/all_gather_concat_heads_fused/device/all_gather_concat_program_factory.hpp"
+
+#include <tt-metalium/program_descriptors.hpp>
+#include "ttnn/distributed/types.hpp"
+
 #include <optional>
-#include <variant>
 
 namespace ttnn::experimental::prim {
 
@@ -18,8 +21,6 @@ struct AllGatherConcatDeviceOperation {
     using tensor_args_t = AllGatherConcatInputs;
     using spec_return_value_t = TensorSpec;
     using tensor_return_value_t = Tensor;
-    using program_factory_t = std::variant<AllGatherConcatMeshWorkloadFactory>;
-    using shared_variables_t = AllGatherConcatMeshWorkloadFactory::shared_variables_t;
 
     static void validate_on_program_cache_miss(const operation_attributes_t&, const tensor_args_t&);
 
@@ -28,7 +29,16 @@ struct AllGatherConcatDeviceOperation {
     static tensor_return_value_t create_output_tensors(
         const operation_attributes_t& operation_attributes, const tensor_args_t&);
 
-    static ttsl::hash::hash_t compute_program_hash(const operation_attributes_t&, const tensor_args_t&);
+    // Per-coord program build.  mesh_dispatch_coordinate identifies which device
+    // in the mesh this program targets; the framework iterates over all coords
+    // in the workload and calls create_descriptor() once per coord on a cache
+    // miss.  Buffer addresses in the descriptor are patched automatically on
+    // cache hits via the BufferBindings recorded in emplace_runtime_args().
+    static tt::tt_metal::ProgramDescriptor create_descriptor(
+        const operation_attributes_t& operation_attributes,
+        const tensor_args_t& tensor_args,
+        tensor_return_value_t& tensor_return_value,
+        const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate);
 };
 
 Tensor all_gather_concat(
