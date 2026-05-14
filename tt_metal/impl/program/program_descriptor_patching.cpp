@@ -12,6 +12,8 @@
 #include <tt-metalium/program_descriptors.hpp>
 #include <tt-metalium/host_api.hpp>
 #include <tt-metalium/program.hpp>
+#include <tt-metalium/mesh_buffer.hpp>
+#include <tt-metalium/experimental/tensor/mesh_tensor.hpp>
 #include <tt_stl/assert.hpp>
 
 #include <algorithm>
@@ -108,9 +110,17 @@ ResolvedBindings resolve_bindings(
     if (!result.rt_args.empty()) {
         auto program_cbs = program.circular_buffers();
         for (uint32_t ci = 0; ci < static_cast<uint32_t>(desc.cbs.size()); ++ci) {
-            if (desc.cbs[ci].buffer) {
-                result.cbs.push_back(
-                    {program_cbs[ci]->id(), find_idx(desc.cbs[ci].buffer, "cbs"), desc.cbs[ci].address_offset});
+            const auto& cb_desc = desc.cbs[ci];
+            TT_FATAL(
+                !(cb_desc.buffer && cb_desc.tensor),
+                "CBDescriptor cannot specify both buffer and tensor as the globally-allocated backing storage");
+
+            Buffer* cb_buffer = cb_desc.buffer;
+            if (!cb_buffer && cb_desc.tensor) {
+                cb_buffer = cb_desc.tensor->mesh_buffer().get_reference_buffer();
+            }
+            if (cb_buffer) {
+                result.cbs.push_back({program_cbs[ci]->id(), find_idx(cb_buffer, "cbs"), cb_desc.address_offset});
             }
         }
     }
