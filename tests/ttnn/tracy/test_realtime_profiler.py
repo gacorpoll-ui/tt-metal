@@ -886,6 +886,12 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
     extra_env = {
         "LLAMA_DIR": os.environ.get("LLAMA_DIR", "/mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct/"),
         "FAKE_DEVICE": os.environ.get("FAKE_DEVICE", "TG"),
+        # _run_under_tracy strips TT_METAL_DEVICE_PROFILER (host TracyMessages-only callers
+        # need it off). DeviceZoneScopedN zones — what this test asserts on — require it
+        # on. MID_RUN_DUMP flushes to Tracy periodically so a 10-min Llama run isn't
+        # buffered entirely until close.
+        "TT_METAL_DEVICE_PROFILER": "1",
+        "TT_METAL_PROFILER_MID_RUN_DUMP": "1",
     }
 
     rc, _stdout = _run_under_tracy(
