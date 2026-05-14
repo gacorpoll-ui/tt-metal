@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include <chrono>
 #include <future>
 #include <optional>
 #include <thread>
@@ -1021,10 +1022,36 @@ void Cluster::write_core_immediate(const void* mem_ptr, uint32_t sz_in_bytes, tt
         //   2. relay_broken_chips_ is updated so is_relay_broken() returns true for subsequent
         //      FIX NZ pre-checks and FIX NY guards.
         // The exception is re-thrown so run_launch_phase's FIX BX catch can handle it.
+        // FIX CH (#42429): timestamp the start of the relay write so we can report elapsed time
+        // if flush times out.  Declared outside try so catch block can compute duration.
+        const auto flush_start_ch = std::chrono::steady_clock::now();
         try {
             this->driver_->write_to_device_reg(mem_ptr, sz_in_bytes, core.chip, core_coord, addr);
             this->driver_->wait_for_non_mmio_flush(chip_id);
         } catch (const std::exception& e) {
+            // FIX CH (#42429): If the exception is a flush timeout (MMIO ERISC command queue drain
+            // did not complete before timeout), log a distinct warning with device characteristic,
+            // core coord, and elapsed time so CI logs can distinguish flush-timeout failures from
+            // other relay failures.  The flush polls the LOCAL MMIO ERISC command queue — it does
+            // NOT confirm the non-MMIO chip received the write (fire-and-forget relay semantics).
+            // A flush timeout means the MMIO ERISC itself is too busy or has crashed.
+            const std::string ex_msg = e.what();
+            const auto flush_elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - flush_start_ch).count();
+            if (ex_msg.find("flush") != std::string::npos ||
+                ex_msg.find("Timeout waiting for Ethernet core service remote IO request flush") != std::string::npos) {
+                log_warning(
+                    tt::LogDevice,
+                    "FIX CH (#42429) — MMIO ERISC command-queue flush timeout: "
+                    "non-MMIO/remote dev={} core=({},{}) addr=0x{:08x} elapsed={}ms. "
+                    "MMIO relay ERISC may be under load or crashed. "
+                    "Relay write delivery to non-MMIO is unconfirmed (fire-and-forget). (#42429)",
+                    chip_id,
+                    core.x,
+                    core.y,
+                    addr,
+                    flush_elapsed_ms);
+            }
             log_warning(
                 tt::LogDevice,
                 "FIX BW: write_core_immediate(chip {}) threw: {}. Marking relay broken.",

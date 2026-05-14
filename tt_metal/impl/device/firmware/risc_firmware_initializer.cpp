@@ -547,6 +547,7 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
             //   on both sides (FIX BT skips them; dead_relay_devices_ stays empty; FIX RR-NM
             //   does not fire).
             uint32_t ca_succeeded = 0;  // promoted out of block so FIX CB can read it
+            std::unordered_set<tt::ChipId> ca_failed_devices;  // FIX CG: hoisted so FIX AY dual-failure check can read it
             {
                 uint32_t ca_failed = 0;
                 log_info(
@@ -638,6 +639,7 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                                 e.what());
                             ++ca_failed;
                             device_failed = true;
+                            ca_failed_devices.insert(non_mmio_id);  // FIX CG: track for dual-failure detection
                         } catch (...) {
                             log_warning(
                                 tt::LogAlways,
@@ -647,6 +649,7 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                                 non_mmio_id);
                             ++ca_failed;
                             device_failed = true;
+                            ca_failed_devices.insert(non_mmio_id);  // FIX CG: track for dual-failure detection
                         }
                     }
                 }
@@ -1197,6 +1200,19 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                                 e.what());
                             ++ay_failed;
                             device_relay_dead = true;
+                            // FIX CG (#42429): dual relay failure — FIX CA already failed for this
+                            // device (relay unreachable then) and FIX AY now also failed (relay still
+                            // unreachable).  Channel is unreachable via relay in both passes.
+                            // Next session's FIX RR-NM is the only remaining recovery path.
+                            if (ca_failed_devices.count(non_mmio_id)) {
+                                log_warning(
+                                    tt::LogAlways,
+                                    "teardown: FIX CG (#42429) — non-MMIO dev={} (non-MMIO/remote) "
+                                    "chan={} unreachable after dual relay failure (FIX CA + FIX AY both "
+                                    "failed) — channel will be left unrecovered for next session's FIX RR-NM. (#42429)",
+                                    non_mmio_id,
+                                    eth_virt.str());
+                            }
                         } catch (...) {
                             log_warning(
                                 tt::LogAlways,
@@ -1207,6 +1223,19 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                                 non_mmio_id);
                             ++ay_failed;
                             device_relay_dead = true;
+                            // FIX CG (#42429): dual relay failure — FIX CA already failed for this
+                            // device (relay unreachable then) and FIX AY now also failed (relay still
+                            // unreachable).  Channel is unreachable via relay in both passes.
+                            // Next session's FIX RR-NM is the only remaining recovery path.
+                            if (ca_failed_devices.count(non_mmio_id)) {
+                                log_warning(
+                                    tt::LogAlways,
+                                    "teardown: FIX CG (#42429) — non-MMIO dev={} (non-MMIO/remote) "
+                                    "chan={} unreachable after dual relay failure (FIX CA + FIX AY both "
+                                    "failed, non-std exception) — channel will be left unrecovered for next session's FIX RR-NM. (#42429)",
+                                    non_mmio_id,
+                                    eth_virt.str());
+                            }
                         }
                     }
                 }

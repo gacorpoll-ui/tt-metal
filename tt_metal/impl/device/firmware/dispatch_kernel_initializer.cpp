@@ -328,6 +328,17 @@ void DispatchKernelInitializer::wait_for_dispatch_cores() const {
                 try {
                     const auto virtual_core = cluster_.get_virtual_coordinate_from_logical_coordinates(
                         dev->id(), logical_core, CoreType::ETH);
+                    // FIX CI (#42429): log_debug breadcrumb for fw_launch_addr {0} write.
+                    // Address 0x9004 (LAUNCH_ERISC_APP_FLAG) is disjoint from EDM status ~0x18070.
+                    // This is MMIO-only (non-MMIO excluded above). Only visible with DEBUG logging.
+                    log_debug(
+                        tt::LogMetal,
+                        "FIX CI (#42429) dispatch_teardown: MMIO/local dev={} core=({},{}) "
+                        "zeroing fw_launch_addr at 0x{:08x} (dispatch ETH core cleanup). (#42429)",
+                        dev->id(),
+                        virtual_core.x,
+                        virtual_core.y,
+                        fw_launch_addr_val);
                     cluster_.write_core_immediate(
                         dev->id(), virtual_core, std::vector<uint32_t>{0}, fw_launch_addr_val);
                 } catch (...) {
@@ -476,6 +487,21 @@ void DispatchKernelInitializer::rescue_stuck_dispatch_cores(IDevice* device) con
                                 HalProgrammableCoreType::ACTIVE_ETH);
                             const uint32_t fw_launch_addr =
                                 hal_.get_jit_build_config(aeth_idx, 0, 0).fw_launch_addr;
+                            // FIX CI (#42429): log_debug breadcrumb for fw_launch_addr {0} write.
+                            // Address 0x9004 (LAUNCH_ERISC_APP_FLAG) is disjoint from EDM status ~0x18070.
+                            // Follows hard-reset (assert+deassert above). Non-MMIO excluded by relay guard.
+                            // Only visible with DEBUG logging.
+                            const bool is_mmio_dev =
+                                cluster_.get_associated_mmio_device(device->id()) == device->id();
+                            log_debug(
+                                tt::LogMetal,
+                                "FIX CI (#42429) rescue_stuck_dispatch_cores: {} dev={} core=({},{}) "
+                                "zeroing fw_launch_addr at 0x{:08x} after hard-reset (dispatch ETH core rescue). (#42429)",
+                                is_mmio_dev ? "MMIO/local" : "non-MMIO/remote",
+                                device->id(),
+                                virtual_core.x,
+                                virtual_core.y,
+                                fw_launch_addr);
                             cluster_.write_core_immediate(
                                 device->id(), virtual_core, std::vector<uint32_t>{0}, fw_launch_addr);
                         } catch (...) {
