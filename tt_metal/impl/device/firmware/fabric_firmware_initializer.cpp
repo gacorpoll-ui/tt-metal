@@ -1058,6 +1058,32 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
         // the full 5-second UMD timeout.  assert_failed_devices tracks ANY device (MMIO or
         // non-MMIO) where assert already confirmed failure so the remaining channels can skip.
         std::unordered_set<ChipId> assert_failed_devices;
+
+        // FIX CL (#42429): Collect channels that were successfully asserted so we can
+        // deassert them all AFTER all asserts complete.
+        //
+        // Root cause of FIX XZ timeout after FIX CJ: The original loop did assert+deassert
+        // PER CHANNEL.  When an MMIO bc_deadlock channel (Device 0) was deasserted, it
+        // entered ROM ETH link-training (postcode 0x49705180) waiting for its non-MMIO
+        // ETH peer (Device 4/5/6/7).  But that peer channel (also bc_deadlock, from a
+        // non-MMIO device) was still running firmware spinning at REMOTE_HANDSHAKE_COMPLETE
+        // — it had not been reset yet.  Device 0 ERISC ROM waited indefinitely; FIX XZ
+        // timed out at 30s; next session saw probe_dead on all channels.
+        //
+        // Fix: separate the force-reset into two collective phases:
+        //   Phase 1 (this loop): assert + zero hb + write fw_launch_addr_value for ALL channels.
+        //   50ms delay: both sides of every ETH link are now simultaneously in reset.
+        //   Phase 2 (loop below): deassert ALL successfully-asserted channels.
+        //
+        // This mirrors the FIX CA / FIX CB pattern in RiscFirmwareInitializer::teardown:
+        // assert all non-MMIO, assert all MMIO, delay, deassert both sides together.
+        // Both ETH endpoints reboot simultaneously → link training succeeds on both sides.
+        struct AssertedChannel {
+            PendingChannel ch;
+            CoreCoord virtual_eth_coord;
+        };
+        std::vector<AssertedChannel> asserted_channels;
+
         for (const auto& ch : pending) {
             // FIX AX (#42429): For non-MMIO channels whose device is already confirmed
             // relay-dead (from a prior channel's failed diagnostic read in this same loop),
@@ -1203,10 +1229,9 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
                 //     device association could hang or timeout
                 // Result: corrupt=4 probe_dead=4 on all devices, all ETH channels dead.
                 //
-                // Fix: immediately deassert after assert (same pattern as FIX AC in
-                // risc_firmware_initializer.cpp and the clean path in teardown_fabric_config).
-                // This restarts the ERISC into base UMD relay firmware with all RISCs running,
-                // preserving the ETH PHY link for the next session's probe reads.
+                // FIX CL (#42429): assert is now done in this loop (Phase 1); deassert is done
+                // in a separate collective Phase 2 loop below, after a short delay ensures all
+                // channels are simultaneously in reset.  See AssertedChannel / FIX CL comment above.
                 try {
                     const auto virtual_eth_coord = cluster_.get_virtual_coordinate_from_logical_coordinates(
                         ch.dev->id(), ch.eth_logical_core, CoreType::ETH);
@@ -1311,6 +1336,51 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
                             ch.dev->id(),
                             ch.eth_chan_id);
                     }
+                    // FIX CL (#42429): Do NOT deassert here.  Push to asserted_channels so that
+                    // Phase 2 (below) can deassert all channels collectively after all asserts
+                    // complete.  This ensures both sides of every ETH link are simultaneously in
+                    // reset when deassert begins, allowing link training to complete on both sides.
+                    asserted_channels.push_back({ch, virtual_eth_coord});
+                } catch (const std::exception& e) {
+                    log_error(
+                        tt::LogMetal,
+                        "FabricFirmwareInitializer::teardown: assert_risc_reset_at_core failed on "
+                        "Device {} chan={}: {} — ERISC may still be running or halted! "
+                        "Next fabric init should expect corrupt state on this channel.",
+                        ch.dev->id(),
+                        ch.eth_chan_id,
+                        e.what());
+                    reset_failed_channels.push_back(fmt::format("dev={}/chan={}", ch.dev->id(), ch.eth_chan_id));
+                    // FIX AJ: if assert itself threw (relay path completely dead), mark device
+                    // so we skip l1_barrier below — l1_barrier on a dead-relay non-MMIO device
+                    // blocks indefinitely in wait_for_non_mmio_flush instead of throwing.
+                    if (cluster_.get_associated_mmio_device(ch.dev->id()) != ch.dev->id()) {
+                        relay_dead_devices.insert(ch.dev->id());
+                    }
+                    // FIX AW (#42429): track assert failure for ALL devices (MMIO and non-MMIO).
+                    // Subsequent channels on this device will hit the same timeout — skip them.
+                    assert_failed_devices.insert(ch.dev->id());
+                }
+            }
+        }
+
+        // FIX CL (#42429): Phase 2 — collective deassert after 50ms simultaneous-reset window.
+        //
+        // All channels that were successfully asserted in Phase 1 above are now in hardware reset.
+        // Wait 50ms (mirrors FIX CB in RiscFirmwareInitializer::teardown) to let all ERISCs settle
+        // into the reset state, then deassert them all.  Both sides of every ETH link exit reset
+        // at approximately the same time, allowing simultaneous link training to succeed.
+        if (!asserted_channels.empty()) {
+            log_info(
+                tt::LogMetal,
+                "FIX CL (#42429): {} channel(s) asserted — waiting 50ms before collective "
+                "deassert to allow simultaneous ETH link training.",
+                asserted_channels.size());
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            for (const auto& ac : asserted_channels) {
+                const auto& ch = ac.ch;
+                const auto& virtual_eth_coord = ac.virtual_eth_coord;
+                try {
                     cluster_.deassert_risc_reset_at_core(
                         tt_cxy_pair(ch.dev->id(), virtual_eth_coord), tt::umd::RiscType::ALL);
                     // FIX BN (#42429): fw_launch_addr=0 moved to post-heartbeat-confirm path
@@ -1337,22 +1407,16 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
                 } catch (const std::exception& e) {
                     log_error(
                         tt::LogMetal,
-                        "FabricFirmwareInitializer::teardown: assert/deassert_risc_reset_at_core failed on "
-                        "Device {} chan={}: {} — ERISC may still be running or halted! "
+                        "FabricFirmwareInitializer::teardown: FIX CL deassert_risc_reset_at_core "
+                        "failed on Device {} chan={}: {} — ERISC may be halted! "
                         "Next fabric init should expect corrupt state on this channel.",
                         ch.dev->id(),
                         ch.eth_chan_id,
                         e.what());
                     reset_failed_channels.push_back(fmt::format("dev={}/chan={}", ch.dev->id(), ch.eth_chan_id));
-                    // FIX AJ: if assert itself threw (relay path completely dead), mark device
-                    // so we skip l1_barrier below — l1_barrier on a dead-relay non-MMIO device
-                    // blocks indefinitely in wait_for_non_mmio_flush instead of throwing.
                     if (cluster_.get_associated_mmio_device(ch.dev->id()) != ch.dev->id()) {
                         relay_dead_devices.insert(ch.dev->id());
                     }
-                    // FIX AW (#42429): track assert failure for ALL devices (MMIO and non-MMIO).
-                    // Subsequent channels on this device will hit the same timeout — skip them.
-                    assert_failed_devices.insert(ch.dev->id());
                 }
             }
         }
