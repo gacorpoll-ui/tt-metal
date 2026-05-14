@@ -513,6 +513,129 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                 "Hard-resetting MMIO ETH channels via PCIe BEFORE assert_cores loop "
                 "to restore UMD relay firmware and avoid 5s-per-device relay timeouts.",
                 relay_broken_non_mmio.size());
+
+            // FIX CA (#42429): Write-only reset of non-MMIO ETH ERISCs BEFORE resetting MMIO ERISCs.
+            //
+            // Root cause of FIX AC heartbeat failure (all 24 MMIO ETH cores timeout at 5000ms):
+            //   When non-MMIO ERISCs crash (e.g. fabric EDM assert / AllGather kernel fault),
+            //   relay reads start timing out → fabric_relay_path_broken_ is set.  FIX AC then
+            //   resets ALL 24 MMIO ETH cores simultaneously via PCIe.  Each MMIO ERISC enters
+            //   ROM boot and writes 0x49705180 to edm_status_address, then waits for ETH PHY
+            //   link training to complete before exiting ROM.  But the non-MMIO peer ERISCs are
+            //   ALSO stuck (crashed/asserted) — their ETH PHY responds to neither link training
+            //   nor any protocol.  With both sides unresponsive, link training never completes,
+            //   the MMIO ERISCs never exit ROM, the 5000ms heartbeat poll times out, FIX PG
+            //   fires, and ac_heartbeat_any_ready stays false.  This gates FIX AY (the deferred
+            //   non-MMIO ERISC reset), creating a permanent deadlock that only tt-smi -r breaks.
+            //
+            // Fix: Before resetting MMIO ERISCs (which destroys their relay capability), use the
+            //   STILL-ALIVE MMIO ERISCs as relay to send a write-only assert+deassert to every
+            //   non-MMIO ETH ERISC.  The write-only relay path routes:
+            //     PCIe → MMIO ERISC (still running) → NOC → non-MMIO chip SOFT_RESET register
+            //   This is fire-and-forget — the non-MMIO ERISC does not need to acknowledge the
+            //   write.  After the write, the non-MMIO ERISC enters ROM boot and can respond to
+            //   ETH PHY link training.  Then FIX AC resets the MMIO side, and BOTH sides boot
+            //   simultaneously.  Link training completes on both sides, FIX AC's 5000ms heartbeat
+            //   poll succeeds, FIX PG does not fire, and FIX AY is no longer needed for the
+            //   deadlock case (though it still runs as belt-and-suspenders for any missed channels).
+            uint32_t ca_succeeded = 0;  // promoted out of block so FIX CB can read it
+            {
+                uint32_t ca_failed = 0;
+                log_info(
+                    tt::LogAlways,
+                    "teardown: FIX CA (#42429) — write-only reset of {} non-MMIO ETH ERISC device(s) "
+                    "via MMIO relay (BEFORE FIX AC MMIO reset) to break ETH link-training deadlock.",
+                    relay_broken_non_mmio.size());
+                for (const tt::ChipId non_mmio_id : relay_broken_non_mmio) {
+                    bool device_failed = false;
+                    for (const auto& eth_logical_core :
+                         this->get_control_plane_().get_active_ethernet_cores(non_mmio_id)) {
+                        if (device_failed) {
+                            ++ca_failed;
+                            continue;
+                        }
+                        CoreCoord eth_virt;
+                        try {
+                            eth_virt = cluster_.get_virtual_coordinate_from_logical_coordinates(
+                                non_mmio_id, eth_logical_core, CoreType::ETH);
+                        } catch (...) {
+                            ++ca_failed;
+                            continue;
+                        }
+                        try {
+                            cluster_.assert_risc_reset_at_core_write_only(
+                                tt_cxy_pair(non_mmio_id, eth_virt), tt::umd::RiscType::ALL);
+                            cluster_.deassert_risc_reset_at_core_write_only(
+                                tt_cxy_pair(non_mmio_id, eth_virt));
+                            ++ca_succeeded;
+                        } catch (const std::exception& e) {
+                            log_warning(
+                                tt::LogAlways,
+                                "teardown: FIX CA — write-only reset of non-MMIO ETH core {} on "
+                                "device {} failed: {}. Skipping remaining cores on this device. (#42429)",
+                                eth_virt.str(),
+                                non_mmio_id,
+                                e.what());
+                            ++ca_failed;
+                            device_failed = true;
+                        } catch (...) {
+                            log_warning(
+                                tt::LogAlways,
+                                "teardown: FIX CA — write-only reset of non-MMIO ETH core {} on "
+                                "device {} threw non-std exception. Skipping remaining cores. (#42429)",
+                                eth_virt.str(),
+                                non_mmio_id);
+                            ++ca_failed;
+                            device_failed = true;
+                        }
+                    }
+                }
+                if (ca_failed == 0) {
+                    log_info(
+                        tt::LogAlways,
+                        "teardown: FIX CA — all {} non-MMIO ETH ERISCs write-only reset via MMIO relay "
+                        "(before FIX AC MMIO reset). Both sides will boot simultaneously; "
+                        "ETH link training should complete. (#42429)",
+                        ca_succeeded);
+                } else {
+                    log_warning(
+                        tt::LogAlways,
+                        "teardown: FIX CA — {}/{} non-MMIO ETH ERISCs write-only reset succeeded "
+                        "({} failed). FIX AC MMIO reset proceeds; FIX AY will handle any "
+                        "remaining stuck channels. (#42429)",
+                        ca_succeeded,
+                        ca_succeeded + ca_failed,
+                        ca_failed);
+                }
+            }
+
+            // FIX CB (#42429): Small delay between FIX CA (non-MMIO write-only reset) and
+            // FIX AC (MMIO ERISC reset) to let non-MMIO ERISCs begin ROM boot before the
+            // MMIO side resets.
+            //
+            // After FIX CA fires the write-only assert+deassert to non-MMIO ETH ERISCs, those
+            // ERISCs immediately enter ROM boot.  ROM boot takes ~10ms to zero L1 and another
+            // ~1-3s total for ETH PHY link training to complete.  The ETH PHY is active in
+            // ROM from the start of link training, so the peer (MMIO side) will see a live
+            // PHY to train against shortly after FIX CA.
+            //
+            // Without this delay, FIX AC sends assert+deassert to MMIO ERISCs at nearly the
+            // same instant as FIX CA sends them to non-MMIO ERISCs.  Both sides enter ROM
+            // simultaneously, which is fine — but if the non-MMIO ERISC ROM hasn't had enough
+            // time to initialize its ETH PHY before the MMIO ERISC ROM enters link training,
+            // there is a brief window where both sides are in reset and neither PHY responds.
+            // A 50ms delay ensures non-MMIO ERISCs have fully exited the reset deassert phase
+            // and ROM has begun ETH PHY initialization before MMIO ERISCs start link training.
+            // 50ms is deliberately conservative: ROM exits reset in <5ms; actual ETH PHY init
+            // (link training) takes up to ~3s, so both sides will still train simultaneously.
+            if (ca_succeeded > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                log_info(
+                    tt::LogAlways,
+                    "teardown: FIX CB (#42429) — 50ms delay after FIX CA non-MMIO resets; "
+                    "non-MMIO ETH PHYs initializing; starting FIX AC MMIO resets now.");
+            }
+
             for (const tt::ChipId mmio_id : mmio_ids_set) {
                 for (const auto& logical_core :
                      this->get_control_plane_().get_active_ethernet_cores(mmio_id)) {
