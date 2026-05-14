@@ -74,7 +74,7 @@ FORCE_INLINE void push_entry_to_host(
     // Switch to noc_async_writes_flushed() to reclaim ~200ns/push on avg (a few microseconds in rare cases) when this
     // core gets repurposed for additional work and the saved cycles matter. The noc_async_writes_flushed() barrier is
     // sufficient for correctness.
-    noc_async_write_barrier();
+    noc_async_writes_flushed();
     RT_PROF_NCRISC_DBG_INC(ring_buffer, push_write_barrier_exit_count);
 }
 
