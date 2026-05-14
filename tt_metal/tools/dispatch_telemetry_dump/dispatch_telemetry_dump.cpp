@@ -85,9 +85,7 @@ void print_snapshot(IDevice* device, const std::vector<CoreEntry>& entries) {
         device->id(),
         device->num_hw_cqs(),
         entries.size(),
-        std::chrono::duration_cast<std::chrono::seconds>(
-            std::chrono::steady_clock::now().time_since_epoch())
-            .count());
+        std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
     fmt::print("{:<11} {:>3} {:>10} {:>10} {:>12} {:>10}\n", "role", "cq", "core", "blocked", "unblocked", "cmds");
 
     for (const auto& e : entries) {

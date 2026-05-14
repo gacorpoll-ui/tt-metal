@@ -253,11 +253,7 @@ static uint32_t router_direction;
 CQRelayClient<fabric_mux_num_buffers_per_channel, fabric_mux_channel_buffer_size_bytes, fabric_header_rb_base>
     relay_client;
 
-#if defined(COMPILE_FOR_IDLE_ERISC) && defined(MEM_IERISC_DISPATCH_TELEMETRY_REGION_BASE)
-constexpr uint32_t prefetch_telemetry_base = MEM_IERISC_DISPATCH_TELEMETRY_REGION_BASE;
-#else
-constexpr uint32_t prefetch_telemetry_base = MEM_DISPATCH_TELEMETRY_REGION_BASE;
-#endif
+constexpr uint32_t prefetch_telemetry_base = DISPATCH_TELEMETRY_ADDR;
 
 using PrefetchTelemetry = tt::tt_metal::PrefetchTelemetry;
 using PrefetchTelemetryBlockGuard = TelemetryBlockGuard<PrefetchTelemetry, prefetch_telemetry_base, telemetry_enabled>;
