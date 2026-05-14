@@ -33,55 +33,64 @@ jobs:
     strategy:
       fail-fast: false
     name: "profiler tests"
+    # Job runs on the runner host (NO top-level container:) so that
+    # ensure-active-weka-mount can actually mount /mnt/MLPerf via sudo
+    # before the container starts with its -v /mnt/MLPerf bind-mount.
     runs-on: ${{ inputs.sku-tag != '' && fromJSON(format('["arch-wormhole_b0","{0}","{1}","{2}"]', inputs.sku-tag, inputs.topology, inputs.extra-tag)) || fromJSON(format('["arch-wormhole_b0","{0}","{1}"]', inputs.topology, inputs.extra-tag)) }}
-    container:
-      image: ${{ inputs.docker-image }}
-      env:
-        TT_METAL_HOME: /work
-        PYTHONPATH: /work
-        LD_LIBRARY_PATH: /work/build/lib
-        ARCH_NAME: wormhole_b0
-        LOGURU_LEVEL: INFO
-        PROFILER_SCRIPTS_ROOT: /work/tt_metal/tools/profiler
-        PROFILER_TEST_SCRIPTS_ROOT: /work/tests/tt_metal/tools/profiler
-        PROFILER_ARTIFACTS_DIR: /work/generated/profiler
-        PROFILER_OUTPUT_DIR: /work/generated/profiler/reports
-        DONT_USE_VIRTUAL_ENVIRONMENT: 1
-      volumes:
-        - ${{ github.workspace }}/docker-job:/work # Subdir to workaround https://github.com/actions/runner/issues/691
-        - /dev/hugepages-1G:/dev/hugepages-1G
-        - /mnt/MLPerf:/mnt/MLPerf:ro
-      options: "--device /dev/tenstorrent"
     defaults:
       run:
         shell: bash
-        working-directory: /work # https://github.com/actions/runner/issues/878
     steps:
       - name: 🧬 Checkout Repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
-          path: docker-job
-      - name: Preflight — Llama weights present
-        # pipeline-perf pool is non-uniform; only a subset of runners have
-        # /mnt/MLPerf weka-mounted. Fail fast here (before the 30s+ setup-job
-        # artifact download) so `gh run rerun --failed <run-id>` cheaply
-        # re-rolls until the job lands on a Llama-capable host.
-        run: |
-          if [ ! -d /mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct ]; then
-            echo "::error::Runner $(hostname) is missing /mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct — re-roll with: gh run rerun --failed ${{ github.run_id }}"
-            exit 1
-          fi
-      - name: ⬇️  Setup Job
-        uses: ./docker-job/.github/actions/setup-job
+      - name: ⬇️  Download Build Artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         timeout-minutes: 10
         with:
-          build-artifact-name: ${{ inputs.build-artifact-name }}
-          wheel-artifact-name: ${{ inputs.wheel-artifact-name }}
+          name: ${{ inputs.build-artifact-name }}
+      - name: 📂 Extract Build Files
+        run: tar --zstd -xf ttm_any.tar.zst
+      - name: ⬇️  Download Python Wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        timeout-minutes: 10
+        with:
+          name: ${{ inputs.wheel-artifact-name }}
+      - name: 🔗 Ensure active weka mount
+        # Mount /mnt/MLPerf on the host (sudo) before docker-run launches the
+        # container, so the -v /mnt/MLPerf:/mnt/MLPerf:ro bind-mount actually
+        # sees the weka contents. Without this step (and with a job-level
+        # `container:`), runners where weka isn't mounted at container-create
+        # time get a permanently empty /mnt/MLPerf inside the container.
+        uses: ./.github/actions/ensure-active-weka-mount
       - name: Run profiler regression tests
         timeout-minutes: 60
-        run: |
-          ${{ inputs.test-script }}
+        uses: ./.github/actions/docker-run
+        with:
+          docker_image: ${{ inputs.docker-image }}
+          docker_password: ${{ secrets.GITHUB_TOKEN }}
+          install_wheel: true
+          docker_opts: |
+            -v ${{ github.workspace }}:/work
+            -v /mnt/MLPerf:/mnt/MLPerf:ro
+            -e TT_METAL_HOME=/work
+            -e PYTHONPATH=/work
+            -e LD_LIBRARY_PATH=/work/build/lib
+            -e ARCH_NAME=wormhole_b0
+            -e LOGURU_LEVEL=INFO
+            -e PROFILER_SCRIPTS_ROOT=/work/tt_metal/tools/profiler
+            -e PROFILER_TEST_SCRIPTS_ROOT=/work/tests/tt_metal/tools/profiler
+            -e PROFILER_ARTIFACTS_DIR=/work/generated/profiler
+            -e PROFILER_OUTPUT_DIR=/work/generated/profiler/reports
+            -e DONT_USE_VIRTUAL_ENVIRONMENT=1
+          run_args: |
+            cd /work
+            if [ ! -d /mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct ]; then
+              echo "::error::Weka mount looks broken on $(hostname): /mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct is missing inside the container even after ensure-active-weka-mount ran on the host."
+              exit 1
+            fi
+            ${{ inputs.test-script }}
       - uses: tenstorrent/tt-metal/.github/actions/upload-artifact-with-job-uuid@main
         timeout-minutes: 10
         if: ${{ !cancelled() }}
