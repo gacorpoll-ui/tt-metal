@@ -186,20 +186,10 @@
 #error "Packet header pool base and size must be 16-byte aligned"
 #endif
 
-// Dispatch telemetry buffer, must be large enough to hold
-// max(sizeof(PrefetchTelemetry), sizeof(DispatchTelemetry)).
-// Keep extra headroom for future appended counters without moving the region.
-#define MEM_DISPATCH_TELEMETRY_REGION_SIZE 128
-
-#define MEM_DISPATCH_TELEMETRY_REGION_BASE (MEM_PACKET_HEADER_POOL_BASE + MEM_PACKET_HEADER_POOL_SIZE)
-#if (MEM_DISPATCH_TELEMETRY_REGION_BASE % 16 != 0) || (MEM_DISPATCH_TELEMETRY_REGION_SIZE % 16 != 0)
-#error "Dispatch telemetry region must be 16-byte aligned"
-#endif
-
 // Read-only reserved memory boundary for watcher checks
 #define MEM_MAP_READ_ONLY_END (MEM_TENSIX_FABRIC_CONNECTIONS_BASE + MEM_TENSIX_FABRIC_OFFSET_OF_ALIGNED_INFO)
 // Read-write reserved memory boundary for watcher checks
-#define MEM_MAP_END (MEM_DISPATCH_TELEMETRY_REGION_BASE + MEM_DISPATCH_TELEMETRY_REGION_SIZE)
+#define MEM_MAP_END (MEM_PACKET_HEADER_POOL_BASE + MEM_PACKET_HEADER_POOL_SIZE)
 
 // Every address after MEM_MAP_END is a "scratch" address
 // These can be used by FW during init, but aren't usable once FW reaches "ready"
