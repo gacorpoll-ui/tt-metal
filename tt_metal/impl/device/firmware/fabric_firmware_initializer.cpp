@@ -1198,6 +1198,39 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
                         ch.dev->id(), ch.eth_logical_core, CoreType::ETH);
                     cluster_.assert_risc_reset_at_core(
                         tt_cxy_pair(ch.dev->id(), virtual_eth_coord), tt::umd::RiscType::ALL);
+                    // FIX CE (#42429): Write fw_launch_addr_value BEFORE deassert so ERISC ROM
+                    // reads the correct entry point and boots into base UMD firmware instead of
+                    // hanging at postcode 0x49705180 (fw_launch_addr=0 ROM wait loop).  Without
+                    // this write, the force-reset path left fw_launch_addr=0 in L1 (cleared by
+                    // earlier FIX BN/BZ writes), causing FIX XZ heartbeat poll to time out:
+                    // 24/24 channels at last_hb=0x00000000 — ERISC never reached base firmware.
+                    // Mirrors FIX BR pattern in risc_firmware_initializer.cpp.
+                    try {
+                        const auto aeth_idx_ce =
+                            hal_.get_programmable_core_type_index(HalProgrammableCoreType::ACTIVE_ETH);
+                        const uint32_t fw_addr_ce =
+                            hal_.get_jit_build_config(aeth_idx_ce, 0, 0).fw_launch_addr;
+                        const uint32_t fw_val_ce =
+                            hal_.get_jit_build_config(aeth_idx_ce, 0, 0).fw_launch_addr_value;
+                        if (fw_val_ce != 0) {
+                            cluster_.write_core_immediate(
+                                ch.dev->id(),
+                                virtual_eth_coord,
+                                std::vector<uint32_t>{fw_val_ce},
+                                fw_addr_ce);
+                            log_debug(
+                                tt::LogMetal,
+                                "FIX CE (#42429): Device {} chan={} — wrote fw_launch_addr_value "
+                                "0x{:08x} before deassert so ERISC boots to base firmware.",
+                                ch.dev->id(),
+                                ch.eth_chan_id,
+                                fw_val_ce);
+                        }
+                    } catch (...) {
+                        // Best-effort: write failure on a relay-dead non-MMIO channel is
+                        // acceptable — deassert still runs.  ERISC may hang at 0x49705180
+                        // but FIX BT / FIX RR-NM handle recovery in the next session.
+                    }
                     cluster_.deassert_risc_reset_at_core(
                         tt_cxy_pair(ch.dev->id(), virtual_eth_coord), tt::umd::RiscType::ALL);
                     // FIX BN (#42429): fw_launch_addr=0 moved to post-heartbeat-confirm path
