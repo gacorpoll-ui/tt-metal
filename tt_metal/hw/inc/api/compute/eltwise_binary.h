@@ -74,10 +74,10 @@ ALWI void binary_tiles_init(
     state_configure(icb0, icb1, call_line);
 
     if constexpr (eltwise_binary_type == EltwiseBinaryType::ELWMUL) {
-        MATH((llk_math_eltwise_binary_init_with_operands<eltwise_binary_type, BroadcastType::NONE, MATH_FIDELITY>(
+        MATH((llk_math_eltwise_binary_init<eltwise_binary_type, BroadcastType::NONE, MATH_FIDELITY>(
             icb0, icb1, acc_to_dest)));
     } else {
-        MATH((llk_math_eltwise_binary_init_with_operands<eltwise_binary_type, BroadcastType::NONE, MathFidelity::LoFi>(
+        MATH((llk_math_eltwise_binary_init<eltwise_binary_type, BroadcastType::NONE, MathFidelity::LoFi>(
             icb0, icb1, acc_to_dest)));
     }
 
@@ -259,28 +259,17 @@ ALWI void binary_dest_reuse_tiles_init(uint32_t icb0, uint32_t call_line = __bui
 #ifndef ARCH_QUASAR
     if constexpr (eltwise_binary_type == EltwiseBinaryType::ELWMUL) {
         MATH((llk_math_eltwise_binary_init<eltwise_binary_type, BroadcastType::NONE, MATH_FIDELITY, binary_reuse_dest>(
-            false)));
+            icb0, icb0, false)));
     } else {
         MATH((llk_math_eltwise_binary_init<
               eltwise_binary_type,
               BroadcastType::NONE,
               MathFidelity::LoFi,
-              binary_reuse_dest>(false)));
+              binary_reuse_dest>(icb0, icb0, false)));
     }
 #else
-    if constexpr (eltwise_binary_type == EltwiseBinaryType::ELWMUL) {
-        MATH((llk_math_eltwise_binary_init<
-              eltwise_binary_type,
-              BroadcastType::NONE,
-              MATH_FIDELITY,
-              binary_reuse_dest>(icb0, false)));
-    } else {
-        MATH((llk_math_eltwise_binary_init<
-              eltwise_binary_type,
-              BroadcastType::NONE,
-              MathFidelity::LoFi,
-              binary_reuse_dest>(icb0, false)));
-    }
+    MATH((llk_math_eltwise_binary_init<eltwise_binary_type, BroadcastType::NONE, MATH_FIDELITY, binary_reuse_dest>(
+        icb0, icb0, false /* acc_to_dest */)));
 #endif
 }
 
@@ -318,12 +307,30 @@ ALWI void binary_dest_reuse_tiles(uint32_t in_cb_id, uint32_t in_tile_index, uin
     constexpr bool acc_to_dest = false;
 #endif
     UNPACK((llk_unpack_A<BroadcastType::NONE, acc_to_dest, binary_reuse_dest>(in_cb_id, in_tile_index)));
+#ifndef ARCH_QUASAR
+    if constexpr (eltwise_binary_type == EltwiseBinaryType::ELWMUL) {
+        MATH((llk_math_eltwise_binary<
+              eltwise_binary_type,
+              BroadcastType::NONE,
+              DST_ACCUM_MODE,
+              MATH_FIDELITY,
+              binary_reuse_dest>(in_cb_id, in_cb_id, dst_tile_index, true)));
+    } else {
+        MATH((llk_math_eltwise_binary<
+              eltwise_binary_type,
+              BroadcastType::NONE,
+              DST_ACCUM_MODE,
+              MathFidelity::LoFi,
+              binary_reuse_dest>(in_cb_id, in_cb_id, dst_tile_index, true)));
+    }
+#else
     MATH((llk_math_eltwise_binary<
           eltwise_binary_type,
           BroadcastType::NONE,
           DST_ACCUM_MODE,
           MATH_FIDELITY,
-          binary_reuse_dest>(in_cb_id, in_cb_id, dst_tile_index, true)));
+          binary_reuse_dest>(in_cb_id, in_cb_id, dst_tile_index, true /* clear_fp32_dst_acc */)));
+#endif
 }
 
 }  // namespace ckernel
