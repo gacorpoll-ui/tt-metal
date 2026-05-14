@@ -837,16 +837,37 @@ PERF_SIGNAL_P99_MAX_NS = 1_000
 PERF_SIGNAL_MIN_COUNT = 10_000
 
 
-def _parse_zone_durations(csv_path: Path, zone_name: str) -> list[int]:
-    durations = []
-    with open(csv_path, "r", newline="") as f:
-        reader = csv.DictReader(f, delimiter=";")
+DEVICE_PROFILER_CSV = TT_METAL_HOME / "generated" / "profiler" / ".logs" / "profile_log_device.csv"
+
+
+def _parse_device_profiler_zone_durations(csv_path: Path, zone_names: set[str]) -> dict[str, list[int]]:
+    """Read the device profiler's profile_log_device.csv, pair ZONE_START/ZONE_END rows per
+    (core_x, core_y, RISC, zone) in time order, return per-zone duration list in ns.
+
+    Line 1 of the CSV is metadata including ``CHIP_FREQ[MHz]: <freq>``; the conversion
+    cycles → ns is ``cycles * 1000 / freq_mhz``."""
+    durations: dict[str, list[int]] = {z: [] for z in zone_names}
+    with open(csv_path) as f:
+        header = f.readline()
+        m = re.search(r"CHIP_FREQ\[MHz\]:\s*(\d+)", header)
+        freq_mhz = int(m.group(1)) if m else 1000
+        reader = csv.DictReader((line.strip() for line in f), skipinitialspace=True)
+        opens: dict[tuple, list[int]] = {}
         for row in reader:
-            if row.get("name") == zone_name:
-                try:
-                    durations.append(int(row["exec_time_ns"]))
-                except (KeyError, ValueError):
-                    continue
+            zone = (row.get("zone name") or "").strip()
+            if zone not in zone_names:
+                continue
+            type_ = (row.get("type") or "").strip()
+            try:
+                t_cycles = int((row.get("time[cycles since reset]") or "0").strip())
+            except ValueError:
+                continue
+            key = (row.get("core_x"), row.get("core_y"), row.get("RISC processor type"), zone)
+            if type_ == "ZONE_START":
+                opens.setdefault(key, []).append(t_cycles)
+            elif type_ == "ZONE_END" and opens.get(key):
+                start = opens[key].pop(0)
+                durations[zone].append((t_cycles - start) * 1000 // freq_mhz)
     return durations
 
 
@@ -865,15 +886,10 @@ def _zone_stats(durations: list[int]) -> dict:
 @pytest.mark.timeout(2400)
 def test_realtime_profiler_perf_llama_tg(tmp_path):
     """
-    Galaxy-only perf gate: run Llama-70B mini-stress under Tracy capture and
-    assert per-zone p50/p99 budgets for push_entry_to_host and
-    signal_realtime_profiler_and_switch.
+    Galaxy-only perf gate: run Llama-70B mini-stress with the device profiler on
+    and assert per-zone p50/p99 budgets for push_entry_to_host and
+    signal_realtime_profiler_and_switch from profile_log_device.csv.
     """
-    assert CAPTURE_TOOL.exists(), f"Tracy capture tool not found: {CAPTURE_TOOL}"
-    assert CSVEXPORT_TOOL.exists(), f"Tracy csvexport tool not found: {CSVEXPORT_TOOL}"
-
-    tracy_file = tmp_path / "trace.tracy"
-    zones_csv = tmp_path / "zones.csv"
     log_path = tmp_path / "workload.log"
 
     llama_argv = [
@@ -883,48 +899,55 @@ def test_realtime_profiler_perf_llama_tg(tmp_path):
         "mini-stress-test",
         "--timeout=1800",
     ]
-    extra_env = {
-        "LLAMA_DIR": os.environ.get("LLAMA_DIR", "/mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct/"),
-        "FAKE_DEVICE": os.environ.get("FAKE_DEVICE", "TG"),
-        # _run_under_tracy strips TT_METAL_DEVICE_PROFILER (host TracyMessages-only callers
-        # need it off). DeviceZoneScopedN zones — what this test asserts on — require it
-        # on. MID_RUN_DUMP flushes to Tracy periodically so a 10-min Llama run isn't
-        # buffered entirely until close.
-        "TT_METAL_DEVICE_PROFILER": "1",
-        "TT_METAL_PROFILER_MID_RUN_DUMP": "1",
-    }
+    env = dict(os.environ)
+    env["LLAMA_DIR"] = os.environ.get("LLAMA_DIR", "/mnt/MLPerf/tt_dnn-models/llama/Llama3.3-70B-Instruct/")
+    env["FAKE_DEVICE"] = os.environ.get("FAKE_DEVICE", "TG")
+    # Match the canonical `python -m tracy --profile-dispatch-cores --sync-host-device`
+    # invocation: device profiler on + dispatch-core profiling on (both our zones are on
+    # dispatch_s and the RT-profiler tensix, which are excluded by the default
+    # device-profiler core set) + host/device sync.
+    env["TT_METAL_DEVICE_PROFILER"] = "1"
+    env["TT_METAL_DEVICE_PROFILER_DISPATCH"] = "1"
+    env["TT_METAL_PROFILER_SYNC"] = "1"
 
-    rc, _stdout = _run_under_tracy(
-        workload_script=None,
-        out_tracy=tracy_file,
-        log_path=log_path,
-        extra_env=extra_env,
-        timeout_s=2100,
-        subprocess_argv=llama_argv,
-    )
+    # Start clean — the device profiler appends to profile_log_device.csv if it exists.
+    if DEVICE_PROFILER_CSV.exists():
+        DEVICE_PROFILER_CSV.unlink()
 
-    if tracy_file.exists():
-        _export_zones_unwrapped(tracy_file, zones_csv)
+    with open(log_path, "w") as log_f:
+        proc = subprocess.run(
+            llama_argv,
+            env=env,
+            cwd=str(TT_METAL_HOME),
+            timeout=2100,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+        )
+
     artifact_dir = _save_artifacts(
         "test_realtime_profiler_perf_llama_tg",
-        **{"trace.tracy": tracy_file, "zones.csv": zones_csv, "workload_output.log": log_path},
+        **{"profile_log_device.csv": DEVICE_PROFILER_CSV, "workload_output.log": log_path},
     )
 
-    if rc != 0:
+    if proc.returncode != 0:
         tail = log_path.read_text()[-8000:] if log_path.exists() else "<no log captured>"
         pytest.fail(
-            f"Llama mini-stress workload failed (rc={rc}); "
+            f"Llama mini-stress workload failed (rc={proc.returncode}); "
             f"artifacts at {artifact_dir}\n"
             f"--- workload.log (last 8KB) ---\n{tail}"
         )
+
+    assert DEVICE_PROFILER_CSV.exists(), f"Device profiler did not write {DEVICE_PROFILER_CSV}"
+
+    targets = {PERF_PUSH_ZONE, PERF_SIGNAL_ZONE}
+    durs_by_zone = _parse_device_profiler_zone_durations(DEVICE_PROFILER_CSV, targets)
 
     failures = []
     for zone, p50_max, p99_max, min_count in [
         (PERF_PUSH_ZONE, PERF_PUSH_P50_MAX_NS, PERF_PUSH_P99_MAX_NS, PERF_PUSH_MIN_COUNT),
         (PERF_SIGNAL_ZONE, PERF_SIGNAL_P50_MAX_NS, PERF_SIGNAL_P99_MAX_NS, PERF_SIGNAL_MIN_COUNT),
     ]:
-        durs = _parse_zone_durations(zones_csv, zone)
-        st = _zone_stats(durs)
+        st = _zone_stats(durs_by_zone.get(zone, []))
         print(f"[{zone}] count={st['count']} p50={st['p50']}ns p99={st['p99']}ns")
         if st["count"] < min_count:
             failures.append(f"{zone}: too few samples ({st['count']} < {min_count})")
