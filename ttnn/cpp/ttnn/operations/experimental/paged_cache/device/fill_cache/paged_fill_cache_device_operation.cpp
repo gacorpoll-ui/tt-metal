@@ -4,6 +4,7 @@
 
 #include "paged_fill_cache_device_operation.hpp"
 
+#include "ttnn/device_operation.hpp"
 #include "ttnn/tensor/tensor_utils.hpp"
 
 using namespace tt::tt_metal;
