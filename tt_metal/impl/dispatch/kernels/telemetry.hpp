@@ -23,7 +23,7 @@ class TelemetryBlockGuardImpl;
 template <typename Telemetry, uint32_t telemetry_addr>
 class TelemetryBlockGuardImpl<Telemetry, telemetry_addr, true> {
 public:
-    FORCE_INLINE explicit TelemetryBlockGuardImpl() : 
+    FORCE_INLINE explicit TelemetryBlockGuardImpl() :
         telemetry_(get_telemetry_ptr<Telemetry, telemetry_addr>()) {}
 
     FORCE_INLINE ~TelemetryBlockGuardImpl() {

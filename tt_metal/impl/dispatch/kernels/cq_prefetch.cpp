@@ -260,12 +260,22 @@ constexpr uint32_t prefetch_telemetry_base = MEM_DISPATCH_TELEMETRY_REGION_BASE;
 #endif
 
 using PrefetchTelemetry = tt::tt_metal::PrefetchTelemetry;
+using PrefetchTelemetryBlockGuard = TelemetryBlockGuard<PrefetchTelemetry, prefetch_telemetry_base, telemetry_enabled>;
 
+// TODO: Move inits to host
 FORCE_INLINE
-volatile tt_l1_ptr PrefetchTelemetry* init_prefetch_telemetry() {
+void init_prefetch_telemetry() {
     const PrefetchTelemetry telemetry{};
-    return copy_struct_to_l1(prefetch_telemetry_base, telemetry);
+    copy_struct_to_l1(prefetch_telemetry_base, telemetry);
+
+    // get telemtry and print all values
+    auto prefetch_telemetry_ptr = get_telemetry_ptr<PrefetchTelemetry, prefetch_telemetry_base>();
+    DEVICE_PRINT("prefetch telemetry: version {}\n", prefetch_telemetry_ptr->version);
+    DEVICE_PRINT("prefetch telemetry: signature {}\n", prefetch_telemetry_ptr->signature);
+    DEVICE_PRINT("prefetch telemetry: blocked_count {}\n", prefetch_telemetry_ptr->blocked_count);
+    DEVICE_PRINT("prefetch telemetry: unblocked_count {}\n", prefetch_telemetry_ptr->unblocked_count);
 }
+
 
 // Feature to stall the prefetcher, mainly for ExecBuf impl which reuses CmdDataQ
 static enum class StallState : uint32_t { STALLED = 1U, NOT_STALLED = 0U } stall_state = StallState::NOT_STALLED;
@@ -788,9 +798,14 @@ void fetch_q_get_cmds(uint32_t& fence, uint32_t& cmd_ptr, uint32_t& pcie_read_pt
                 // Nothing to fetch, nothing pending, nothing available, stall on host
                 WAYPOINT("HQW");
                 uint32_t heartbeat = 0U;
-                while ((fetch_size = *prefetch_q_rd_ptr) == 0U) {
-                    invalidate_l1_cache();
-                    IDLE_ERISC_HEARTBEAT_AND_RETURN(heartbeat);
+                
+                if((fetch_size = *prefetch_q_rd_ptr) == 0U) {
+                    PrefetchTelemetryBlockGuard prefetch_telemetry_blocked;
+                    prefetch_telemetry_blocked.mark_blocked();
+                    do {
+                        invalidate_l1_cache();
+                        IDLE_ERISC_HEARTBEAT_AND_RETURN(heartbeat);
+                    } while ((fetch_size = *prefetch_q_rd_ptr) == 0U);
                 }
                 // Host has work now; restart without recursion.
                 continue;

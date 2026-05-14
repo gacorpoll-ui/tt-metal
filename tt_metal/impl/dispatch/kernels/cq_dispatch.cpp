@@ -160,7 +160,6 @@ constexpr uint32_t dispatch_telemetry_base = MEM_DISPATCH_TELEMETRY_REGION_BASE;
 constexpr bool telemetry_enabled = true; // TODO: make this a compile-time option
 
 using DispatchTelemetry = tt::tt_metal::DispatchTelemetry;
-
 using DispatchTelemetryBlockGuard = TelemetryBlockGuard<DispatchTelemetry, dispatch_telemetry_base, telemetry_enabled>;
 
 // TODO: Move inits to host
