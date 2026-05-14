@@ -130,6 +130,7 @@ int main(int argc, char** argv) {
     ChipId device_id = 0;
     uint8_t num_hw_cqs = 1;
     int interval_ms = 5000;
+    int duration_s = 30;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
@@ -139,8 +140,11 @@ int main(int argc, char** argv) {
             interval_ms = std::atoi(argv[++i]);
         } else if (a == "--num-cqs" && i + 1 < argc) {
             num_hw_cqs = static_cast<uint8_t>(std::atoi(argv[++i]));
+        } else if (a == "--duration-s" && i + 1 < argc) {
+            duration_s = std::atoi(argv[++i]);
         } else if (a == "--help" || a == "-h") {
-            fmt::print("Usage: {} [--device N] [--interval-ms N] [--num-cqs N]\n", argv[0]);
+            fmt::print(
+                "Usage: {} [--device N] [--interval-ms N] [--num-cqs N] [--duration-s N]\n", argv[0]);
             return 0;
         }
     }
@@ -153,8 +157,10 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    fmt::print("Polling {} cores every {}ms. Ctrl-C to quit.\n", entries.size(), interval_ms);
-    while (true) {
+    fmt::print("Polling {} cores every {}ms for {}s.\n", entries.size(), interval_ms, duration_s);
+    const auto start = std::chrono::steady_clock::now();
+    const auto deadline = start + std::chrono::seconds(duration_s);
+    while (std::chrono::steady_clock::now() < deadline) {
         print_snapshot(device, entries);
         std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
     }
