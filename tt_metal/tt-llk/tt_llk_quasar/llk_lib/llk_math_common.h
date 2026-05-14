@@ -42,8 +42,8 @@ inline void _llk_math_srcAB_hw_configure_(DataFormat srcA_format, DataFormat src
     cfg[DISABLE_IMPLIED_SRCA_FMT_SEC0_Base_ADDR32 + TRISC_ID] = !EN_IMPLIED_MATH_FORMAT;
     cfg[DISABLE_IMPLIED_SRCB_FMT_SEC0_Base_ADDR32 + TRISC_ID] = !EN_IMPLIED_MATH_FORMAT;
 
-    std::uint8_t SRCA_FORMAT_MASKED = static_cast<std::uint8_t>(srcA_format) & 0xFF;
-    std::uint8_t SRCB_FORMAT_MASKED = static_cast<std::uint8_t>(srcB_format) & 0xFF;
+    std::uint8_t SRCA_FORMAT_MASKED = static_cast<std::uint8_t>(srcA_format) & 0x1F;
+    std::uint8_t SRCB_FORMAT_MASKED = static_cast<std::uint8_t>(srcB_format) & 0x1F;
 
     alu_config_u alu_config;
     for (std::uint32_t i = 0; i < NUM_WORDS_ALU_FORMAT; i++)
@@ -157,8 +157,8 @@ inline void _configure_alu_formats_(DataFormat srcA_format, DataFormat srcB_form
 
     if constexpr (!EN_IMPLIED_MATH_FORMAT)
     {
-        std::uint8_t SRCA_FORMAT_MASKED = to_underlying(srcA_format) & 0xFF;
-        std::uint8_t SRCB_FORMAT_MASKED = to_underlying(srcB_format) & 0xFF;
+        std::uint8_t SRCA_FORMAT_MASKED = to_underlying(srcA_format) & 0x1F;
+        std::uint8_t SRCB_FORMAT_MASKED = to_underlying(srcB_format) & 0x1F;
 
         cfg_rmw(ALU_FORMAT_SPEC_REG_SrcA_val_RMW, SRCA_FORMAT_MASKED);
         cfg_rmw(ALU_FORMAT_SPEC_REG_SrcA_override_RMW, 0x1);
