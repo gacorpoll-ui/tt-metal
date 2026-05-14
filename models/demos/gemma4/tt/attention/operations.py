@@ -139,3 +139,22 @@ def apply_output_projection(tensor, weights: AttentionWeights):
 def apply_allreduce(tensor, mesh_config, ccl_manager, hidden_size: int):
     """Apply tensor-parallel allreduce if TP > 1."""
     return ccl_allreduce(tensor, mesh_config, ccl_manager)
+
+
+def effective_block_size(k_cache, head_dim: int) -> int:
+    """Block-size override to pass to paged-cache ops when the cache
+    buffer's *allocation* view doesn't match this layer's view.
+
+    vLLM's hybrid kv-cache-groups manager runs a per-block-byte
+    unifier and can share one physical buffer between layers of
+    different attention types — for Gemma4 that's sliding
+    (head_dim=256, post-unifier block_size=128) and full (head_dim=512,
+    block_size=64). Per-block bytes are equal across these views, so
+    a layer recovers its effective block_size from
+    ``cache_block_size * cache_head_dim // layer_head_dim``. When the
+    cache happens to have been allocated *with* this layer's own view,
+    the override is a no-op for the kernel; passing it
+    unconditionally keeps the paged_{fill,update}_cache and
+    paged_scaled_dot_product_attention_decode call sites symmetric.
+    """
+    return k_cache.padded_shape[2] * k_cache.padded_shape[-1] // head_dim

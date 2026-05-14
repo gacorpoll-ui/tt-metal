@@ -16,6 +16,7 @@ from .operations import (
     apply_qkv_projection,
     apply_rope,
     concat_heads,
+    effective_block_size,
     split_qkv_heads_prefill,
 )
 from .weights import AttentionWeights
@@ -85,8 +86,9 @@ def prefill_forward(
     if kv_cache is not None and shared_kv is None:
         k_cache, v_cache = kv_cache
         if page_table is not None:
-            ttnn.experimental.paged_fill_cache(k_cache, tt_k, page_table, batch_idx=user_id)
-            ttnn.experimental.paged_fill_cache(v_cache, tt_v, page_table, batch_idx=user_id)
+            eff_bs = effective_block_size(k_cache, config.head_dim)
+            ttnn.experimental.paged_fill_cache(k_cache, tt_k, page_table, batch_idx=user_id, block_size=eff_bs)
+            ttnn.experimental.paged_fill_cache(v_cache, tt_v, page_table, batch_idx=user_id, block_size=eff_bs)
         else:
             ttnn.fill_cache(k_cache, tt_k, batch_idx=user_id)
             ttnn.fill_cache(v_cache, tt_v, batch_idx=user_id)

@@ -16,6 +16,7 @@ from .operations import (
     apply_qkv_projection,
     apply_rope,
     concat_heads,
+    effective_block_size,
     split_qkv_heads_decode,
 )
 from .weights import AttentionWeights
@@ -111,8 +112,21 @@ def decode_forward(
             tt_v = ttnn.to_memory_config(tt_v, q_sharded_mem)
 
             if page_table is not None:
-                ttnn.experimental.paged_update_cache(k_cache, tt_k, update_idxs_tensor=cache_pos, page_table=page_table)
-                ttnn.experimental.paged_update_cache(v_cache, tt_v, update_idxs_tensor=cache_pos, page_table=page_table)
+                eff_bs = effective_block_size(k_cache, config.head_dim)
+                ttnn.experimental.paged_update_cache(
+                    k_cache,
+                    tt_k,
+                    update_idxs_tensor=cache_pos,
+                    page_table=page_table,
+                    block_size=eff_bs,
+                )
+                ttnn.experimental.paged_update_cache(
+                    v_cache,
+                    tt_v,
+                    update_idxs_tensor=cache_pos,
+                    page_table=page_table,
+                    block_size=eff_bs,
+                )
             else:
                 ttnn.experimental.paged_update_cache(k_cache, tt_k, update_idxs_tensor=cache_pos)
                 ttnn.experimental.paged_update_cache(v_cache, tt_v, update_idxs_tensor=cache_pos)
@@ -154,6 +168,7 @@ def decode_forward(
             sliding_window_size=sliding_window,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             program_config=sdpa_program_config,
+            block_size=effective_block_size(k_cache, config.head_dim),
         )
     else:
         tt_sdpa = ttnn.transformer.scaled_dot_product_attention_decode(
