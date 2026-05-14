@@ -1142,6 +1142,47 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                             // non-MMIO ERISC is running FABRIC firmware (#42429).
                             cluster_.assert_risc_reset_at_core_write_only(
                                 tt_cxy_pair(non_mmio_id, eth_virt), tt::umd::RiscType::ALL);
+                            // FIX CF (#42429): Write fw_launch_addr_value BEFORE deassert
+                            // so non-MMIO ERISC ROM reads a valid entry point.  Without this,
+                            // fw_launch_addr may be 0 (cleared by FIX BN) → ROM hangs at
+                            // 0x49705180.  Same pattern as FIX CE/CC/BR/BO.
+                            try {
+                                const auto aeth_idx_cf2 =
+                                    hal_.get_programmable_core_type_index(HalProgrammableCoreType::ACTIVE_ETH);
+                                const auto& jit_cfg_cf2 = hal_.get_jit_build_config(aeth_idx_cf2, 0, 0);
+                                if (jit_cfg_cf2.fw_launch_addr_value != 0) {
+                                    cluster_.write_core_immediate(
+                                        non_mmio_id,
+                                        eth_virt,
+                                        std::vector<uint32_t>{jit_cfg_cf2.fw_launch_addr_value},
+                                        jit_cfg_cf2.fw_launch_addr);
+                                    log_debug(
+                                        tt::LogAlways,
+                                        "teardown: FIX CF (#42429) — FIX AY path: wrote "
+                                        "fw_launch_addr_value 0x{:08x} to non-MMIO dev={} ETH {} "
+                                        "before deassert.",
+                                        jit_cfg_cf2.fw_launch_addr_value,
+                                        non_mmio_id,
+                                        eth_virt.str());
+                                }
+                            } catch (const std::exception& ex_cf2) {
+                                log_warning(
+                                    tt::LogAlways,
+                                    "teardown: FIX CF (#42429) — FIX AY path: fw_launch_addr_value "
+                                    "relay write to non-MMIO dev={} ETH {} failed: {}. ERISC may "
+                                    "enter link-training wait. (#42429)",
+                                    non_mmio_id,
+                                    eth_virt.str(),
+                                    ex_cf2.what());
+                            } catch (...) {
+                                log_warning(
+                                    tt::LogAlways,
+                                    "teardown: FIX CF (#42429) — FIX AY path: fw_launch_addr_value "
+                                    "relay write to non-MMIO dev={} ETH {} failed (non-std exception). "
+                                    "(#42429)",
+                                    non_mmio_id,
+                                    eth_virt.str());
+                            }
                             cluster_.deassert_risc_reset_at_core_write_only(
                                 tt_cxy_pair(non_mmio_id, eth_virt));
                             ++ay_succeeded;

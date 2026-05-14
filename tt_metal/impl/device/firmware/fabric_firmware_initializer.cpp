@@ -1226,10 +1226,25 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
                                 ch.eth_chan_id,
                                 fw_val_ce);
                         }
-                    } catch (...) {
+                    } catch (const std::exception& ex_ce) {
                         // Best-effort: write failure on a relay-dead non-MMIO channel is
                         // acceptable — deassert still runs.  ERISC may hang at 0x49705180
                         // but FIX BT / FIX RR-NM handle recovery in the next session.
+                        // FIX CF (#42429): Log the failure so CI analysis can detect it.
+                        log_warning(
+                            tt::LogMetal,
+                            "FIX CE (#42429): fw_launch_addr_value write to Device {} chan={} "
+                            "failed: {}. ERISC may enter link-training wait (0x49705180). (#42429)",
+                            ch.dev->id(),
+                            ch.eth_chan_id,
+                            ex_ce.what());
+                    } catch (...) {
+                        log_warning(
+                            tt::LogMetal,
+                            "FIX CE (#42429): fw_launch_addr_value write to Device {} chan={} "
+                            "failed (non-std exception). ERISC may enter link-training wait. (#42429)",
+                            ch.dev->id(),
+                            ch.eth_chan_id);
                     }
                     cluster_.deassert_risc_reset_at_core(
                         tt_cxy_pair(ch.dev->id(), virtual_eth_coord), tt::umd::RiscType::ALL);
@@ -2886,6 +2901,46 @@ void FabricFirmwareInitializer::compile_and_configure_fabric() {
 
                     cluster_.assert_risc_reset_at_core_write_only(
                         core_loc, tt::umd::RiscType::ALL);
+                    // FIX CF (#42429): Write fw_launch_addr_value BEFORE deassert so
+                    // non-MMIO ERISC ROM reads a valid entry point.  Without this write,
+                    // fw_launch_addr may be 0 (cleared by FIX BN) causing ERISC ROM to
+                    // hang at 0x49705180 (ETH link-training wait).  Same pattern as
+                    // FIX CE/CC/BR/BO in other assert+deassert paths.
+                    try {
+                        const auto aeth_idx_cf =
+                            hal_.get_programmable_core_type_index(HalProgrammableCoreType::ACTIVE_ETH);
+                        const auto& jit_cfg_cf = hal_.get_jit_build_config(aeth_idx_cf, 0, 0);
+                        if (jit_cfg_cf.fw_launch_addr_value != 0) {
+                            cluster_.write_core_immediate(
+                                non_mmio_id,
+                                virtual_core,
+                                std::vector<uint32_t>{jit_cfg_cf.fw_launch_addr_value},
+                                jit_cfg_cf.fw_launch_addr);
+                            log_debug(
+                                tt::LogMetal,
+                                "FIX CF (#42429): FIX RR-NM step 2 — wrote fw_launch_addr_value "
+                                "0x{:08x} to non-MMIO dev={} chan={} before deassert.",
+                                jit_cfg_cf.fw_launch_addr_value,
+                                non_mmio_id,
+                                dead_chan);
+                        }
+                    } catch (const std::exception& ex_cf) {
+                        log_warning(
+                            tt::LogMetal,
+                            "FIX CF (#42429): FIX RR-NM step 2 — fw_launch_addr_value relay "
+                            "write to non-MMIO dev={} chan={} failed: {}. ERISC may enter "
+                            "link-training wait. (#42429)",
+                            non_mmio_id,
+                            dead_chan,
+                            ex_cf.what());
+                    } catch (...) {
+                        log_warning(
+                            tt::LogMetal,
+                            "FIX CF (#42429): FIX RR-NM step 2 — fw_launch_addr_value relay "
+                            "write to non-MMIO dev={} chan={} failed (non-std exception). (#42429)",
+                            non_mmio_id,
+                            dead_chan);
+                    }
                     cluster_.deassert_risc_reset_at_core_write_only(core_loc);
                     ++rrnm_ok;
                     recovered_non_mmio_chans.insert(dead_chan);
