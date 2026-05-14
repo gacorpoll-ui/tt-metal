@@ -253,7 +253,7 @@ public:
         static const std::unordered_set<uint32_t> empty;
         return empty;
     }
-    virtual void add_bc_deadlock_channel(uint32_t eth_chan_id) {}
+    virtual void add_bc_deadlock_channel(uint32_t /*eth_chan_id*/) {}
     virtual void clear_bc_deadlock_channels() {}
     // FIX TK (#42429): Set by FabricFirmwareInitializer::verify_all_fabric_channels_healthy()
     // when a device's ring sync timed out during base-UMD channel quiesce (FIX TI path).
