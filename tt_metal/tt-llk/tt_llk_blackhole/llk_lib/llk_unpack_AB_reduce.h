@@ -32,12 +32,12 @@ using namespace ckernel::unpacker;
  * @brief Configures the unpacker MOP for reduction operations. Handles both tiny tiles (face_r_dim < 16) and standard tiles.
  *
  * @tparam pool_type The type of pooling operation (MAX, SUM, AVG)
- * @tparam reduce_dim The dimension along which to reduce (REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR)
+ * @tparam reduce_dim The dimension along which to reduce (ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR)
  *
  * @param tensor_shape The shape of the tensor, including face_r_dim and num_faces
  *
  * @note For tiny tiles (face_r_dim < 16), padding is applied to prevent incorrect outputs
- * @note For REDUCE_SCALAR operations, SrcA is cleared before unpacking because SrcA is clobbered in the Math kernel.
+ * @note For ReduceDim::REDUCE_SCALAR operations, SrcA is cleared before unpacking because SrcA is clobbered in the Math kernel.
  */
 template <PoolType pool_type, ReduceDim reduce_dim>
 inline void _llk_unpack_AB_reduce_mop_config_(const ckernel::TensorShape &tensor_shape)
@@ -102,11 +102,11 @@ inline void _llk_unpack_AB_reduce_mop_config_(const ckernel::TensorShape &tensor
  * - Calling the MOP configuration routine
  *
  * @tparam pool_type The type of pooling operation (MAX, SUM, AVG)
- * @tparam reduce_dim The dimension along which to reduce (REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR)
+ * @tparam reduce_dim The dimension along which to reduce (ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR)
  *
  * @param tensor_shape The shape of the tensor, including face_r_dim and num_faces
  *
- * @note For REDUCE_ROW operations, the face is transposed using haloize mode
+ * @note For ReduceDim::REDUCE_ROW operations, the face is transposed using haloize mode
  * @note Unpacker 0 (SrcA) reads face_r_dim*FACE_R_DIM datums
  * @note Unpacker 1 (SrcB) reads one row (FACE_R_DIM datums)
  */
@@ -146,7 +146,7 @@ inline void _llk_unpack_AB_reduce_init_(const ckernel::TensorShape &tensor_shape
  * 5. Switching unpacker configuration context
  *
  * @tparam pool_type The type of pooling operation (MAX, SUM, AVG)
- * @tparam reduce_dim The dimension along which to reduce (REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR)
+ * @tparam reduce_dim The dimension along which to reduce (ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR)
  *
  * @param address_a Base address for source A data in L1 memory
  * @param address_b Base address for source B data in L1 memory

@@ -11,7 +11,7 @@
 namespace ckernel
 {
 
-enum VectorMode
+enum class VectorMode : std::uint8_t
 {
     None      = 0,
     R         = 1,
@@ -21,20 +21,20 @@ enum VectorMode
     Invalid   = 0xFF,
 };
 
-enum ReduceDim
+enum class ReduceDim : std::uint8_t
 {
     REDUCE_ROW,
     REDUCE_COL,
     REDUCE_SCALAR,
 };
 
-enum TileDim
+enum class TileDim : std::uint8_t
 {
     R_IDX = 0,
     C_IDX = 1,
 };
 
-enum PoolType
+enum class PoolType : std::uint8_t
 {
     SUM,
     AVG,
@@ -48,7 +48,7 @@ enum class DataCopyType : std::uint8_t
     B2D,
 };
 
-enum EltwiseBinaryType
+enum class EltwiseBinaryType : std::uint8_t
 {
     ELWMUL,
     ELWDIV,
@@ -64,13 +64,13 @@ enum class EltwiseBinaryReuseDestType
     DEST_TO_SRCB = 2,
 };
 
-enum DstSync
+enum class DstSync : std::uint8_t
 {
     SyncHalf = 0,
     SyncFull = 1,
 };
 
-enum BroadcastType
+enum class BroadcastType : std::uint8_t
 {
     NONE   = 0x0, // A - None || B - None
     COL    = 0x1, // A - None || B - Col Broadcast
@@ -86,7 +86,7 @@ enum class Transpose : std::uint8_t
     Both      = 3,
 };
 
-enum src_op_id_e
+enum class src_op_id_e : std::uint8_t
 {
     OP_SRC0 = 0,
     OP_SRC1 = 1,
@@ -95,7 +95,7 @@ enum src_op_id_e
     OP_SRC4 = 4,
 };
 
-enum local_op_id_e
+enum class local_op_id_e : std::uint8_t
 {
     OP_LOCAL0 = 0,
     OP_LOCAL1 = 1,
@@ -104,7 +104,7 @@ enum local_op_id_e
     OP_LOCAL4 = 4,
 };
 
-enum out_op_id_e
+enum class out_op_id_e : std::uint8_t
 {
     OUT_ID0 = 0,
     OUT_ID1 = 1,
@@ -113,9 +113,9 @@ enum out_op_id_e
     OUT_ID4 = 4,
 };
 
-enum ReluType
+enum class ReluType : std::uint8_t
 {
-    NO_RELU,
+    NO_RELU = 0,
     ZERO_RELU,
     MIN_THRESHOLD_RELU,
     MAX_THRESHOLD_RELU,
@@ -141,7 +141,7 @@ Stochastic rounding modes:
     is in data format conversion stage from pack_src_format to pack_dst_format.
     All: Enables fpu, pack and gasket rounding.
 */
-enum struct StochRndType
+enum class StochRndType : std::uint8_t
 {
     None = 0,
     Fpu  = 1,
@@ -150,7 +150,7 @@ enum struct StochRndType
 };
 
 // This is populated per Wormhole ISA for SFPLOAD/SFPSTORE instructions.
-enum InstrModLoadStore
+enum class InstrModLoadStore : std::uint8_t
 {
     DEFAULT       = 0,
     FP16A         = 1,

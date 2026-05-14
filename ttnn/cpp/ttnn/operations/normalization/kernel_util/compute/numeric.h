@@ -119,7 +119,8 @@ inline void accumulate_compute_loop(
  * are committed and packed
  * @param additional_cbs Optional additional input CBs to accumulate
  * @tparam reduce_type The type of reduce operation (SUM, AVG, MAX) - required explicit parameter
- * @tparam reduce_dim The dimension to reduce (REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR) - required explicit parameter
+ * @tparam reduce_dim The dimension to reduce (ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR) -
+ * required explicit parameter
  * @tparam FLOAT32_REDUCTION Whether to reduce the sum in FP32 precision
  * @tparam input_policy The policy for how to handle the input CB
  * @tparam wait_at_end_policy The policy for whether to wait at the end of the function
@@ -195,7 +196,8 @@ inline void row_wise_accumulate_with_epilogue(
  * @param num_tiles Number of tiles containing the data
  * @param block_size Number of tiles to process at a time
  * @tparam reduce_type The type of reduce operation (SUM, AVG, MAX) - required explicit parameter
- * @tparam reduce_dim The dimension to reduce (REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR) - required explicit parameter
+ * @tparam reduce_dim The dimension to reduce (ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR) -
+ * required explicit parameter
  * @tparam FLOAT32_REDUCTION Whether to reduce the sum in FP32 precision
  * @tparam input_policy The policy for how to handle the input CB
  * @tparam wait_at_end_policy The policy for whether to wait at the end of the function
@@ -235,7 +237,8 @@ inline void row_wise_mean(
  * @param num_tiles Number of tiles containing the data
  * @param block_size Number of tiles to process at a time
  * @tparam reduce_type The type of reduce operation (SUM, AVG, MAX) - required explicit parameter
- * @tparam reduce_dim The dimension to reduce (REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR) - required explicit parameter
+ * @tparam reduce_dim The dimension to reduce (ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR) -
+ * required explicit parameter
  * @tparam FLOAT32_REDUCTION Whether to reduce the sum in FP32 precision
  * @tparam input_policy The policy for how to handle the input CB
  * @tparam wait_at_end_policy The policy for whether to wait at the end of the function

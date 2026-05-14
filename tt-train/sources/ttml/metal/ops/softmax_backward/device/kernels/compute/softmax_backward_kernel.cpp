@@ -28,7 +28,7 @@ constexpr uint32_t DST_REG_ID = 0;
 constexpr uint32_t ONE_TILE = 1;
 
 // Stream y * grad through the row, mul-accumulating elementwise into DST[0].
-// `mul_tiles_init` programs ELWMUL with acc_to_dest=true, so within a single
+// `mul_tiles_init` programs EltwiseBinaryType::ELWMUL with acc_to_dest=true, so within a single
 // tile_regs_acquire/commit window each `mul_tiles(y, grad, i, i, 0)` performs
 //   DST[0] += y[i] * grad[i]
 // (FP32 in DST when fp32_dest_acc_en). After all tiles, DST[0] holds 32 column
@@ -98,8 +98,9 @@ ALWI void fused_sub_mul(
 #if defined(FP32_DEST_ACC_EN)
     ckernel::reconfig_data_format_srca(y_cb_id);
 #endif
-    binary_dest_reuse_tiles_init<ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(y_cb_id);
-    binary_dest_reuse_tiles<ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(y_cb_id, y_tile_idx, DST_REG_ID);
+    binary_dest_reuse_tiles_init<EltwiseBinaryType::ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(y_cb_id);
+    binary_dest_reuse_tiles<EltwiseBinaryType::ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(
+        y_cb_id, y_tile_idx, DST_REG_ID);
 
     tile_regs_commit();
     pack_and_push(DST_REG_ID, out_cb_id);

@@ -43,19 +43,19 @@ constexpr uint32_t SUM_AND_MAX_REDUCE_FACTOR = 1;
  * Converts the float scaler to the appropriate bit representation based on
  * the circular buffer's data format, then fills the tile with the scaler in
  * the layout required by the reduction:
- *   - Row-0 fill (reduce LLK path): used for REDUCE_COL, REDUCE_SCALAR, and MAX
- *   - Col-0 fill (matmul path): used for REDUCE_ROW with SUM or AVG
+ *   - Row-0 fill (reduce LLK path): used for ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR, and MAX
+ *   - Col-0 fill (matmul path): used for ReduceDim::REDUCE_ROW with SUM or AVG
  *
  * Data format and tile shape (half/full) are deduced from the circular buffer.
  *
  * @tparam cb_id Circular buffer ID to write the tile to (must be constexpr)
  * @tparam pool_type Type of pooling operation (SUM, AVG, MAX). Default MAX selects row-0 fill.
- * @tparam reduce_dim Reduction dimension (REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR).
- *         Default REDUCE_COL selects row-0 fill.
+ * @tparam reduce_dim Reduction dimension (ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR).
+ *         Default ReduceDim::REDUCE_COL selects row-0 fill.
  * @tparam compute_uses_reduce_tile When true, forces row-0 fill (reduce LLK layout) even for
- *         SUM/AVG + REDUCE_ROW combinations that would normally use col-0 fill (matmul layout).
+ *         SUM/AVG + ReduceDim::REDUCE_ROW combinations that would normally use col-0 fill (matmul layout).
  *         Set to true when the compute kernel uses reduce_tile LLK directly instead of
- *         compute_kernel_lib::reduce (which auto-switches to matmul for REDUCE_ROW SUM/AVG).
+ *         compute_kernel_lib::reduce (which auto-switches to matmul for ReduceDim::REDUCE_ROW SUM/AVG).
  * @param scaler_f Float scaler value to fill the tile with
  * @param valid_reduce_dim_elements_in_tile Number of valid elements along the reduce dimension
  *        in the tile (1-32, default 32 = full tile). When the last tile along the reduce
@@ -73,19 +73,19 @@ FORCE_INLINE void prepare_reduce_scaler(
  * and reduce factor. Supports both bfloat16 and float32 formats.
  * Data format and tile shape (half/full) are deduced from the circular buffer.
  *
- * For AVG pooling with REDUCE_SCALAR, uses 1/sqrt(N) since the LLK applies the
- * scaler twice (row then col). For AVG with REDUCE_ROW/REDUCE_COL, uses 1/N.
+ * For AVG pooling with ReduceDim::REDUCE_SCALAR, uses 1/sqrt(N) since the LLK applies the
+ * scaler twice (row then col). For AVG with ReduceDim::REDUCE_ROW/ReduceDim::REDUCE_COL, uses 1/N.
  * For SUM/MAX, the reduce_factor is ignored and the scaler is 1.0.
  *
  * @tparam cb_id Circular buffer ID to write the tile to (must be constexpr)
  * @tparam pool_type Type of pooling operation (SUM, AVG, MAX)
- * @tparam reduce_dim Reduction dimension (REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR)
+ * @tparam reduce_dim Reduction dimension (ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR)
  * @tparam reduce_factor Number of elements being reduced (N). Must be set for AVG;
  *         use SUM_AND_MAX_REDUCE_FACTOR (default) for SUM and MAX.
  * @tparam compute_uses_reduce_tile When true, forces row-0 fill (reduce LLK layout) even for
- *         SUM/AVG + REDUCE_ROW combinations that would normally use col-0 fill (matmul layout).
+ *         SUM/AVG + ReduceDim::REDUCE_ROW combinations that would normally use col-0 fill (matmul layout).
  *         Set to true when the compute kernel uses reduce_tile LLK directly instead of
- *         compute_kernel_lib::reduce (which auto-switches to matmul for REDUCE_ROW SUM/AVG).
+ *         compute_kernel_lib::reduce (which auto-switches to matmul for ReduceDim::REDUCE_ROW SUM/AVG).
  * @param valid_reduce_dim_elements_in_tile Number of valid elements along the reduce dimension
  *        in the tile (1-32, default 32 = full tile). When the last tile along the reduce
  *        dimension is partially filled, this specifies how many row or column elements contain

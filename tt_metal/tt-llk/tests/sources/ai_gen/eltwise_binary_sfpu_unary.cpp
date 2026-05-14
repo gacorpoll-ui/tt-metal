@@ -61,7 +61,7 @@ void run_kernel(RUNTIME_PARAMETERS /*params*/)
     // Wait for destination to be available
     _llk_math_wait_for_dest_available_<DST_SYNC>();
 
-    // Perform elementwise binary operation (ELWADD, ELWMUL, or ELWSUB)
+    // Perform elementwise binary operation (EltwiseBinaryType::ELWADD, EltwiseBinaryType::ELWMUL, or EltwiseBinaryType::ELWSUB)
     _llk_math_eltwise_binary_<ELTWISE_BINARY_OP, BroadcastType::NONE, DST_SYNC, is_fp32_dest_acc_en>(
         DEFAULT_TENSOR_SHAPE, 0 /* dst_index */, false /* clear_fp32_dst_acc */);
 

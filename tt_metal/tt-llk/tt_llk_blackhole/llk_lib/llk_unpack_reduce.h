@@ -51,8 +51,8 @@ inline void _llk_unpack_reduce_init_(
     TTI_WRCFG(p_gpr_unpack::L1_BUFFER_ADDR, p_cfg::WRCFG_32b, THCON_SEC1_REG3_Base_cntx1_address_ADDR32);
     TTI_NOP;
 
-    // REDUCE_ROW requires transpose itself; additionally, within_face_16x16_transpose flag could require transpose;
-    // if we have the flag set with REDUCE_ROW, we don't need to do anything
+    // ReduceDim::REDUCE_ROW requires transpose itself; additionally, within_face_16x16_transpose flag could require transpose;
+    // if we have the flag set with ReduceDim::REDUCE_ROW, we don't need to do anything
     cfg_reg_rmw_tensix<THCON_SEC0_REG2_Haloize_mode_RMW>(ReduceDim::REDUCE_ROW == dim ? !within_face_16x16_transpose : within_face_16x16_transpose);
 
     TTI_SETADCXX(0b11, FACE_R_DIM * FACE_C_DIM - 1, 0x0);

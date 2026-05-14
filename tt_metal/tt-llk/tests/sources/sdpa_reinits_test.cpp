@@ -162,7 +162,7 @@ void run_kernel(RUNTIME_PARAMETERS params)
     _llk_math_reconfig_data_format_<false, false>(math_format2, math_format2);
     _llk_math_pack_sync_init_<dest_sync2, false>();
 
-    // Operation 2: Eltwise ELWSUB FPU
+    // Operation 2: Eltwise EltwiseBinaryType::ELWSUB FPU
     // REDUCE -> SUB TRANSITION REINIT NEEDS TO BE DONE MOSTLY FULL BECAUSE OF MOP RECONFIG
     _llk_math_eltwise_binary_init_<ckernel::EltwiseBinaryType::ELWSUB, BroadcastType::COL, ckernel::MathFidelity::LoFi, EltwiseBinaryReuseDestType::NONE>(
         ckernel::DEFAULT_TENSOR_SHAPE, 0);
@@ -170,8 +170,13 @@ void run_kernel(RUNTIME_PARAMETERS params)
     for (std::uint32_t batch = 0; batch < 1; ++batch)
     {
         _llk_math_wait_for_dest_available_<dest_sync2>();
-        _llk_math_eltwise_binary_<ELWSUB, BroadcastType::COL, dest_sync2, false, ckernel::MathFidelity::LoFi, EltwiseBinaryReuseDestType::NONE>(
-            ckernel::DEFAULT_TENSOR_SHAPE, 0, false);
+        _llk_math_eltwise_binary_<
+            EltwiseBinaryType::ELWSUB,
+            BroadcastType::COL,
+            dest_sync2,
+            false,
+            ckernel::MathFidelity::LoFi,
+            EltwiseBinaryReuseDestType::NONE>(ckernel::DEFAULT_TENSOR_SHAPE, 0, false);
         _llk_math_dest_section_done_<dest_sync2, false>();
     }
     // Operation 3: Math Setup

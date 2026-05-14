@@ -21,7 +21,7 @@ enum VectorMode
     Invalid   = 0xFF,
 };
 
-enum ReduceDim
+enum class ReduceDim : std::uint8_t
 {
     REDUCE_ROW,
     REDUCE_COL,
@@ -34,7 +34,7 @@ enum TileDim
     C_IDX = 1,
 };
 
-enum PoolType
+enum class PoolType : std::uint8_t
 {
     SUM,
     AVG,
@@ -48,7 +48,7 @@ enum class DataCopyType : std::uint8_t
     B2D,
 };
 
-enum EltwiseBinaryType
+enum class EltwiseBinaryType : std::uint8_t
 {
     ELWMUL,
     ELWDIV,
@@ -64,13 +64,13 @@ enum class EltwiseBinaryReuseDestType
     DEST_TO_SRCB = 2,
 };
 
-enum DstSync
+enum class DstSync : std::uint8_t
 {
     SyncHalf = 0,
     SyncFull = 1,
 };
 
-enum BroadcastType
+enum class BroadcastType : std::uint8_t
 {
     NONE   = 0x0, // A - None || B - None
     COL    = 0x1, // A - None || B - Col Broadcast
@@ -113,9 +113,9 @@ enum out_op_id_e
     OUT_ID4 = 4,
 };
 
-enum ReluType
+enum class ReluType : std::uint8_t
 {
-    NO_RELU,
+    NO_RELU = 0,
     ZERO_RELU,
     MIN_THRESHOLD_RELU,
     MAX_THRESHOLD_RELU,

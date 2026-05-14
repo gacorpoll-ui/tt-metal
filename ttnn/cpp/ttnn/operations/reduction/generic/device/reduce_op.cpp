@@ -148,7 +148,7 @@ Tensor reduce(
             return ttnn::neg(h_out, output_mem_config, std::nullopt, sub_core_grids);
         };
 
-    // The single-core HW path uses REDUCE_SCALAR mode, which applies the
+    // The single-core HW path uses ReduceDim::REDUCE_SCALAR mode, which applies the
     // scaler twice internally (once per dimension).  The host compensates with
     // sqrt(scaler) in ReduceSingleCoreHwProgramFactory::create.
     // However, sqrt of a negative number is NaN, so negative scalers

@@ -744,7 +744,7 @@ tt::tt_metal::ProgramDescriptor BinaryNgDeviceOperation::ProgramFactory::create_
     // On Blackhole, the B2D datacopy path (MOVB2D) has a known issue in FP32 dest
     // accumulation mode with non-32-bit source formats (BH Issue #449).  SCALAR and
     // ROW broadcasts use MOVB2D, which produces corrupted results when
-    // fp32_dest_acc_en is true.  COL broadcast is unaffected because it uses ELWADD
+    // fp32_dest_acc_en is true.  COL broadcast is unaffected because it uses EltwiseBinaryType::ELWADD
     // instead of MOVB2D.  Fall back to the software-broadcast path for the affected
     // broadcast types on Blackhole when FP32 dest accumulation is active.
     if (use_llk_bcast && fp32_dest_acc_en) {

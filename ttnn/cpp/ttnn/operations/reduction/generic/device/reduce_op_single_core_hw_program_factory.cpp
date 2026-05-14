@@ -39,7 +39,7 @@ tt::tt_metal::ProgramDescriptor ReduceDeviceOperation::ReduceSingleCoreHwProgram
         "ReduceSingleCoreHwProgramFactory supports HW dim only, got dim enum value {}",
         static_cast<int>(operation_attributes.dim));
 
-    // The single-core HW path uses REDUCE_SCALAR mode, which applies the
+    // The single-core HW path uses ReduceDim::REDUCE_SCALAR mode, which applies the
     // scaler twice internally (once per dimension). Here we compensate with
     // sqrt(scaler). However, sqrt of a negative number is NaN, so negative scalers
     // must not reach this code path. Instead negative scalers are handled via the two-step

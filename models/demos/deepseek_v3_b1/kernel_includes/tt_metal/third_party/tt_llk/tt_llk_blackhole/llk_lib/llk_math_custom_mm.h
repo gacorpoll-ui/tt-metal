@@ -76,7 +76,7 @@ inline void custom_mm_configure_addrmod() {
         .srcb = {.incr = 32, .clr = 0, .cr = 0},
         .dest = {.incr = 0, .clr = 0, .cr = 0},
     }
-        .set(ADDR_MOD_5);  // Move SrcB to 32 in preparation for finalization ELWADD
+        .set(ADDR_MOD_5);  // Move SrcB to 32 in preparation for finalization EltwiseBinaryType::ELWADD
 
     addr_mod_t{
         .srca = {.incr = 16, .clr = 0, .cr = 0},
@@ -182,7 +182,8 @@ inline void _llk_math_custom_mm_(
         for (std::uint32_t i = 0; i < ct_dim - 1; i++) {
             lltt::replay(ckernel::math::replay_buf_offset, replay_buf_len);
         }
-        // Run the full replay - the last ELWADD as it differs on the last ct_dim iteration and is issued directly after
+        // Run the full replay - the last EltwiseBinaryType::ELWADD as it differs on the last ct_dim iteration and is
+        // issued directly after
         lltt::replay(ckernel::math::replay_buf_offset, replay_buf_len - 1);
         TTI_ELWADD(3, 1, p_elwise::SRCB_NO_BCAST, ADDR_MOD_3, 0);
     } else {

@@ -76,7 +76,7 @@ inline void _llk_math_compressed_custom_mm_addrmod_config_() {
         .srcb = {.incr = 32, .clr = 0, .cr = 0},
         .dest = {.incr = 0, .clr = 0, .cr = 0},
     }
-        .set(ADDR_MOD_5);  // Move SrcB to 32 in preparation for finalization ELWADD
+        .set(ADDR_MOD_5);  // Move SrcB to 32 in preparation for finalization EltwiseBinaryType::ELWADD
 
     addr_mod_t{
         .srca = {.incr = 16, .clr = 0, .cr = 0},

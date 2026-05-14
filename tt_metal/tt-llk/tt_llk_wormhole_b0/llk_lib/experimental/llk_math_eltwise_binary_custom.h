@@ -46,7 +46,7 @@ inline void eltwise_binary_configure_addrmod_custom()
 /**
  * @brief Initialize FPU to perform an elementwise binary operation where Output = SrcA [+, -, *] SrcB
  * SrcA/SrcB contain 1 tile each, and output is 1 tile in destination register
- * @tparam eltwise_binary_type: Type of eltwise binary op, values = <ELWADD/ELWSUB/ELWMUL>
+ * @tparam eltwise_binary_type: Type of eltwise binary op, values = <EltwiseBinaryType::ELWADD/EltwiseBinaryType::ELWSUB/EltwiseBinaryType::ELWMUL>
  * @tparam src_b_bcast_type: Broadcast type for source B, values = <NONE/COL/ROW/SCALAR>
  * @param num_faces: Number of faces to process (1, 2, or 4)
  */
@@ -55,8 +55,9 @@ inline void _llk_math_eltwise_binary_init_custom_(const std::uint32_t num_faces)
 {
     LLK_ASSERT(num_faces == 1 || num_faces == 2 || num_faces == 4, "num_faces must be 1, 2, or 4");
     LLK_ASSERT(
-        (eltwise_binary_type == ELWADD) || (eltwise_binary_type == ELWSUB) || (eltwise_binary_type == ELWMUL),
-        "eltwise_binary_type must be ELWADD, ELWSUB, or ELWMUL");
+        (eltwise_binary_type == EltwiseBinaryType::ELWADD) || (eltwise_binary_type == EltwiseBinaryType::ELWSUB) ||
+            (eltwise_binary_type == EltwiseBinaryType::ELWMUL),
+        "eltwise_binary_type must be EltwiseBinaryType::ELWADD, EltwiseBinaryType::ELWSUB, or EltwiseBinaryType::ELWMUL");
 
     eltwise_binary_configure_addrmod_custom<src_b_bcast_type>();
 
@@ -71,7 +72,7 @@ inline void _llk_math_eltwise_binary_uninit_custom_()
 
 // This helper is intentionally specialized even though the init surface is
 // generic. The current in-tree caller is blocked sub+bcast(col), so the
-// instruction sequence is hard-wired to ELWSUB with SrcB column broadcast and
+// instruction sequence is hard-wired to EltwiseBinaryType::ELWSUB with SrcB column broadcast and
 // SrcB reuse across ct_dim.
 inline void _llk_math_sub_bcast_cols_reuse_custom_(const std::uint32_t ct_dim = 1)
 {

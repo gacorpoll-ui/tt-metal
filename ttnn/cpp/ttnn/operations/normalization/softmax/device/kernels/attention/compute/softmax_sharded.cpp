@@ -18,7 +18,7 @@ ALWI void calc_numeric_stable(uint32_t cb_in, uint32_t cb_max_scaler, uint32_t c
     auto cb_max_obj = CircularBuffer(cb_max);
     auto cb_out_obj = CircularBuffer(cb_out);
 
-    // Use reduce_helpers for MAX reduce (REDUCE_ROW, PRELOADED mode)
+    // Use reduce_helpers for MAX reduce (ReduceDim::REDUCE_ROW, PRELOADED mode)
     // Note: The library handles waiting for scaler tile internally
     compute_kernel_lib::
         reduce<PoolType::MAX, ReduceDim::REDUCE_ROW, compute_kernel_lib::ReduceInputPolicy::NoWaitNoPop>(

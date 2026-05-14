@@ -178,7 +178,7 @@ ALWI void reduce(
         "PostReduceOp must be callable with a uint32_t argument");
     static_assert(
         !is_accumulate_v<AccumulateT> || reduce_type != PoolType::MAX || reduce_dim == ReduceDim::REDUCE_COL,
-        "Accumulate::at with PoolType::MAX only works for REDUCE_COL. For REDUCE_ROW / REDUCE_SCALAR "
+        "Accumulate::at with PoolType::MAX only works for ReduceDim::REDUCE_COL. For ReduceDim::REDUCE_ROW / ReduceDim::REDUCE_SCALAR "
         "the pack reduce edge mask drops the face-row-0 spread that GMPOOL needs as its running "
         "accumulator on the reload pass, so the previous MAX is lost.");
 
@@ -245,7 +245,7 @@ ALWI void reduce(
     // Pattern dispatch based on reduce_dim
     if constexpr (reduce_dim == ReduceDim::REDUCE_SCALAR) {
         // =================================================================
-        // REDUCE_SCALAR: HW reduction - all tiles -> 1 output tile per batch
+        // ReduceDim::REDUCE_SCALAR: HW reduction - all tiles -> 1 output tile per batch
         // =================================================================
         const uint32_t stride = (input_memory_layout.row_stride > 0) ? input_memory_layout.row_stride : Wt;
         const uint32_t tiles_per_bulk = Ht * stride;
@@ -331,7 +331,7 @@ ALWI void reduce(
         }
     } else if constexpr (reduce_dim == ReduceDim::REDUCE_ROW) {
         // =================================================================
-        // REDUCE_ROW: W reduction - each row -> 1 output tile (Ht outputs per batch)
+        // ReduceDim::REDUCE_ROW: W reduction - each row -> 1 output tile (Ht outputs per batch)
         // =================================================================
         const uint32_t stride = (input_memory_layout.row_stride > 0) ? input_memory_layout.row_stride : Wt;
         const uint32_t total_output_tiles = Ht * num_batches;
@@ -426,7 +426,7 @@ ALWI void reduce(
         }
     } else {
         // =================================================================
-        // REDUCE_COL: H reduction - each column -> 1 output tile (Wt outputs per batch)
+        // ReduceDim::REDUCE_COL: H reduction - each column -> 1 output tile (Wt outputs per batch)
         // Need chunking due to DEST register limits
         // StreamingPolicy: Tiles arrive in N C W_skip H W_chunk order (chunked by chunk_size)
         // PreloadedPolicy: Tiles in row-major order, indexed as batch_offset + ht*stride + wt

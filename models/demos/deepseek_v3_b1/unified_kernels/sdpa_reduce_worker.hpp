@@ -818,7 +818,7 @@ struct SdpaReduceWorker {
         // TRISC (Compute) - streaming SDPA tail reduction
         // ==================================================================
         void compute_impl([[maybe_unused]] const ComputeArgs& args) {
-            constexpr int vector_mode = VectorMode::RC_custom;
+            constexpr int vector_mode = static_cast<int>(VectorMode::RC_custom);
 
             reconfig_data_format<false, true>(CTArgs::cb_local_l, CTArgs::cb_local_l);
             pack_reconfig_data_format<true>(CTArgs::cb_l_out);

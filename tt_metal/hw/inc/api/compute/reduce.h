@@ -43,9 +43,9 @@ namespace ckernel {
  * packer's edge masks (`_llk_pack_reduce_mask_config_<…, reduce_dim>`) so that any output datum that is not part
  * of the reduction result is written to CB by the packer as zero. Specifically, for any tile packed into `ocb`
  * while this reduce_init's packer state is in effect:
- *   - `REDUCE_SCALAR`: the scalar result is at face-0 `[0, 0]`; every other datum in the tile is zero.
- *   - `REDUCE_ROW`:    each row's reduced value is at column 0 of that row; every other datum in the tile is zero.
- *   - `REDUCE_COL`:    each column's reduced value is at row 0 of that column; every other datum in the tile is zero.
+ *   - `ReduceDim::REDUCE_SCALAR`: the scalar result is at face-0 `[0, 0]`; every other datum in the tile is zero.
+ *   - `ReduceDim::REDUCE_ROW`:    each row's reduced value is at column 0 of that row; every other datum in the tile is zero.
+ *   - `ReduceDim::REDUCE_COL`:    each column's reduced value is at row 0 of that column; every other datum in the tile is zero.
  * A reset to the default packer mask happens via `reduce_uninit` (or by the next non-reduce init); until then this
  * contract holds for every pack into `ocb`.
  *
@@ -54,7 +54,7 @@ namespace ckernel {
  * | Param Type | Name                      | Description                                                                             | Type      | Valid Range                                    | Required |
  * |------------|---------------------------|-----------------------------------------------------------------------------------------|-----------|------------------------------------------------|----------|
  * | Template   | reduce_type               | The type of reduce op - sum, average or maximum                                         | PoolType  | {SUM, AVG, MAX}                                | True     |
- * | Template   | reduce_dim                | The dimension of reduce op - row, column or both                                        | ReduceDim | {REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR}        | True     |
+ * | Template   | reduce_dim                | The dimension of reduce op - row, column or both                                        | ReduceDim | {ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR}        | True     |
  * | Template   | enforce_fp32_accumulation | Enable accumulation of reduction in full FP32 precision (Requires DST_ACCUM_MODE==true) | bool      | {true, false}                                  | True     |
  * | Function   | icb                       | The identifier of the circular buffer (CB) containing operand A                         | uint32_t  | 0 to 31                                        | True     |
  * | Function   | icb_scaler                | CB holding scaling factors (see above)                                                  | uint32_t  | 0 to 31                                        | True     |
@@ -136,7 +136,7 @@ ALWI void reduce_uninit(uint32_t icb = 0) {
  * | Param Type | Name                      | Description                                                                             | Type      | Valid Range                                    | Required |
  * |------------|---------------------------|-----------------------------------------------------------------------------------------|-----------|------------------------------------------------|----------|
  * | Template   | reduce_type               | The type of reduce op - sum, average or maximum                                         | PoolType  | {SUM, AVG, MAX}                                | True     |
- * | Template   | reduce_dim                | The dimension of reduce op - row, column or both                                        | ReduceDim | {REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR}        | True     |
+ * | Template   | reduce_dim                | The dimension of reduce op - row, column or both                                        | ReduceDim | {ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR}        | True     |
  * | Template   | enforce_fp32_accumulation | Enable accumulation of reduction in full FP32 precision (Requires DST_ACCUM_MODE==true) | bool      | {true, false}                                  | True     |
  * | Function   | icb                       | The identifier of the circular buffer (CB) containing operand A                         | uint32_t  | 0 to 31                                        | True     |
  * | Function   | icb_scaler                | CB holding scaling factors (see above)                                                  | uint32_t  | 0 to 31                                        | True     |
@@ -179,7 +179,7 @@ ALWI void reduce_tile(uint32_t icb, uint32_t icb_scaler, uint32_t itile, uint32_
  * | Param Type | Name                      | Description                                                                             | Type      | Valid Range                                    | Required |
  * |------------|---------------------------|-----------------------------------------------------------------------------------------|-----------|------------------------------------------------|----------|
  * | Template   | reduce_type               | The type of reduce op - sum, average or maximum                                         | PoolType  | {SUM, AVG, MAX}                                | True     |
- * | Template   | reduce_dim                | The dimension of reduce op - row, column or both                                        | ReduceDim | {REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR}        | True     |
+ * | Template   | reduce_dim                | The dimension of reduce op - row, column or both                                        | ReduceDim | {ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR}        | True     |
  * | Template   | enforce_fp32_accumulation | Enable accumulation of reduction in full FP32 precision (Requires DST_ACCUM_MODE==true) | bool      | {true, false}                                  | True     |
  * | Function   | idst                      | The index of the tile in DST REG for the result                                         | uint32_t  | Must be less than the acquired size of DST REG | True     |
  * | Function   | num_faces                 | Number of faces to reduce (optional, default 4)                                         | uint32_t  | 1 to 4                                         | False    |
@@ -208,7 +208,7 @@ ALWI void reduce_tile_math(uint32_t idst, uint32_t num_faces = 4) {
  * | Param Type | Name                      | Description                                                                             | Type                 | Valid Range                                    | Required |
  * |------------|---------------------------|-----------------------------------------------------------------------------------------|----------------------|------------------------------------------------|----------|
  * | Template   | reduce_type               | The type of reduce op - sum, average or maximum                                         | PoolType             | {SUM, AVG, MAX}                                | True     |
- * | Template   | reduce_dim                | The dimension of reduce op - row, column or both                                        | ReduceDim            | {REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR}        | True     |
+ * | Template   | reduce_dim                | The dimension of reduce op - row, column or both                                        | ReduceDim            | {ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR}        | True     |
  * | Template   | enforce_fp32_accumulation | Enable accumulation of reduction in full FP32 precision (Requires DST_ACCUM_MODE==true) | bool                 | {true, false}                                  | True     |
  * | Function   | idst                      | The index of the tile in DST REG for the result                                         | uint32_t             | Must be less than the acquired size of DST REG | True     |
  * | Function   | tensor_shape              | The shape of the tensor to reduce                                                       | ckernel::TensorShape | N/A                                            | True     |

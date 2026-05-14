@@ -128,7 +128,7 @@ FORCE_INLINE void fill_each_face_row0_partial(
         "fill_each_face_row0_partial only supports Float16_b (bfloat16) and Float32 formats");
     static_assert(
         reduce_dim == ReduceDim::REDUCE_ROW || reduce_dim == ReduceDim::REDUCE_COL,
-        "fill_each_face_row0_partial only supports partial valid elements for REDUCE_ROW and REDUCE_COL");
+        "fill_each_face_row0_partial only supports partial valid elements for ReduceDim::REDUCE_ROW and ReduceDim::REDUCE_COL");
 
     constexpr uint32_t face_size_u32 =
         (data_format == DataFormat::Float32) ? FACE_SIZE_U32_FP32 : FACE_SIZE_U32;
@@ -232,7 +232,7 @@ FORCE_INLINE void prepare_reduce_scaler(float scaler_f, uint32_t valid_reduce_di
     static_assert(
         reduce_dim != ReduceDim::REDUCE_SCALAR
             || (tile_r_dim == tt::constants::TILE_HEIGHT && tile_c_dim == tt::constants::TILE_WIDTH),
-        "REDUCE_SCALAR only supports full 32x32 tiles");
+        "ReduceDim::REDUCE_SCALAR only supports full 32x32 tiles");
 
     static_assert(
         data_format == DataFormat::Float16_b || data_format == DataFormat::Float32,
@@ -243,8 +243,8 @@ FORCE_INLINE void prepare_reduce_scaler(float scaler_f, uint32_t valid_reduce_di
     // Matmul-based reduce uses col-0 fill; reduce LLK uses row-0 fill
     constexpr bool use_matmul = !compute_uses_reduce_tile && reduce_uses_matmul<pool_type, reduce_dim>();
 
-    // Full element count along the reduce axis: cols for REDUCE_ROW, rows for REDUCE_COL.
-    // Unused for REDUCE_SCALAR (which always fills the full tile).
+    // Full element count along the reduce axis: cols for ReduceDim::REDUCE_ROW, rows for ReduceDim::REDUCE_COL.
+    // Unused for ReduceDim::REDUCE_SCALAR (which always fills the full tile).
     constexpr uint32_t full_dim = (reduce_dim == ReduceDim::REDUCE_COL) ? tile_r_dim : tile_c_dim;
 
     CircularBuffer cb(cb_id);
@@ -297,8 +297,8 @@ FORCE_INLINE void calculate_and_prepare_reduce_scaler(uint32_t valid_reduce_dim_
     // -------------------------------------------------------------------------
     // 1. Compute scaler value
     //
-    //    REDUCE_SCALAR applies scaler twice in LLK (row then col), so use 1/sqrt(N)
-    //    REDUCE_ROW/REDUCE_COL apply scaler once, so use 1/N
+    //    ReduceDim::REDUCE_SCALAR applies scaler twice in LLK (row then col), so use 1/sqrt(N)
+    //    ReduceDim::REDUCE_ROW/ReduceDim::REDUCE_COL apply scaler once, so use 1/N
     //
     //    NOTE: sqrtf() with a runtime argument will link in the software sqrt
     //    implementation. If device memory is tight (~2KB limit), consider

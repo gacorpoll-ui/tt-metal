@@ -282,7 +282,7 @@ void kernel_main() {
     // non-welford sharded reader (reader_mcast_sender_unary_sharded_gn_v2.cpp) uses.
     // The sharded reader reserves a single tile per iteration and uses a
     // full-tile SELF read from cb_ex_partial as a free zero-init, which works
-    // because cb_ex_partial there is `reduce<…, REDUCE_SCALAR>`-packed and
+    // because cb_ex_partial there is `reduce<…, ReduceDim::REDUCE_SCALAR>`-packed and
     // therefore documented to have exact zeros at every non-result datum.
     // This mcast reader instead reserves cb_ex_external_tiles_required tiles
     // per cur_read_iteration and writes per-core scalars across all of them

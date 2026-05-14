@@ -52,8 +52,8 @@ inline void _llk_unpack_reduce_init_(
     TTI_NOP;
     TTI_NOP;
 
-    // REDUCE_ROW requires transpose itself; additionally, within_face_16x16_transpose flag could require transpose;
-    // if we have the flag set with REDUCE_ROW, we don't need to do anything
+    // ReduceDim::REDUCE_ROW requires transpose itself; additionally, within_face_16x16_transpose flag could require transpose;
+    // if we have the flag set with ReduceDim::REDUCE_ROW, we don't need to do anything
     cfg_reg_rmw_tensix<THCON_SEC0_REG2_Haloize_mode_RMW>(ReduceDim::REDUCE_ROW == dim ? !within_face_16x16_transpose : within_face_16x16_transpose);
 
     TTI_SETADCXX(p_setadc::UNP0, FACE_R_DIM * FACE_C_DIM - 1, 0x0);

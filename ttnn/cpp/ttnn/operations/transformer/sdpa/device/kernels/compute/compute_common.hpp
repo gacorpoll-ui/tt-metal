@@ -333,8 +333,10 @@ void sub_exp_block_bcast_cols_inplace(uint32_t in1_cb, uint32_t reduce_cb, uint3
             tile_regs_acquire();
             for (uint32_t j = 0; j < dst_tiles; ++j) {
                 sub_tiles_bcast_cols(in0_cb, in1_cb, j, i, j);
-                constexpr int iterations = (vector_mode == VectorMode::RC) ? 32 : 8;
-                constexpr int vector_mode_exp = (vector_mode == VectorMode::RC) ? VectorMode::None : vector_mode;
+                constexpr int iterations = (vector_mode == static_cast<int>(VectorMode::RC)) ? 32 : 8;
+                constexpr int vector_mode_exp = (vector_mode == static_cast<int>(VectorMode::RC))
+                                                    ? static_cast<int>(VectorMode::None)
+                                                    : vector_mode;
                 exp_tile<true /* approx */, false /* scale_en */, InputClamping::None, iterations>(j, vector_mode_exp);
             }
             tile_regs_commit();
@@ -724,7 +726,8 @@ void calculate_exponential_polynomial() {
 
     for (int d = 0; d < ITERATIONS; d++) {
         // Load the input.
-        constexpr uint8_t input_type = IS_FP32_DEST_ACC_EN ? InstrModLoadStore::FP32 : InstrModLoadStore::FP16B;
+        constexpr InstrModLoadStore input_type =
+            IS_FP32_DEST_ACC_EN ? InstrModLoadStore::FP32 : InstrModLoadStore::FP16B;
         TTI_SFPLOAD(p_sfpu::LREG2, input_type, ADDR_MOD_X, 0);
 
         if constexpr (SCALE_EN) {

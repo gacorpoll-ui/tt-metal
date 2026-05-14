@@ -12,9 +12,9 @@
  * @brief Single unified reduce function with automatic dispatch
  *
  * Provides ONE function that handles all reduce operations:
- * - Row reduction (REDUCE_ROW): Reduces W dimension, outputs Ht tiles per batch
- * - Column reduction (REDUCE_COL): Reduces H dimension, outputs Wt tiles per batch
- * - Scalar reduction (REDUCE_SCALAR): Reduces both H and W, outputs 1 tile per batch
+ * - Row reduction (ReduceDim::REDUCE_ROW): Reduces W dimension, outputs Ht tiles per batch
+ * - Column reduction (ReduceDim::REDUCE_COL): Reduces H dimension, outputs Wt tiles per batch
+ * - Scalar reduction (ReduceDim::REDUCE_SCALAR): Reduces both H and W, outputs 1 tile per batch
  *
  * This library hides the complexity of:
  * - tile_regs_acquire/commit/wait/release DST register management
@@ -36,17 +36,17 @@
  *   compute_kernel_hw_startup(cb_in, cb_scaler, cb_out);
  *
  *   // Reduce each row (W dimension) - output has Ht tiles per batch
- *   compute_kernel_lib::reduce<SUM, REDUCE_ROW>(
+ *   compute_kernel_lib::reduce<SUM, ReduceDim::REDUCE_ROW>(
  *       cb_in, cb_scaler, cb_out,
  *       compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt, NC));
  *
  *   // Reduce each column (H dimension) - output has Wt tiles per batch
- *   compute_kernel_lib::reduce<SUM, REDUCE_COL>(
+ *   compute_kernel_lib::reduce<SUM, ReduceDim::REDUCE_COL>(
  *       cb_in, cb_scaler, cb_out,
  *       compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt, NC));
  *
- *   // Reduce entire HxW grid to single tile (REDUCE_SCALAR)
- *   compute_kernel_lib::reduce<SUM, REDUCE_SCALAR>(
+ *   // Reduce entire HxW grid to single tile (ReduceDim::REDUCE_SCALAR)
+ *   compute_kernel_lib::reduce<SUM, ReduceDim::REDUCE_SCALAR>(
  *       cb_in, cb_scaler, cb_out,
  *       compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt, NC));
  *
@@ -93,15 +93,15 @@ enum class ReduceDataFormatReconfigMode { NONE, INPUT, OUTPUT, INPUT_AND_OUTPUT 
  *
  * - BulkWaitBulkPop: Wait for bulk, process all with indexed access, pop bulk.
  *   Bulk size depends on reduce dimension:
- *     REDUCE_SCALAR: Bulk = Ht×Wt tiles → 1 output per batch
- *     REDUCE_ROW:    Bulk = Wt tiles    → 1 output per row
- *     REDUCE_COL:    Bulk = Ht×chunk    → chunk outputs (chunk = DEST_AUTO_LIMIT)
+ *     ReduceDim::REDUCE_SCALAR: Bulk = Ht×Wt tiles → 1 output per batch
+ *     ReduceDim::REDUCE_ROW:    Bulk = Wt tiles    → 1 output per row
+ *     ReduceDim::REDUCE_COL:    Bulk = Ht×chunk    → chunk outputs (chunk = DEST_AUTO_LIMIT)
  *
  * - WaitUpfrontNoPop: Wait for all tiles upfront, don't pop (persistent, for tile reuse).
- *   For REDUCE_COL tiles are indexed in standard row-major order (batch_offset + Ht*stride + Wt).
+ *   For ReduceDim::REDUCE_COL tiles are indexed in standard row-major order (batch_offset + Ht*stride + Wt).
  *
  * - NoWaitNoPop: Caller manages wait/pop externally (preloaded, tiles already in CB).
- *   For REDUCE_COL tiles are accessed in row-major order, same as WaitUpfrontNoPop.
+ *   For ReduceDim::REDUCE_COL tiles are accessed in row-major order, same as WaitUpfrontNoPop.
  */
 enum class ReduceInputPolicy { WaitAndPopPerTile, BulkWaitBulkPop, WaitUpfrontNoPop, NoWaitNoPop };
 
@@ -130,9 +130,9 @@ struct ReduceInputMemoryLayout {
  *
  * Specifies the dimensions of the input tile block to be reduced.
  * The output size depends on the reduction dimension:
- * - REDUCE_ROW: output has (rows × batches) tiles
- * - REDUCE_COL: output has (cols × batches) tiles
- * - REDUCE_SCALAR: output has (batches) tiles
+ * - ReduceDim::REDUCE_ROW: output has (rows × batches) tiles
+ * - ReduceDim::REDUCE_COL: output has (cols × batches) tiles
+ * - ReduceDim::REDUCE_SCALAR: output has (batches) tiles
  */
 struct ReduceInputBlockShape {
     uint32_t rows;
@@ -173,11 +173,11 @@ struct AccumulationConfig {
  * Usage:
  *   const auto cfg = AccumulationConfig::with_cb(cb_accum);
  *   for (uint32_t i = 0; i < num_blocks; ++i) {
- *       reduce<SUM, REDUCE_ROW>(..., Accumulate(cfg, i));
+ *       reduce<SUM, ReduceDim::REDUCE_ROW>(..., Accumulate(cfg, i));
  *   }
  *
  * Or with factory method:
- *   reduce<SUM, REDUCE_ROW>(..., Accumulate::at(cb_accum, iteration));
+ *   reduce<SUM, ReduceDim::REDUCE_ROW>(..., Accumulate::at(cb_accum, iteration));
  */
 struct Accumulate {
     AccumulationConfig config;
@@ -261,9 +261,9 @@ struct NoOp {
  * @brief Unified reduce function handling all reduction patterns
  *
  * This single function handles:
- * - Row reduction (REDUCE_ROW): Reduces W dimension, outputs Ht tiles per batch
- * - Column reduction (REDUCE_COL): Reduces H dimension, outputs Wt tiles per batch
- * - Scalar reduction (REDUCE_SCALAR): Reduces both H and W, outputs 1 tile per batch
+ * - Row reduction (ReduceDim::REDUCE_ROW): Reduces W dimension, outputs Ht tiles per batch
+ * - Column reduction (ReduceDim::REDUCE_COL): Reduces H dimension, outputs Wt tiles per batch
+ * - Scalar reduction (ReduceDim::REDUCE_SCALAR): Reduces both H and W, outputs 1 tile per batch
  *
  * IMPORTANT - HARDWARE INITIALIZATION REQUIREMENT:
  * Before calling this function, you MUST initialize the compute kernel hardware by
@@ -280,12 +280,13 @@ struct NoOp {
  *
  * POST-REDUCE OPERATIONS:
  * - post_reduce_op callback receives dst_idx parameter indicating which DEST register to operate on
- * - REDUCE_ROW: Called once per row with dst_idx=0 (single output in DST[0])
- * - REDUCE_COL: Called once per column in current chunk with dst_idx in [0, current_chunk)
- * - REDUCE_SCALAR: Called once per batch with dst_idx pointing at the single accumulated DST register
+ * - ReduceDim::REDUCE_ROW: Called once per row with dst_idx=0 (single output in DST[0])
+ * - ReduceDim::REDUCE_COL: Called once per column in current chunk with dst_idx in [0, current_chunk)
+ * - ReduceDim::REDUCE_SCALAR: Called once per batch with dst_idx pointing at the single accumulated DST register
  *
  * @tparam reduce_type The type of reduce operation (SUM, AVG, MAX) - required explicit parameter
- * @tparam reduce_dim The dimension to reduce (REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR) - required explicit parameter
+ * @tparam reduce_dim The dimension to reduce (ReduceDim::REDUCE_ROW, ReduceDim::REDUCE_COL, ReduceDim::REDUCE_SCALAR) -
+ * required explicit parameter
  * @tparam input_policy Input handling policy (default: WaitAndPopPerTile - streaming mode)
  * @tparam reconfig_mode Data format reconfiguration mode (default: INPUT_AND_OUTPUT)
  *
@@ -301,18 +302,18 @@ struct NoOp {
  * @param post_reduce_op Callback after each reduction (default: NoOp)
  *
  * @example
- *   // Reduce entire HxW grid to single tile (REDUCE_SCALAR)
- *   compute_kernel_lib::reduce<SUM, REDUCE_SCALAR>(cb_in, cb_scaler, cb_out,
+ *   // Reduce entire HxW grid to single tile (ReduceDim::REDUCE_SCALAR)
+ *   compute_kernel_lib::reduce<SUM, ReduceDim::REDUCE_SCALAR>(cb_in, cb_scaler, cb_out,
  *       compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt, NC));
  *
  * @example
  *   // Reduce each row (W dimension) - output has Ht tiles per batch
- *   compute_kernel_lib::reduce<SUM, REDUCE_ROW>(cb_in, cb_scaler, cb_out,
+ *   compute_kernel_lib::reduce<SUM, ReduceDim::REDUCE_ROW>(cb_in, cb_scaler, cb_out,
  *       compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt, NC));
  *
  * @example
  *   // Reduce each column (H dimension) - output has Wt tiles per batch
- *   compute_kernel_lib::reduce<SUM, REDUCE_COL>(cb_in, cb_scaler, cb_out,
+ *   compute_kernel_lib::reduce<SUM, ReduceDim::REDUCE_COL>(cb_in, cb_scaler, cb_out,
  *       compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt, NC));
  *
  * @example
@@ -323,26 +324,26 @@ struct NoOp {
  * @example
  *   // NoWaitNoPop policy: caller manages wait/pop externally
  *   // Use cases: (1) custom stride between rows, (2) sharded CB mapped to tensor with data reuse
- *   compute_kernel_lib::reduce<SUM, REDUCE_ROW, compute_kernel_lib::ReduceInputPolicy::NoWaitNoPop>(
+ *   compute_kernel_lib::reduce<SUM, ReduceDim::REDUCE_ROW, compute_kernel_lib::ReduceInputPolicy::NoWaitNoPop>(
  *       cb_in, cb_scaler, cb_out, compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt, NC),
  *       compute_kernel_lib::ReduceInputMemoryLayout::with_row_stride(input_stride));
  *
  * @example
  *   // WaitUpfrontNoPop policy: tiles persist for reuse (ideal for softmax pattern)
  *   // Library waits for tiles internally, but does NOT pop - tiles remain for subsequent ops
- *   compute_kernel_lib::reduce<MAX, REDUCE_ROW, compute_kernel_lib::ReduceInputPolicy::WaitUpfrontNoPop>(
+ *   compute_kernel_lib::reduce<MAX, ReduceDim::REDUCE_ROW, compute_kernel_lib::ReduceInputPolicy::WaitUpfrontNoPop>(
  *       cb_values, cb_scaler, cb_max, compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt));
  *   // cb_values tiles still available for sub_exp_block_bcast_cols_inplace()
  *
  * @example
  *   // BulkWaitBulkPop policy (bulk wait/pop - optimal for performance)
  *   // Library waits for all Wt tiles per row, processes them with indexed access, then pops all Wt tiles
- *   compute_kernel_lib::reduce<SUM, REDUCE_ROW, compute_kernel_lib::ReduceInputPolicy::BulkWaitBulkPop>(
+ *   compute_kernel_lib::reduce<SUM, ReduceDim::REDUCE_ROW, compute_kernel_lib::ReduceInputPolicy::BulkWaitBulkPop>(
  *       cb_in, cb_scaler, cb_out, compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt, NC));
  *
  * @example
  *   // Post-reduce operation: softmax pattern with recip_tile after SUM reduce
- *   compute_kernel_lib::reduce<SUM, REDUCE_ROW, compute_kernel_lib::ReduceInputPolicy::NoWaitNoPop>(
+ *   compute_kernel_lib::reduce<SUM, ReduceDim::REDUCE_ROW, compute_kernel_lib::ReduceInputPolicy::NoWaitNoPop>(
  *       cb_exps, cb_scaler, cb_out, compute_kernel_lib::ReduceInputBlockShape::row(Wt),
  *       compute_kernel_lib::ReduceInputMemoryLayout::contiguous(),
  *       NoAccumulation{},
@@ -352,9 +353,9 @@ struct NoOp {
  *       });
  *
  * @example
- *   // REDUCE_COL with post_reduce_op: apply recip_tile to each column result
+ *   // ReduceDim::REDUCE_COL with post_reduce_op: apply recip_tile to each column result
  *   // dst_idx indicates which DEST register contains the column result (0 to current_chunk-1)
- *   compute_kernel_lib::reduce<SUM, REDUCE_COL>(
+ *   compute_kernel_lib::reduce<SUM, ReduceDim::REDUCE_COL>(
  *       cb_in, cb_scaler, cb_out,
  *       compute_kernel_lib::ReduceInputBlockShape::of(Ht, Wt),
  *       {},

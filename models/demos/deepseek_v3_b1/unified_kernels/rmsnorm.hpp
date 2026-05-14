@@ -137,7 +137,7 @@ struct RMSNorm {
                 mul_reduce_scalar_uninit();
             }
             {
-                add_rsqrt_tile<CTArgs::rsqrt_fast_approx, VectorMode::RC_custom, 1>(0, args.epsilon);
+                add_rsqrt_tile<CTArgs::rsqrt_fast_approx, static_cast<int>(VectorMode::RC_custom), 1>(0, args.epsilon);
             }
             {
                 // Multiply input by 1/RMS
@@ -148,9 +148,10 @@ struct RMSNorm {
                 // Multiply by the weight
                 cb_reserve_back(CTArgs::output_cb, num_tiles);
                 if constexpr (CTArgs::do_gamma) {
-                    binary_dest_reuse_tiles_init<ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(CTArgs::gamma_cb);
+                    binary_dest_reuse_tiles_init<EltwiseBinaryType::ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(
+                        CTArgs::gamma_cb);
                     for (uint32_t i = 0; i < num_tiles; i++) {
-                        binary_dest_reuse_tiles<ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(
+                        binary_dest_reuse_tiles<EltwiseBinaryType::ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(
                             CTArgs::gamma_cb, i, i);
                     }
                 }

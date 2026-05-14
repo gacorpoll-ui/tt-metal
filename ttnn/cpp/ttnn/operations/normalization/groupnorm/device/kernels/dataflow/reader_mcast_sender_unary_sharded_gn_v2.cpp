@@ -168,7 +168,7 @@ void kernel_main() {
                 // reserved tile other than this core's own slot.
                 // The producer of cb_ex_partial (compute/groupnorm_sharded_v2.cpp)
                 // pushes a tile produced by `reduce<PoolType::SUM, ReduceDim::REDUCE_SCALAR>`,
-                // and the LLK packer for REDUCE_SCALAR is documented to write the
+                // and the LLK packer for ReduceDim::REDUCE_SCALAR is documented to write the
                 // scalar result at face-0 [0, 0] and explicitly clear every other
                 // datum in the tile via its edge masks.
                 //
