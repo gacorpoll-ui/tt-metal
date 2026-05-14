@@ -2185,8 +2185,10 @@ bool process_cmd(
             // 4));
             WAYPOINT("!CMD");
             ASSERT(0);
+            return done;
     }
 
+    get_telemetry_ptr<PrefetchTelemetry, prefetch_telemetry_base>()->command_count++;
     return done;
 }
 
