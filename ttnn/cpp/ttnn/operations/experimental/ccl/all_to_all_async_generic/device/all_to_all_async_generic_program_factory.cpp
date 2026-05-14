@@ -5,11 +5,12 @@
 #include "all_to_all_async_generic_program_factory.hpp"
 #include "ttnn/operations/ccl/ccl_common.hpp"
 #include "ttnn/global_semaphore.hpp"
+#include <tt-metalium/buffer.hpp>
 #include <tt-metalium/work_split.hpp>
 #include <tt-metalium/host_api.hpp>
+#include <tt-metalium/program_descriptors.hpp>
 #include <tt-metalium/tensor_accessor_args.hpp>
 #include <tt-metalium/experimental/fabric/fabric.hpp>
-#include <unordered_map>
 
 namespace ttnn::experimental::prim {
 
@@ -34,48 +35,37 @@ ttnn::Shape get_tiled_shape(const ttnn::Tensor& input_tensor) {
 }
 }  // namespace
 
-AllToAllAsyncGenericProgram::cached_mesh_workload_t AllToAllAsyncGenericProgram::create_mesh_workload(
+AllToAllAsyncGenericProgram::Resources AllToAllAsyncGenericProgram::prepare_resources(
     const AllToAllAsyncGenericParams& operation_attributes,
-    const ttnn::MeshCoordinateRangeSet& tensor_coords,
     const AllToAllAsyncGenericInputs& tensor_args,
-    Tensor& tensor_return_value) {
-    tt::tt_metal::distributed::MeshWorkload workload;
-    std::unordered_map<ttnn::MeshCoordinateRange, shared_variables_t> shared_variables;
-
+    Tensor& /*tensor_return_value*/) {
     auto* mesh_device = tensor_args.input_tensor.device();
     auto sub_device_id = operation_attributes.sub_device_id;
     auto subdevice = sub_device_id.has_value() ? *sub_device_id : mesh_device->get_sub_device_ids().at(0);
     const auto available_cores = mesh_device->worker_cores(tt::tt_metal::HalProgrammableCoreType::TENSIX, subdevice);
-    auto subdevices = {subdevice};
+    ttnn::SmallVector<tt::tt_metal::SubDeviceId> subdevices = {subdevice};
 
     auto init_barrier_semaphore = ttnn::global_semaphore::create_global_semaphore(mesh_device, available_cores, 0);
     auto final_barrier_semaphore = ttnn::global_semaphore::create_global_semaphore(mesh_device, available_cores, 0);
     tt::tt_metal::distributed::Synchronize(mesh_device, std::nullopt, subdevices);
 
-    for (const auto& coord : tensor_coords.coords()) {
-        auto cached_program = create_at(
-            operation_attributes,
-            coord,
-            tensor_args,
-            tensor_return_value,
-            init_barrier_semaphore,
-            final_barrier_semaphore);
-        workload.add_program(ttnn::MeshCoordinateRange(coord), std::move(cached_program.program));
-        shared_variables.emplace(ttnn::MeshCoordinateRange(coord), std::move(cached_program.shared_variables));
-    }
-
-    return cached_mesh_workload_t(std::move(workload), std::move(shared_variables));
+    Resources resources;
+    resources.init_barrier_semaphore = std::move(init_barrier_semaphore);
+    resources.final_barrier_semaphore = std::move(final_barrier_semaphore);
+    return resources;
 }
 
-ttnn::device_operation::CachedProgram<AllToAllAsyncGenericProgram::shared_variables_t>
-AllToAllAsyncGenericProgram::create_at(
+tt::tt_metal::ProgramDescriptor AllToAllAsyncGenericProgram::create_descriptor(
     const AllToAllAsyncGenericParams& operation_attributes,
-    const ttnn::MeshCoordinate& mesh_coordinate,
     const AllToAllAsyncGenericInputs& tensor_args,
     Tensor& tensor_return_value,
-    const tt::tt_metal::GlobalSemaphore& init_barrier_semaphore,
-    const tt::tt_metal::GlobalSemaphore& final_barrier_semaphore) {
-    log_debug(tt::LogOp, "DEBUG: create_at is called");
+    Resources& workload_resources,
+    const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate) {
+    TT_FATAL(
+        mesh_dispatch_coordinate.has_value(),
+        "AllToAllAsyncGenericProgram::create_descriptor requires a mesh dispatch coordinate");
+    const ttnn::MeshCoordinate mesh_coordinate = mesh_dispatch_coordinate.value();
+    log_debug(tt::LogOp, "DEBUG: create_descriptor is called");
 
     uint32_t device_index = ttnn::ccl::get_linearized_index_from_physical_coord(
         tensor_args.input_tensor, mesh_coordinate, operation_attributes.cluster_axis);
@@ -91,7 +81,7 @@ AllToAllAsyncGenericProgram::create_at(
 
     TT_FATAL(device_index < operation_attributes.num_devices, "DEBUG: device_index: {}", device_index);
 
-    tt::tt_metal::Program program{};
+    tt::tt_metal::ProgramDescriptor desc;
     MeshDevice* device = tensor_args.input_tensor.device();
 
     std::vector<Tensor> input_tensors = {tensor_args.input_tensor};
@@ -113,21 +103,29 @@ AllToAllAsyncGenericProgram::create_at(
     const uint32_t cb_size = (packet_size / page_size) * page_size * number_pages_per_packet;  // round_down
     const tt::DataFormat data_format = tt::tt_metal::datatype_to_dataformat_converter(tensor_args.input_tensor.dtype());
 
-    auto cb_src0_config = tt::tt_metal::CircularBufferConfig(cb_size, {{tt::CB::c_in0, data_format}})
-                              .set_page_size(tt::CB::c_in0, number_pages_per_packet * page_size);
-
-    CreateCircularBuffer(program, sender_worker_core_range, cb_src0_config);
+    desc.cbs.push_back(tt::tt_metal::CBDescriptor{
+        .total_size = cb_size,
+        .core_ranges = sender_worker_core_range,
+        .format_descriptors = {{tt::tt_metal::CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(tt::CB::c_in0),
+            .data_format = data_format,
+            .page_size = number_pages_per_packet * page_size,
+        }}},
+    });
 
     // Create CB for fabric
     const auto reserved_packet_header_CB_index = tt::CB::c_in4;
     auto packet_header_size_bytes = tt::tt_fabric::get_tt_fabric_packet_header_size_bytes();
     const uint32_t num_packet_headers_storable = 4;
-    tt::tt_metal::CircularBufferConfig cb_reserved_packet_header_config =
-        tt::tt_metal::CircularBufferConfig(
-            num_packet_headers_storable * packet_header_size_bytes * 2,
-            {{reserved_packet_header_CB_index, tt::DataFormat::RawUInt32}})
-            .set_page_size(reserved_packet_header_CB_index, packet_header_size_bytes);
-    CreateCircularBuffer(program, sender_worker_core_range, cb_reserved_packet_header_config);
+    desc.cbs.push_back(tt::tt_metal::CBDescriptor{
+        .total_size = num_packet_headers_storable * packet_header_size_bytes * 2,
+        .core_ranges = sender_worker_core_range,
+        .format_descriptors = {{tt::tt_metal::CBFormatDescriptor{
+            .buffer_index = static_cast<uint8_t>(reserved_packet_header_CB_index),
+            .data_format = tt::DataFormat::RawUInt32,
+            .page_size = packet_header_size_bytes,
+        }}},
+    });
 
     const auto input_shape = get_tiled_shape(tensor_args.input_tensor);
     uint32_t src_in_dims = 1;
@@ -161,8 +159,7 @@ AllToAllAsyncGenericProgram::create_at(
     const uint32_t num_cores_per_blocks = operation_attributes.num_links;
     const uint32_t blocks_per_core = num_blocks / num_cores_per_blocks;
 
-    auto sender_reader_kernel_config = tt::tt_metal::ReaderDataMovementConfig{};
-    sender_reader_kernel_config.compile_args = {
+    std::vector<uint32_t> sender_reader_compile_args = {
         tt::CB::c_in0,                              // cb0_id
         page_size,                                  // tensor0_page_size
         device_index,                               // device_index
@@ -176,15 +173,16 @@ AllToAllAsyncGenericProgram::create_at(
         dst_in_dims                                 // dst_inner_dims_size
     };
 
-    tt::tt_metal::TensorAccessorArgs(tensor_args.input_tensor.buffer())
-        .append_to(sender_reader_kernel_config.compile_args);
+    tt::tt_metal::TensorAccessorArgs(tensor_args.input_tensor.buffer()).append_to(sender_reader_compile_args);
 
-    auto sender_reader_kernel_id = tt::tt_metal::CreateKernel(
-        program,
+    tt::tt_metal::KernelDescriptor sender_reader_kernel_desc;
+    sender_reader_kernel_desc.kernel_source =
         "ttnn/cpp/ttnn/operations/experimental/ccl/all_to_all_async_generic/device/kernels/"
-        "all_to_all_sender_reader.cpp",
-        sender_worker_core_range,
-        sender_reader_kernel_config);
+        "all_to_all_sender_reader.cpp";
+    sender_reader_kernel_desc.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
+    sender_reader_kernel_desc.core_ranges = sender_worker_core_range;
+    sender_reader_kernel_desc.compile_time_args = std::move(sender_reader_compile_args);
+    sender_reader_kernel_desc.config = tt::tt_metal::ReaderConfigDescriptor{};
 
     std::vector<int32_t> device_offsets[2];
     std::vector<std::vector<int32_t>> block_starts[2], block_ends[2];
@@ -233,9 +231,7 @@ AllToAllAsyncGenericProgram::create_at(
         }
     }
 
-    auto sender_writer_kernel_config = tt::tt_metal::WriterDataMovementConfig{};
-    sender_writer_kernel_config.defines.emplace("TOPOLOGY", topology_type);
-    sender_writer_kernel_config.compile_args = {
+    std::vector<uint32_t> sender_writer_compile_args = {
         tt::CB::c_in0,                              // cb0_id
         device_index,                               // device_index
         operation_attributes.num_devices,           // num_devices
@@ -249,14 +245,24 @@ AllToAllAsyncGenericProgram::create_at(
         (concat_num_half_tiles * device_index) / 2  // full_block_offset
     };
 
-    tt::tt_metal::TensorAccessorArgs(tensor_return_value.buffer()).append_to(sender_writer_kernel_config.compile_args);
+    tt::tt_metal::TensorAccessorArgs(tensor_return_value.buffer()).append_to(sender_writer_compile_args);
 
-    auto sender_writer_kernel_id = tt::tt_metal::CreateKernel(
-        program,
+    tt::tt_metal::KernelDescriptor sender_writer_kernel_desc;
+    sender_writer_kernel_desc.kernel_source =
         "ttnn/cpp/ttnn/operations/experimental/ccl/all_to_all_async_generic/device/kernels/"
-        "all_to_all_sender_writer.cpp",
-        sender_worker_core_range,
-        sender_writer_kernel_config);
+        "all_to_all_sender_writer.cpp";
+    sender_writer_kernel_desc.source_type = tt::tt_metal::KernelDescriptor::SourceType::FILE_PATH;
+    sender_writer_kernel_desc.core_ranges = sender_worker_core_range;
+    sender_writer_kernel_desc.compile_time_args = std::move(sender_writer_compile_args);
+    sender_writer_kernel_desc.defines = {{"TOPOLOGY", topology_type}};
+    sender_writer_kernel_desc.config = tt::tt_metal::WriterConfigDescriptor{};
+
+    // Push kernel descriptors NOW (before per-core RT-args loop) so we can refer to
+    // them by stable index for emplace_runtime_args() and the fabric helper.
+    desc.kernels.push_back(std::move(sender_reader_kernel_desc));
+    desc.kernels.push_back(std::move(sender_writer_kernel_desc));
+    tt::tt_metal::KernelHandle sender_reader_kernel_id = 0;
+    tt::tt_metal::KernelHandle sender_writer_kernel_id = 1;
 
     CoreRange sender_box = sender_worker_core_range.bounding_box();
     // Swap start and end coord
@@ -270,24 +276,32 @@ AllToAllAsyncGenericProgram::create_at(
 
     for (uint32_t core_id = 0; core_id < sender_worker_cores.size(); ++core_id) {
         const auto& core = sender_worker_cores[core_id];
-        std::vector<uint32_t> sender_reader_rt_args = {
-            tensor_args.input_tensor.buffer()->address(),
-            device_offsets[core_id % num_blocks_devices].size(),
-        };
+        // Reader RT args: index 0 is the input tensor buffer base address; push as
+        // Buffer* so the framework records a BufferBinding for the cache-hit fast
+        // path.  All other args remain plain uint32_t.
+        tt::tt_metal::KernelDescriptor::RTArgList sender_reader_rt_args;
+        sender_reader_rt_args.push_back(tensor_args.input_tensor.buffer());
+        sender_reader_rt_args.push_back(static_cast<uint32_t>(device_offsets[core_id % num_blocks_devices].size()));
         for (uint32_t i = 0; i < device_offsets[core_id % num_blocks_devices].size(); ++i) {
-            sender_reader_rt_args.push_back(device_offsets[core_id % num_blocks_devices][i]);
+            sender_reader_rt_args.push_back(static_cast<uint32_t>(device_offsets[core_id % num_blocks_devices][i]));
             sender_reader_rt_args.push_back(
-                block_starts[core_id % num_blocks_devices][core_id / num_blocks_devices][i]);
-            sender_reader_rt_args.push_back(block_ends[core_id % num_blocks_devices][core_id / num_blocks_devices][i]);
+                static_cast<uint32_t>(block_starts[core_id % num_blocks_devices][core_id / num_blocks_devices][i]));
+            sender_reader_rt_args.push_back(
+                static_cast<uint32_t>(block_ends[core_id % num_blocks_devices][core_id / num_blocks_devices][i]));
         }
-        tt::tt_metal::SetRuntimeArgs(program, sender_reader_kernel_id, {core}, sender_reader_rt_args);
+        desc.kernels[sender_reader_kernel_id].emplace_runtime_args(core, sender_reader_rt_args);
 
+        // Writer RT args: the fabric helper appends into a plain std::vector<uint32_t>;
+        // build there first then copy into the RTArgList, upgrading index 0 (output
+        // buffer base addr) to a Buffer* BufferBinding.  init/final barrier sema
+        // absolute addresses live at indices 1 and 2; the framework copies these via
+        // apply_descriptor_runtime_args on every dispatch.
         std::vector<uint32_t> sender_writer_rt_args = {
-            tensor_return_value.buffer()->address(),
-            init_barrier_semaphore.address(),
-            final_barrier_semaphore.address(),
-            core_id % num_blocks_devices,
-            core_id / num_blocks_devices,
+            tensor_return_value.buffer()->address(),                // tensor_address0 (placeholder)
+            workload_resources.init_barrier_semaphore->address(),   // init_barrier_semaphore
+            workload_resources.final_barrier_semaphore->address(),  // final_barrier_semaphore
+            static_cast<uint32_t>(core_id % num_blocks_devices),
+            static_cast<uint32_t>(core_id / num_blocks_devices),
             mcast_dest_noc_start_x,
             mcast_dest_noc_start_y,
             mcast_dest_noc_end_x,
@@ -295,14 +309,15 @@ AllToAllAsyncGenericProgram::create_at(
             mcast_size,
             drain_sync_core.x,
             drain_sync_core.y,
-            device_offsets[core_id % num_blocks_devices].size(),
+            static_cast<uint32_t>(device_offsets[core_id % num_blocks_devices].size()),
         };
 
         for (uint32_t i = 0; i < device_offsets[core_id % num_blocks_devices].size(); ++i) {
-            sender_writer_rt_args.push_back(device_offsets[core_id % num_blocks_devices][i]);
+            sender_writer_rt_args.push_back(static_cast<uint32_t>(device_offsets[core_id % num_blocks_devices][i]));
             sender_writer_rt_args.push_back(
-                block_starts[core_id % num_blocks_devices][core_id / num_blocks_devices][i]);
-            sender_writer_rt_args.push_back(block_ends[core_id % num_blocks_devices][core_id / num_blocks_devices][i]);
+                static_cast<uint32_t>(block_starts[core_id % num_blocks_devices][core_id / num_blocks_devices][i]));
+            sender_writer_rt_args.push_back(
+                static_cast<uint32_t>(block_ends[core_id % num_blocks_devices][core_id / num_blocks_devices][i]));
         }
         bool with_forward =
             (num_senders_per_link == 1 || (core_id % num_blocks_devices == 0)) && forward_coord.has_value();
@@ -313,12 +328,12 @@ AllToAllAsyncGenericProgram::create_at(
         if (with_forward) {
             const auto sender_device_fabric_node_id = device->get_fabric_node_id(mesh_coordinate);
             const auto forward_device_fabric_node_id = device->get_fabric_node_id(forward_coord.value());
-            tt::tt_fabric::append_fabric_connection_rt_args(
+            tt::tt_fabric::append_fabric_connection_rt_args<tt::tt_metal::ProgramDescriptor>(
                 sender_device_fabric_node_id,
                 forward_device_fabric_node_id,
                 core_id / num_senders_per_link,
-                program,
-                {core},
+                desc,
+                core,
                 sender_writer_rt_args);
         }
 
@@ -326,51 +341,27 @@ AllToAllAsyncGenericProgram::create_at(
         if (with_backward) {
             const auto sender_device_fabric_node_id = device->get_fabric_node_id(mesh_coordinate);
             const auto backward_device_fabric_node_id = device->get_fabric_node_id(backward_coord.value());
-            tt::tt_fabric::append_fabric_connection_rt_args(
+            tt::tt_fabric::append_fabric_connection_rt_args<tt::tt_metal::ProgramDescriptor>(
                 sender_device_fabric_node_id,
                 backward_device_fabric_node_id,
                 core_id / num_senders_per_link,
-                program,
-                {core},
+                desc,
+                core,
                 sender_writer_rt_args);
         }
-        tt::tt_metal::SetRuntimeArgs(program, sender_writer_kernel_id, {core}, sender_writer_rt_args);
-    }
 
-    return {
-        std::move(program),
-        {.sender_reader_kernel_id = sender_reader_kernel_id,
-         .sender_writer_kernel_id = sender_writer_kernel_id,
-         .sender_worker_cores = sender_worker_cores,
-         .init_barrier_semaphore = init_barrier_semaphore,
-         .final_barrier_semaphore = final_barrier_semaphore}};
-}
-
-void AllToAllAsyncGenericProgram::override_runtime_arguments(
-    cached_mesh_workload_t& cached_workload,
-    const AllToAllAsyncGenericParams& /*operation_attributes*/,
-    const AllToAllAsyncGenericInputs& tensor_args,
-    Tensor& tensor_return_value) {
-    for (auto& [coordinate_range, program] : cached_workload.workload.get_programs()) {
-        const auto& coord = coordinate_range.start_coord();
-        TT_FATAL(
-            coord == coordinate_range.end_coord(),
-            "Expected single coordinate per program but got range of {} to {}",
-            coord,
-            coordinate_range.end_coord());
-        auto& shared_variables = cached_workload.shared_variables.at(coordinate_range);
-
-        auto& sender_reader_runtime_args = GetRuntimeArgs(program, shared_variables.sender_reader_kernel_id);
-        auto& sender_writer_runtime_args = GetRuntimeArgs(program, shared_variables.sender_writer_kernel_id);
-        for (const auto& core : shared_variables.sender_worker_cores) {
-            auto& worker_sender_reader_runtime_args = sender_reader_runtime_args[core.x][core.y];
-            auto& worker_sender_writer_runtime_args = sender_writer_runtime_args[core.x][core.y];
-            worker_sender_reader_runtime_args[0] = tensor_args.input_tensor.buffer()->address();
-            worker_sender_writer_runtime_args[0] = tensor_return_value.buffer()->address();
-            worker_sender_writer_runtime_args[1] = shared_variables.init_barrier_semaphore.address();
-            worker_sender_writer_runtime_args[2] = shared_variables.final_barrier_semaphore.address();
+        // Promote writer RT args to the descriptor.  Index 0 (output buffer base
+        // address) becomes a Buffer* BufferBinding; the rest stay plain uint32_t.
+        tt::tt_metal::KernelDescriptor::RTArgList sender_writer_rt_args_builder;
+        sender_writer_rt_args_builder.reserve(sender_writer_rt_args.size());
+        sender_writer_rt_args_builder.push_back(tensor_return_value.buffer());
+        for (size_t i = 1; i < sender_writer_rt_args.size(); ++i) {
+            sender_writer_rt_args_builder.push_back(sender_writer_rt_args[i]);
         }
+        desc.kernels[sender_writer_kernel_id].emplace_runtime_args(core, sender_writer_rt_args_builder);
     }
+
+    return desc;
 }
 
 }  // namespace ttnn::experimental::prim

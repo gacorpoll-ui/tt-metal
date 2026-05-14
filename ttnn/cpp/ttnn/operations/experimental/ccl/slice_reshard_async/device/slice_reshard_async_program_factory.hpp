@@ -6,40 +6,22 @@
 
 #include "ttnn/operations/experimental/ccl/slice_reshard_async/device/slice_reshard_async_device_operation_types.hpp"
 
-#include "ttnn/device_operation.hpp"
+#include <tt-metalium/program_descriptors.hpp>
+
+#include <optional>
 
 namespace ttnn::experimental::prim {
 
-struct SliceReshardAsyncSharedVariables {
-    uint32_t num_directions = 0;
-    std::vector<tt::tt_metal::KernelHandle> reader_kernel_ids;
-    std::vector<tt::tt_metal::KernelHandle> writer_kernel_ids;
-};
-
 struct SliceReshardAsyncProgramFactory {
-    using shared_variables_t = SliceReshardAsyncSharedVariables;
-    using cached_mesh_workload_t = ttnn::device_operation::AdaptedCachedMeshWorkload<shared_variables_t>;
-
-    static cached_mesh_workload_t create_mesh_workload(
-        const SliceReshardAsyncParams& args,
-        const ttnn::MeshCoordinateRangeSet& tensor_coords,
-        const Tensor& tensor_args,
-        Tensor& tensor_return_value);
-
-    static void override_runtime_arguments(
-        cached_mesh_workload_t& cached_workload,
+    // Per-coord program build.  Both GlobalSemaphores live on SliceReshardAsyncParams
+    // (allocated by the caller) so this factory needs no prepare_resources hook —
+    // the semaphores are passed through and their addresses are written into runtime
+    // args every dispatch via the normal apply_descriptor_runtime_args path.
+    static tt::tt_metal::ProgramDescriptor create_descriptor(
         const SliceReshardAsyncParams& args,
         const Tensor& tensor_args,
-        Tensor& tensor_return_value);
-
-private:
-    using cached_program_t = ttnn::device_operation::CachedProgram<shared_variables_t>;
-
-    static cached_program_t create_at(
-        const SliceReshardAsyncParams& args,
-        const ttnn::MeshCoordinate& mesh_coord,
-        const Tensor& tensor_args,
-        Tensor& tensor_return_value);
+        Tensor& tensor_return_value,
+        const std::optional<ttnn::MeshCoordinate>& mesh_dispatch_coordinate);
 };
 
 }  // namespace ttnn::experimental::prim
