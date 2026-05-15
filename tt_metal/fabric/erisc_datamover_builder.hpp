@@ -268,6 +268,7 @@ struct FabricEriscDatamoverConfig {
     // Global
     static constexpr std::size_t eth_channel_sync_size = 16;
     std::size_t handshake_addr = 0;
+    std::size_t preping_addr = 0;  // FIX CZ (#42429): 16B pre-ping rendezvous slot
     std::size_t edm_channel_ack_addr = 0;
     std::size_t termination_signal_address = 0;  // pad extra bytes to match old EDM so handshake logic will still work
     std::size_t edm_local_sync_address = 0;
@@ -600,6 +601,7 @@ public:
     FabricNodeId peer_fabric_node_id = FabricNodeId(MeshId{0}, 0);
     bool is_inter_mesh = false;  // True if this data mover connects to a different mesh (inter-mesh router)
     size_t handshake_address = 0;
+    size_t preping_address = 0;  // FIX CZ (#42429): 16B pre-ping rendezvous slot
     size_t channel_buffer_size = 0;
 
     std::shared_ptr<tt::tt_fabric::ChannelConnectionWriterAdapter> receiver_channel_to_downstream_adapter;

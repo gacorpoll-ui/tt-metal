@@ -3663,6 +3663,68 @@ void kernel_main() {
     *edm_status_ptr = tt::tt_fabric::EDMStatus::HANDSHAKE_READY;
     asm volatile("nop");
 
+    // FIX CZ (#42429): Non-MMIO ERISC (receiver) sends a pre-ping over raw ETH DMA to its
+    // MMIO peer immediately after writing HANDSHAKE_READY. This signals the MMIO ERISC
+    // (sender) that the receiver has entered the handshake-ready state and is about to enter
+    // fabric_receiver_side_handshake. The MMIO ERISC spins on this signal (see below),
+    // ensuring it does not fire the handshake nonce until the receiver is ready.
+    // The pre-ping completely replaces the need for host polling (FIX CV) and the host-written
+    // gate (FIX CY) — host is removed from the critical path. FIX CY is kept in Phase 1 as
+    // a belt-and-suspenders safety net; it will be removed after CI validation.
+    if constexpr (!is_handshake_sender && enable_ethernet_handshake) {
+        // Flush TXQ if stale (guards against prior firmware crash leaving TXQ busy,
+        // same as the flush inside init_handshake_info which runs later).
+        if (eth_txq_is_busy()) {
+            eth_txq_reg_write(0, ETH_TXQ_CMD, ETH_TXQ_CMD_FLUSH);
+            eth_txq_reg_read(0, ETH_TXQ_CMD);  // ensure write is committed
+            while (eth_txq_is_busy()) { asm volatile("nop"); }
+        }
+        // Write the session nonce as the pre-ping magic value into local pre-ping slot.
+        // The nonce is unique per session so it won't collide with stale L1 state.
+        volatile tt_l1_ptr uint32_t* preping_src =
+            reinterpret_cast<volatile tt_l1_ptr uint32_t*>(preping_addr);
+        *preping_src = handshake_nonce;
+        // Send 16 bytes (1 word) from local preping_addr to peer's preping_addr.
+        // eth_send_packet word addresses = byte addr / 16.
+        const uint32_t src_word = preping_addr / 16;
+        const uint32_t dst_word = preping_addr / 16;  // same offset in peer's L1
+        WAYPOINT("PPSD");
+        internal_::eth_send_packet(0, src_word, dst_word, 1);
+    }
+
+    // FIX CZ (#42429): MMIO ERISC (sender) spins here until its non-MMIO peer writes the
+    // pre-ping (session_nonce) into this core's preping_addr slot via ETH DMA. This ensures
+    // the sender does not enter fabric_sender_side_handshake until the receiver is at
+    // HANDSHAKE_READY and ready to receive the nonce. Replaces host polling + host gate.
+    if constexpr (is_handshake_sender && enable_ethernet_handshake) {
+        // Zero the pre-ping slot so we don't accidentally see stale data from a prior run.
+        volatile tt_l1_ptr uint32_t* preping_dst =
+            reinterpret_cast<volatile tt_l1_ptr uint32_t*>(preping_addr);
+        *preping_dst = 0;
+        uint32_t watchdog_count = 0;
+        constexpr uint32_t kPrepingWatchdogIter = 100'000'000;
+        WAYPOINT("PPWT");
+        while (*preping_dst != handshake_nonce) {
+            router_invalidate_l1_cache<ENABLE_RISC_CPU_DATA_CACHE>();
+            // Termination check — WH two-path pattern (same as FIX CY and handshake loops)
+#ifndef ARCH_WORMHOLE
+            if (tt::tt_fabric::got_immediate_termination_signal<ENABLE_RISC_CPU_DATA_CACHE>(termination_signal_ptr)) {
+#else
+            if (*reinterpret_cast<volatile tt_l1_ptr uint32_t*>(termination_signal_ptr) ==
+                static_cast<uint32_t>(tt::tt_fabric::TerminationSignal::IMMEDIATELY_TERMINATE)) {
+#endif
+                WAYPOINT("PPXT");
+                *edm_status_ptr = tt::tt_fabric::EDMStatus::TERMINATED;
+                return;
+            }
+            if (++watchdog_count >= kPrepingWatchdogIter) {
+                WAYPOINT("PPST");  // Pre-Ping Spin Timeout — still waiting
+                watchdog_count = 0;
+            }
+        }
+        WAYPOINT("PPOK");
+    }
+
     // FIX CY (#42429): MMIO ERISCs spin here until the host writes HOST_GATE_OPEN,
     // which happens only after FIX CV Pass B confirms all non-MMIO ERISCs have
     // reached HANDSHAKE_READY.  This ensures MMIO ERISCs don't enter the ETH

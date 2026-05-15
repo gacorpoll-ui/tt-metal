@@ -316,6 +316,11 @@ FabricEriscDatamoverConfig::FabricEriscDatamoverConfig(Topology topology) : topo
     this->handshake_addr = next_l1_addr;
     next_l1_addr += eth_channel_sync_size;
 
+    // FIX CZ (#42429): 16B pre-ping rendezvous slot, 16-byte aligned (same as handshake).
+    // Both MMIO and non-MMIO ERISCs need the same address so the ETH DMA lands correctly.
+    this->preping_addr = next_l1_addr;
+    next_l1_addr += eth_channel_sync_size;
+
     // issue: https://github.com/tenstorrent/tt-metal/issues/29073. TODO: Re-enable after hang is resolved.
     // Ethernet txq IDs on WH are 0,1 and on BH are 0,1,2.
     if (is_fabric_two_erisc_enabled()) {
@@ -715,6 +720,7 @@ FabricEriscDatamoverBuilder::FabricEriscDatamoverBuilder(
     is_inter_mesh(local_fabric_node_id.mesh_id != peer_fabric_node_id.mesh_id),
     handshake_address(tt::round_up(
         tt::tt_metal::hal::get_erisc_l1_unreserved_base(), FabricEriscDatamoverConfig::eth_channel_sync_size)),
+    preping_address(handshake_address + FabricEriscDatamoverConfig::eth_channel_sync_size),
     channel_buffer_size(config.channel_buffer_size_bytes),
     local_sender_channels_connection_info_addr(config.sender_channels_worker_conn_info_base_address),
     termination_signal_ptr(config.termination_signal_address),
@@ -1213,6 +1219,9 @@ FabricEriscDatamoverBuilder::CompileTimeArgs FabricEriscDatamoverBuilder::get_co
     named_args["IS_INTERMESH_ROUTER"] = this->is_inter_mesh;
     named_args["IS_HANDSHAKE_SENDER"] = is_handshake_master;
     named_args["HANDSHAKE_ADDR"] = static_cast<uint32_t>(this->handshake_address);
+    // FIX CZ (#42429): Pre-ping rendezvous slot — emitted for all ERISCs (both MMIO and non-MMIO)
+    // so both sides of the ETH link agree on the same L1 offset.
+    named_args["PRE_PING_ADDR"] = static_cast<uint32_t>(this->preping_address);
     // FIX CT (#42429): Per-session nonce replaces MAGIC_HANDSHAKE_VALUE (0xAA) to prevent
     // stale in-flight ETH RX DMA from a crashed prior session causing false handshake completion.
     // Both sides of a link get the same nonce (deterministic from sorted node IDs + session).
