@@ -269,16 +269,18 @@ ALWI void pack_rows_uninit() { PACK((llk_pack_rows_uninit())); }
  *
  * Return value: None
  *
- * | Param Type | Name   | Description                                                                  | Type | Valid
- * Range | Required |
- * |------------|--------|-------------------------------------------------------------------------------|------------------------------------|-------------|----------|
- * | Function   | config | ReLU configuration (ReluConfig on Quasar; uint32_t or ReluType on WH/BH) | ReluConfig /
- * uint32_t / ReluType | Any         | True     |
+ * Quasar: pass ReluConfig. WH/BH: pass ReluType only; for a packed word (mode + threshold), call
+ * _llk_pack_relu_config_(uint32_t) inside PACK(( ... )) instead (see eltwise_copy kernel tests).
+ *
+ * | Param Type | Name   | Description                           | Type                  |
+ * Valid Range | Required |
+ * |------------|--------|---------------------------------------|-----------------------|-------------|----------|
+ * | Function   | config | ReLU configuration                    | ReluConfig / ReluType |
+ * Any         | True     |
  */
 #ifdef ARCH_QUASAR
 ALWI void pack_relu_config(const ReluConfig& config) { PACK((llk_pack_relu_config(config))); }
 #else
-ALWI void pack_relu_config(uint32_t config) { PACK((llk_pack_relu_config(config))); }
 ALWI void pack_relu_config(ReluType relu_type) { PACK((llk_pack_relu_config(relu_type))); }
 #endif
 
