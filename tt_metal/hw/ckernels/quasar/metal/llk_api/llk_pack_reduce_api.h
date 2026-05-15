@@ -12,15 +12,8 @@
 /**
  * @brief Configures PACKER0 edge mask programming to support reduce operations (Quasar native API).
  *
+ * @tparam untilize Unused on Quasar
  * @tparam reduce_dim The reduce op dimension, values = [REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR]
- */
-template <ReduceDim reduce_dim>
-inline void llk_pack_reduce_mask_config() {
-    _llk_pack_reduce_mask_config_<reduce_dim>();
-}
-
-/**
- * @brief WH/BH-style two-template-parameter form; untilize must be false on Quasar.
  */
 template <bool untilize, ReduceDim reduce_dim>
 inline void llk_pack_reduce_mask_config() {

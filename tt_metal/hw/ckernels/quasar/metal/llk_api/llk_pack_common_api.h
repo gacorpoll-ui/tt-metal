@@ -4,7 +4,6 @@
 
 #pragma once
 #include "ckernel.h"
-#include "ckernel_globals.h"
 #include "llk_outputs.h"
 #include "llk_pack_common.h"
 #include "api/dataflow/dataflow_buffer.h"
@@ -14,9 +13,9 @@
  *************************************************************************/
 
 /**
- * @brief Programs packer0 l1 info & math destination register format
+ * @brief Programs packer0 L1 information & math destination register format
  *
- * @param pack_output The output circular buffer
+ * @param pack_output The output DataFlow Buffer identifier
  */
 inline void llk_pack_hw_configure(const std::uint32_t pack_output) {
     const std::uint32_t output_id = get_output_id(pack_output);
