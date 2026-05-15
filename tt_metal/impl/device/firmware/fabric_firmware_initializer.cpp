@@ -3001,6 +3001,164 @@ void FabricFirmwareInitializer::compile_and_configure_fabric() {
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(kRRNM_CollectiveResetPauseMs));
 
+            // FIX CT (#42429): Relay-deassert dead non-MMIO channels BEFORE Phase C deasserts
+            // dead MMIO channels.  Breaks the ETH link-training chicken-and-egg deadlock.
+            //
+            // Root cause: FIX CA (teardown) write-only asserts non-MMIO channels but if FIX PG
+            // fires (MMIO heartbeat timeout) then FIX AY is skipped, leaving those non-MMIO
+            // channels PERMANENTLY IN ASSERT/RESET.  When FIX CS Phase C then deasserts the 24
+            // dead MMIO channels, each MMIO ERISC enters ROM and attempts ETH link training
+            // (waiting for its non-MMIO partner).  But those non-MMIO partners are still frozen
+            // in hardware reset — they cannot participate in ETH link training.  Both sides
+            // timeout → Phase D fails for all 24 channels → Step 2 sees "MMIO peer not
+            // recovered" → non-MMIO channels never get deasserted → the cycle repeats.
+            //
+            // Fix: At this point (Phase B just completed), dead MMIO channels are held in
+            // hardware assert/reset, and ALL working MMIO channels are still running base-UMD
+            // firmware and can serve as relay.  We relay-write-only-deassert each dead non-MMIO
+            // channel NOW (before Phase C releases dead MMIO channels).  Non-MMIO ERISCs then
+            // start ROM boot immediately.  Phase C deasserts dead MMIO channels a moment later.
+            // Both sides enter ETH link training simultaneously → link training succeeds →
+            // Phase D polls see 0x49706550 → Step 2 relays successfully.
+            //
+            // This is the same write-only relay mechanism as FIX AY (teardown) and Step 2 of
+            // FIX RR-NM: assert_risc_reset_at_core_write_only + fw_launch_addr_value write +
+            // deassert_risc_reset_at_core_write_only.  Routing through working MMIO channels
+            // is handled internally by UMD (dead MMIO channels are in reset and not routing).
+            {
+                // Collect all dead non-MMIO channels that need relay-deassert.
+                // Only devices in dead_relay_devices_ have dead non-MMIO channels we can reach.
+                uint32_t ct_ok = 0;
+                uint32_t ct_skip = 0;
+                uint32_t ct_fail = 0;
+
+                // Cache fw_launch_addr config for non-MMIO ERISCs (FIX CF pattern).
+                uint32_t fw_launch_addr_ct = 0;
+                uint32_t fw_launch_addr_value_ct = 0;
+                try {
+                    const auto aeth_idx_ct = hal_.get_programmable_core_type_index(
+                        HalProgrammableCoreType::ACTIVE_ETH);
+                    const auto& jit_cfg_ct = hal_.get_jit_build_config(aeth_idx_ct, 0, 0);
+                    fw_launch_addr_ct = jit_cfg_ct.fw_launch_addr;
+                    fw_launch_addr_value_ct = jit_cfg_ct.fw_launch_addr_value;
+                } catch (...) {
+                    // Non-fatal: proceed without fw_launch_addr write.
+                }
+
+                for (auto* dev : compiled_devices) {
+                    if (!dev) {
+                        continue;
+                    }
+                    const ChipId non_mmio_id = dev->id();
+                    // Only process non-MMIO devices that are in dead_relay_devices_.
+                    if (dead_relay_devices_.count(non_mmio_id) == 0) {
+                        continue;
+                    }
+                    const ChipId mmio_host =
+                        cluster_.get_associated_mmio_device(non_mmio_id);
+                    if (mmio_host == non_mmio_id) {
+                        // MMIO-capable device — not a non-MMIO relay candidate.
+                        continue;
+                    }
+                    const auto& dead_chans_ct = probe_dead_channels_map[non_mmio_id];
+                    if (dead_chans_ct.empty()) {
+                        continue;
+                    }
+                    // Verify the MMIO host has at least one working (non-dead) channel so the
+                    // relay path is live.  Working channels are those NOT in probe_dead_channels_map
+                    // for the MMIO host.  (Dead MMIO channels are in hardware assert/reset right
+                    // now and cannot route relay writes.)
+                    const auto& mmio_dead_chans = probe_dead_channels_map[mmio_host];
+                    // We need to verify a working channel exists on this MMIO host.  Find any
+                    // active fabric ETH channel on mmio_host that is not in mmio_dead_chans.
+                    bool has_working_relay = false;
+                    try {
+                        const auto mmio_fabric_node_id =
+                            control_plane_.get_fabric_node_id_from_physical_chip_id(mmio_host);
+                        const auto& mmio_active_chans =
+                            control_plane_.get_active_fabric_eth_channels(mmio_fabric_node_id);
+                        for (const auto& [ch, _dir] : mmio_active_chans) {
+                            if (mmio_dead_chans.count(ch) == 0) {
+                                has_working_relay = true;
+                                break;
+                            }
+                        }
+                    } catch (...) {
+                        // Non-fatal: treat as no working relay.
+                    }
+                    if (!has_working_relay) {
+                        log_warning(
+                            tt::LogMetal,
+                            "FIX CT (#42429) — MMIO relay dev={} has no working channels "
+                            "(all dead or lookup failed); skipping non-MMIO dev={} pre-deassert. "
+                            "Phase D may timeout. (#42429)",
+                            mmio_host,
+                            non_mmio_id);
+                        ct_skip += static_cast<uint32_t>(dead_chans_ct.size());
+                        continue;
+                    }
+
+                    for (const uint32_t dead_chan : dead_chans_ct) {
+                        try {
+                            auto virtual_core_ct =
+                                cluster_.get_virtual_eth_core_from_channel(non_mmio_id, dead_chan);
+                            tt_cxy_pair core_loc_ct(non_mmio_id, virtual_core_ct);
+
+                            // Assert (write-only) then write fw_launch_addr, then deassert
+                            // (write-only).  Same FIX CF/AY/Step2 pattern.
+                            cluster_.assert_risc_reset_at_core_write_only(
+                                core_loc_ct, tt::umd::RiscType::ALL);
+                            if (fw_launch_addr_value_ct != 0) {
+                                try {
+                                    cluster_.write_core_immediate(
+                                        non_mmio_id,
+                                        virtual_core_ct,
+                                        std::vector<uint32_t>{fw_launch_addr_value_ct},
+                                        fw_launch_addr_ct);
+                                } catch (...) {
+                                    // Non-fatal — deassert still proceeds.
+                                }
+                            }
+                            cluster_.deassert_risc_reset_at_core_write_only(core_loc_ct);
+                            log_warning(
+                                tt::LogMetal,
+                                "FIX CT (#42429) — relay-deassert non-MMIO dev={} chan={} via "
+                                "working MMIO relay dev={} (pre-Phase-C). (#42429)",
+                                non_mmio_id,
+                                dead_chan,
+                                mmio_host);
+                            ++ct_ok;
+                        } catch (const std::exception& e_ct) {
+                            log_warning(
+                                tt::LogMetal,
+                                "FIX CT (#42429) — relay-deassert non-MMIO dev={} chan={} "
+                                "failed: {}. Channel left in reset; Phase D may timeout. (#42429)",
+                                non_mmio_id,
+                                dead_chan,
+                                e_ct.what());
+                            ++ct_fail;
+                        } catch (...) {
+                            log_warning(
+                                tt::LogMetal,
+                                "FIX CT (#42429) — relay-deassert non-MMIO dev={} chan={} "
+                                "failed (non-std exception). (#42429)",
+                                non_mmio_id,
+                                dead_chan);
+                            ++ct_fail;
+                        }
+                    }
+                }
+                if (ct_ok > 0 || ct_skip > 0 || ct_fail > 0) {
+                    log_info(
+                        tt::LogMetal,
+                        "FIX CT (#42429) — pre-Phase-C non-MMIO relay-deassert complete: "
+                        "{} OK, {} skipped, {} failed. (#42429)",
+                        ct_ok,
+                        ct_skip,
+                        ct_fail);
+                }
+            }
+
             // Phase C: Deassert ALL successfully-asserted channels simultaneously.
             std::vector<Step1AssertedChannel> step1_deasserted;
             for (const auto& ac : step1_asserted) {
