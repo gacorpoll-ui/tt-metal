@@ -359,16 +359,16 @@
   model: gemma-4-26b-a4b
   skus:
     wh_llmbox_perf:
-      timeout: 7
+      timeout: 15
       tier: 2
     bh_quietbox_2:
-      timeout: 7
+      timeout: 15
       tier: 2
     bh_loudbox:
-      timeout: 7
+      timeout: 15
       tier: 2
     bh_galaxy_perf:
-      timeout: 7
+      timeout: 15
       tier: 2
   owner_id: U08TJ70UFRT # Harry Andrews
   team: models
@@ -384,16 +384,16 @@
   model: gemma-4-31b
   skus:
     wh_llmbox_perf:
-      timeout: 5
+      timeout: 15
       tier: 2
     bh_quietbox_2:
-      timeout: 5
+      timeout: 15
       tier: 2
     bh_loudbox:
-      timeout: 5
+      timeout: 15
       tier: 2
     bh_galaxy_perf:
-      timeout: 5
+      timeout: 15
       tier: 2
   owner_id: U08TJ70UFRT # Harry Andrews
   team: models
