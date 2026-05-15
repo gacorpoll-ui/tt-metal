@@ -1412,6 +1412,9 @@ inline std::map<std::string, std::string> make_sd_prefetch_defines(
         {"OFFSETOF_TO_DEV_ID", "1"},
         {"OFFSETOF_ROUTER_DIRECTION", "2"},
         {"FD_CORE_TYPE", "0"},
+        {"PREFETCH_Q_ENTRY_BITS",
+         std::to_string(
+             tt_metal::MetalContext::instance().dispatch_mem_map(CoreType::WORKER).prefetch_q_entry_size_bytes() * 8)},
         // FABRIC_RELAY intentionally omitted - must be undefined for #if defined(FABRIC_RELAY) to be false
     };
 }

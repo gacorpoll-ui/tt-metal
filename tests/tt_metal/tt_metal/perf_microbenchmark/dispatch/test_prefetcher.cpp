@@ -2649,8 +2649,6 @@ public:
         uint32_t num_iterations,
         bool /*wait_for_completion*/ = true,
         bool /*wait_for_host_writes*/ = false) override {
-        using entry_t = DispatchSettings::prefetch_q_entry_type;  // uint16_t
-
         const auto& memmap = tt_metal::MetalContext::instance().dispatch_mem_map(CoreType::WORKER);
         const uint32_t dispatch_buffer_pages = memmap.dispatch_buffer_pages();
         const uint32_t dispatch_buffer_size = dispatch_buffer_pages * Common::SD_DISPATCH_BUFFER_PAGE_SIZE;
@@ -2704,9 +2702,7 @@ public:
         const std::vector<uint32_t> prefetch_q_zeros(prefetch_q_size / sizeof(uint32_t), 0u);
         cluster.write_core(prefetch_q_zeros.data(), prefetch_q_size, prefetch_cxy, prefetch_q_base);
 
-        // FetchQ entries go through the static TLB on WH/BH so each 2-byte write hits L1 directly.
-        // Quasar doesn't support static TLB windows; write_core is used instead (see write_prefetcher_cmd).
-        tt::umd::TlbWindow* prefetch_q_tlb = is_quasar ? nullptr : cluster.get_static_tlb_window(prefetch_cxy);
+        tt::umd::TlbWindow* prefetch_q_tlb = cluster.get_static_tlb_window(prefetch_cxy);
 
         uint32_t prefetch_q_dev_ptr = prefetch_q_base;
         const uint32_t prefetch_q_dev_fence = prefetch_q_base + prefetch_q_size;
@@ -2733,11 +2729,12 @@ public:
         const uint64_t hugepage_issue_end = static_cast<uint64_t>(pcie_base) + pcie_size;
 
         const uint32_t host_align = tt_metal::MetalContext::instance().hal().get_alignment(tt_metal::HalMemType::HOST);
+        const uint32_t prefetch_q_entry_size_bytes = memmap.prefetch_q_entry_size_bytes();
 
         // write_prefetcher_cmd: streaming-store cmd to hugepage + write one FetchQ entry via TLB.
         // cmd_size_bytes must be a multiple of 64 (host alignment) and cmd_size_entry is the
         // pre-computed FetchQ value (may have MSB stall flag set for exec_buf).
-        auto write_prefetcher_cmd = [&](const uint32_t* src, uint32_t cmd_size_bytes, entry_t cmd_size_entry) {
+        auto write_prefetcher_cmd = [&](const uint32_t* src, uint32_t cmd_size_bytes, uint32_t cmd_size_entry) {
             TT_FATAL(
                 cmd_size_bytes % host_align == 0,
                 "SD prefetch: cmd_size_bytes {} not aligned to host alignment {}",
@@ -2775,12 +2772,14 @@ public:
                 host_mem_ptr += cmd_size_bytes / sizeof(uint32_t);
             }
 
-            if (is_quasar) {
-                cluster.write_core(&cmd_size_entry, sizeof(entry_t), prefetch_cxy, prefetch_q_dev_ptr);
+            if (prefetch_q_entry_size_bytes == 4) {
+                prefetch_q_tlb->write32(prefetch_q_dev_ptr, cmd_size_entry);
             } else {
-                prefetch_q_tlb->write16(prefetch_q_dev_ptr, cmd_size_entry);
+                TT_FATAL(prefetch_q_entry_size_bytes == 2, "prefetch_q_entry_size_bytes must be 2 or 4");
+                TT_FATAL((cmd_size_entry & 0xFFFF) == cmd_size_entry, "cmd_size_entry must fit in 16 bits");
+                prefetch_q_tlb->write16(prefetch_q_dev_ptr, static_cast<uint16_t>(cmd_size_entry));
             }
-            prefetch_q_dev_ptr += sizeof(entry_t);
+            prefetch_q_dev_ptr += prefetch_q_entry_size_bytes;
             if (prefetch_q_dev_ptr >= prefetch_q_dev_fence) {
                 prefetch_q_dev_ptr = prefetch_q_base;
             }
@@ -2791,9 +2790,9 @@ public:
             const uint32_t size = tt::align(cmd.size_bytes(), host_align);
             std::vector<uint8_t> padded(size, 0u);
             std::memcpy(padded.data(), cmd.data(), cmd.size_bytes());
-            entry_t entry = static_cast<entry_t>(size >> DispatchSettings::PREFETCH_Q_LOG_MINSIZE);
+            uint32_t entry = static_cast<uint32_t>(size >> DispatchSettings::PREFETCH_Q_LOG_MINSIZE);
             if (stall) {
-                entry |= static_cast<entry_t>(entry_t{1} << (sizeof(entry_t) * 8 - 1));
+                entry |= static_cast<uint32_t>(uint32_t{1} << (prefetch_q_entry_size_bytes * 8 - 1));
             }
             write_prefetcher_cmd(reinterpret_cast<const uint32_t*>(padded.data()), size, entry);
         };
