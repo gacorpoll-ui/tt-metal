@@ -42,7 +42,7 @@ inline void llk_math_eltwise_ternary_sfpu_lgamma_adjusted(
         dst_index1,
         dst_index2,
         dst_index3,
-        static_cast<int>(vector_mode));
+        vector_mode);
 }
 
 template <bool APPROXIMATE, bool is_fp32_dest_acc_en>

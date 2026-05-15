@@ -18,7 +18,7 @@ inline void llk_math_eltwise_ternary_sfpu_lerp(
         dst_index1,
         dst_index2,
         odst,
-        static_cast<int>(vector_mode));
+        vector_mode);
 }
 
 inline void llk_math_eltwise_ternary_sfpu_lerp_init() {

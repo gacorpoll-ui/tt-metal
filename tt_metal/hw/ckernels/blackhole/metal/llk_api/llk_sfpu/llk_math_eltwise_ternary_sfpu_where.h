@@ -18,7 +18,7 @@ inline void llk_math_eltwise_ternary_sfpu_where(
         dst_index1,
         dst_index2,
         odst,
-        static_cast<int>(vector_mode));
+        vector_mode);
 }
 
 template <bool APPROXIMATE>

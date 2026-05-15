@@ -863,32 +863,14 @@ struct FlashMLADecode {
                 reconfig_data_format_srca<false, true>(cb_ms_in);
                 exp_tile_init<exp_approx_mode, scale_fp32>();
                 for (uint32_t i = 0; i < num_cores_to_wait - 1; i++) {
-                    sdpa_tail<
-                        exp_approx_mode,
-                        false,
-                        block_size,
-                        num_blocks,
-                        scale_fp32,
-                        static_cast<int>(VectorMode::C)>(
+                    sdpa_tail<exp_approx_mode, false, block_size, num_blocks, scale_fp32, VectorMode::C>(
                         cb_ms_in, cb_interm_ms, cb_interm_ms, cb_out_in, cb_interm_out, cb_interm_out);
                 }
                 if (is_sender_after_reduce) {
-                    sdpa_tail<
-                        exp_approx_mode,
-                        false,
-                        block_size,
-                        num_blocks,
-                        scale_fp32,
-                        static_cast<int>(VectorMode::C)>(
+                    sdpa_tail<exp_approx_mode, false, block_size, num_blocks, scale_fp32, VectorMode::C>(
                         cb_ms_in, cb_interm_ms, cb_out_ms, cb_out_in, cb_interm_out, cb_out_o);
                 } else {
-                    sdpa_tail<
-                        exp_approx_mode,
-                        true,
-                        block_size,
-                        num_blocks,
-                        scale_fp32,
-                        static_cast<int>(VectorMode::C)>(
+                    sdpa_tail<exp_approx_mode, true, block_size, num_blocks, scale_fp32, VectorMode::C>(
                         cb_ms_in, cb_interm_ms, cb_out_ms, cb_out_in, cb_interm_out, cb_out_final);
                 }
             }
