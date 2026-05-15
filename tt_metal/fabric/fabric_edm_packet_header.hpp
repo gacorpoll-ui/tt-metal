@@ -54,6 +54,13 @@ enum EDMStatus : uint32_t {
     // that depend on this core being ready to receive handshake packets.
     HANDSHAKE_READY = 0xA0B0C0D1,
 
+    // FIX CY (#42429): Host writes this value to the status word after FIX CV
+    // confirms all non-MMIO ERISCs have reached HANDSHAKE_READY.  MMIO ERISCs
+    // spin on this token before entering the handshake loop, ensuring they
+    // don't attempt ETH handshake until non-MMIO peers are ready.
+    // Non-MMIO ERISCs are not gated (host cannot write their L1 post-launch).
+    HOST_GATE_OPEN = 0xA0B0C0D2,
+
     // Handshake complete with remote
     REMOTE_HANDSHAKE_COMPLETE = 0xA1B1C1D1,
 

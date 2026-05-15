@@ -265,6 +265,11 @@ constexpr std::array<bool, MAX_NUM_RECEIVER_CHANNELS> is_receiver_channel_servic
 // ============================================================================
 // RISC configuration
 // ============================================================================
+// FIX CY (#42429): MMIO ERISCs spin on HOST_GATE_OPEN before entering the
+// handshake loop.  Non-MMIO ERISCs set this to 0 (host cannot reach them after
+// fabric launch).  Host opens the gate for MMIO ERISCs after FIX CV Pass B
+// confirms all non-MMIO peers are at HANDSHAKE_READY.
+constexpr bool host_gate_enabled = NAMED_CT_ARG("HOST_GATE_ENABLED") != 0;
 constexpr bool enable_ethernet_handshake = NAMED_CT_ARG("ENABLE_ETHERNET_HANDSHAKE") != 0;
 constexpr bool enable_context_switch = NAMED_CT_ARG("ENABLE_CONTEXT_SWITCH") != 0;
 constexpr bool enable_interrupts = NAMED_CT_ARG("ENABLE_INTERRUPTS") != 0;

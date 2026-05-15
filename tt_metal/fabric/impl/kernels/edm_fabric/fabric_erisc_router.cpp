@@ -3663,6 +3663,27 @@ void kernel_main() {
     *edm_status_ptr = tt::tt_fabric::EDMStatus::HANDSHAKE_READY;
     asm volatile("nop");
 
+    // FIX CY (#42429): MMIO ERISCs spin here until the host writes HOST_GATE_OPEN,
+    // which happens only after FIX CV Pass B confirms all non-MMIO ERISCs have
+    // reached HANDSHAKE_READY.  This ensures MMIO ERISCs don't enter the ETH
+    // handshake loop before their non-MMIO peers are ready — preventing the
+    // simultaneous-handshake deadlock where both sides initiate before either is
+    // listening.  Non-MMIO ERISCs skip this gate (host cannot reach their L1
+    // after fabric launch on the MMIO device).
+    if constexpr (host_gate_enabled) {
+        WAYPOINT("HGWT");
+        while (*edm_status_ptr != tt::tt_fabric::EDMStatus::HOST_GATE_OPEN) {
+            router_invalidate_l1_cache<ENABLE_RISC_CPU_DATA_CACHE>();
+            if (*reinterpret_cast<volatile tt_l1_ptr uint32_t*>(termination_signal_ptr) ==
+                static_cast<uint32_t>(tt::tt_fabric::TerminationSignal::IMMEDIATELY_TERMINATE)) {
+                WAYPOINT("HGXT");
+                *edm_status_ptr = tt::tt_fabric::EDMStatus::TERMINATED;
+                return;
+            }
+        }
+        WAYPOINT("HGOP");
+    }
+
     if constexpr (enable_ethernet_handshake) {
         if constexpr (is_handshake_sender) {
             erisc::datamover::handshake::fabric_sender_side_handshake<ENABLE_RISC_CPU_DATA_CACHE>(

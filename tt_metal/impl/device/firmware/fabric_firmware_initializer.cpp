@@ -3537,6 +3537,22 @@ void FabricFirmwareInitializer::compile_and_configure_fabric() {
                 dev->wait_for_eth_cores_launched();
             }
         }
+        // Phase C (FIX CY #42429): Open handshake gate for MMIO ERISCs simultaneously.
+        //
+        // MMIO ERISCs are spinning on HOST_GATE_OPEN in the firmware spin loop (fabric_erisc_router.cpp).
+        // They cannot enter the ETH handshake loop until the host writes HOST_GATE_OPEN to each core.
+        // Non-MMIO ERISCs did not get the gate CT arg (host cannot write their L1 after fabric launch)
+        // so they proceeded directly to the handshake loop after HANDSHAKE_READY.
+        //
+        // At this point, Pass B has confirmed all non-MMIO ERISCs are at HANDSHAKE_READY, meaning
+        // they are sitting in the ETH handshake loop waiting for MMIO peers.  We now release
+        // all MMIO ERISCs together so they enter the handshake simultaneously from the MMIO side.
+        for (auto* dev : compiled_devices) {
+            if (dev && cluster_.get_associated_mmio_device(dev->id()) == dev->id() &&
+                dead_relay_devices_.count(dev->id()) == 0) {
+                dev->open_erisc_handshake_gate();
+            }
+        }
     }
 
     // FIX FQ-5 (#42429): Log exactly which ETH cores received fabric/dispatch firmware and

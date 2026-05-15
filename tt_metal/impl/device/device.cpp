@@ -2875,6 +2875,55 @@ void Device::wait_for_eth_cores_launched(uint32_t timeout_ms) {
         rhs_early_count);
 }
 
+void Device::open_erisc_handshake_gate() {
+    // FIX CY (#42429): Write HOST_GATE_OPEN to every MMIO ERISC's status word, releasing the
+    // spin loop in fabric_erisc_router.cpp that gates MMIO ERISCs before the ETH handshake.
+    // This is called by FabricFirmwareInitializer after FIX CV Pass B confirms all non-MMIO
+    // ERISCs have reached HANDSHAKE_READY.  Uses direct PCIe WriteToDeviceL1 — valid because
+    // this device is MMIO (no relay needed).
+    TT_FATAL(this->is_mmio_capable(), "open_erisc_handshake_gate: called on non-MMIO device {}", this->id());
+    if (!fabric_program_) {
+        log_warning(
+            tt::LogMetal, "open_erisc_handshake_gate: Device {} — fabric_program_ is null, nothing to do.", this->id());
+        return;
+    }
+
+    const auto& control_plane = MetalContext::instance().get_control_plane();
+    const auto& fabric_context = control_plane.get_fabric_context();
+    const auto& builder_ctx = fabric_context.get_builder_context();
+    MetalEnvImpl& env_impl = MetalEnvAccessor(*env_).impl();
+    const auto& hal = env_impl.get_hal();
+
+    const auto [erisc_sync_addr, unused_expected] = builder_ctx.get_fabric_router_sync_address_and_status();
+    const std::vector<uint32_t> gate_open_val = {static_cast<uint32_t>(tt::tt_fabric::EDMStatus::HOST_GATE_OPEN)};
+
+    std::vector<std::vector<CoreCoord>> logical_cores_used = fabric_program_->impl().logical_cores();
+    for (uint32_t pct_idx = 0; pct_idx < logical_cores_used.size(); pct_idx++) {
+        if (hal.get_core_type(pct_idx) != CoreType::ETH) {
+            continue;
+        }
+        for (const auto& lc : logical_cores_used[pct_idx]) {
+            try {
+                detail::WriteToDeviceL1(this, lc, erisc_sync_addr, gate_open_val, CoreType::ETH);
+                log_info(
+                    tt::LogMetal,
+                    "open_erisc_handshake_gate: Device {} ETH logical ({},{}) — wrote HOST_GATE_OPEN.",
+                    this->id(),
+                    lc.x,
+                    lc.y);
+            } catch (const std::exception& e) {
+                log_warning(
+                    tt::LogMetal,
+                    "open_erisc_handshake_gate: Device {} ETH logical ({},{}) write threw: {}",
+                    this->id(),
+                    lc.x,
+                    lc.y,
+                    e.what());
+            }
+        }
+    }
+}
+
 bool Device::phase5b_erisc_health_check(
     const std::set<std::pair<tt::tt_fabric::chan_id_t, tt::tt_fabric::eth_chan_directions>>& active_channels,
     const metal_SocDescriptor& soc_desc_p5,

@@ -1217,6 +1217,14 @@ FabricEriscDatamoverBuilder::CompileTimeArgs FabricEriscDatamoverBuilder::get_co
     // stale in-flight ETH RX DMA from a crashed prior session causing false handshake completion.
     // Both sides of a link get the same nonce (deterministic from sorted node IDs + session).
     named_args["HANDSHAKE_NONCE"] = compute_link_handshake_nonce(this->local_fabric_node_id, this->peer_fabric_node_id);
+    // FIX CY (#42429): Gate MMIO ERISCs before handshake until host confirms non-MMIO peers ready.
+    // Non-MMIO ERISCs get 0 — host cannot write their L1 after fabric launch on the MMIO device.
+    {
+        const bool is_mmio =
+            tt::tt_metal::MetalContext::instance().get_cluster().get_associated_mmio_device(local_physical_chip_id) ==
+            local_physical_chip_id;
+        named_args["HOST_GATE_ENABLED"] = static_cast<uint32_t>(is_mmio ? 1 : 0);
+    }
     named_args["CHANNEL_BUFFER_SIZE"] = static_cast<uint32_t>(this->channel_buffer_size);
     named_args["FABRIC_TENSIX_EXTENSION_MUX_MODE"] = this->has_tensix_extension;
     named_args["ENABLE_FIRST_LEVEL_ACK_VC0"] = final_enable_first_level_ack_vc0 ? 1 : 0;

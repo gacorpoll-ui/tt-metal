@@ -192,6 +192,11 @@ public:
     // the next device (whose channels peer with this device) begins executing.
     // No-op for MMIO devices and for non-MMIO devices with a broken relay path.
     void wait_for_eth_cores_launched(uint32_t timeout_ms = 500);
+    // FIX CY (#42429): Write HOST_GATE_OPEN to each MMIO ERISC's status word, releasing the
+    // spin loop added in fabric_erisc_router.cpp.  Called by FabricFirmwareInitializer after
+    // FIX CV Pass B confirms all non-MMIO peers have reached HANDSHAKE_READY.
+    // Only valid on MMIO devices; no-op for non-MMIO (asserts in debug builds).
+    void open_erisc_handshake_gate();
     void wait_for_fabric_workers_ready();
     // Called by FabricFirmwareInitializer when this device is placed in mmio_dead_peer_devices_.
     void set_fabric_is_mmio_dead_peer_device(bool v) { fabric_is_mmio_dead_peer_device_ = v; }
