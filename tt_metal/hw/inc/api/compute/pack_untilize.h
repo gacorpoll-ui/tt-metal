@@ -72,7 +72,7 @@ ALWI void pack_untilize_dest_init(
         PACK((llk_pack_reconfig_data_format<DST_ACCUM_MODE>(ocb)));
         PACK((llk_pack_untilize_init<block_ct_dim, full_ct_dim, false, narrow_row, row_num_datums, dense>(ocb)));
     } else {
-        PACK((llk_pack_reconfig_data_format_disaggregated<DST_ACCUM_MODE>(ocb, face_r_dim, num_faces)));
+        PACK((llk_pack_reconfig_data_format<DST_ACCUM_MODE>(ocb)));
         PACK((llk_pack_untilize_init<block_ct_dim, full_ct_dim, false, narrow_row, row_num_datums, dense>(
             ocb, face_r_dim, num_faces)));
     }
