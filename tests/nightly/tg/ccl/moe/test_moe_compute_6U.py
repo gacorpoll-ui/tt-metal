@@ -804,7 +804,7 @@ def gen_sparse_buffer_and_indices(
     else:
         num_dispatch_devices = num_devices
 
-    experts_per_device = experts // num_devices
+    experts_per_device = experts // num_dispatch_devices
 
     # Total tokens in sparse buffer = tokens_per_device * num_dispatch_devices
     total_tokens = tokens_per_device * num_dispatch_devices
@@ -874,7 +874,7 @@ def compute_selective_tilize_golden(
     selected_experts_k = expert_indices.shape[2]
     hidden_size = sparse_buffer.shape[2]
     experts = expert_mapping.shape[1]
-    experts_per_device = experts // num_devices
+    experts_per_device = experts // num_dispatch_devices
 
     # Total possible tokens that could be sent to any expert
     total_tokens = tokens_per_device * num_dispatch_devices
@@ -941,7 +941,7 @@ def compute_expert_activation_golden(expert_indices, expert_scores, expert_mappi
     tokens_per_device = expert_indices.shape[1]
     selected_experts_k = expert_indices.shape[2]
     experts = expert_mapping.shape[1]
-    experts_per_device = experts // num_devices
+    experts_per_device = experts // num_dispatch_devices
 
     # Build activation rows for each device
     # golden_activation[device] = list of (token_id, k_indices, scores)
@@ -1007,7 +1007,7 @@ def compute_e_t_golden(expert_indices, expert_mapping, mesh_shape, cluster_axis)
     tokens_per_device = expert_indices.shape[1]
     selected_experts_k = expert_indices.shape[2]
     experts = expert_mapping.shape[1]
-    experts_per_device = experts // num_devices
+    experts_per_device = experts // num_dispatch_devices
 
     # Build e_t lists for each device and each local expert
     # golden_e_t[device][local_expert] = [token_id_0, token_id_1, ...]
