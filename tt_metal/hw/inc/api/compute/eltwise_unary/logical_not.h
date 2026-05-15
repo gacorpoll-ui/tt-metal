@@ -48,7 +48,7 @@ ALWI void logical_not_tile(uint32_t idst_in, uint32_t idst_out) {
         : (DATA_FORMAT == DataFormat::UInt16)                                     ? InstrModLoadStore::LO16
         : (DATA_FORMAT == DataFormat::Int32 || DATA_FORMAT == DataFormat::UInt32) ? InstrModLoadStore::INT32
                                                                                   : InstrModLoadStore::DEFAULT;
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::calculate_logical_not<APPROX, INSTRUCTION_MODE, 8>, idst_in, idst_out, (int)VectorMode::RC)));
 }
 

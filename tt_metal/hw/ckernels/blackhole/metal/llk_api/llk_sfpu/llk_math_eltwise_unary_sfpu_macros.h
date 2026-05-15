@@ -42,7 +42,7 @@ inline __attribute__((always_inline)) void _sfpu_check_and_call_(
 // Split-dest overload: separate read/write tile indices for SFPU ops that
 // take a source tile and write to a different destination tile. Asserts
 // both indices against the per-mode destination capacity, then dispatches
-// to the matching split overload of _llk_math_eltwise_unary_sfpu_params_.
+// to _llk_math_eltwise_unary_sfpu_params_split_.
 template <DstSync DST_SYNC, bool DST_ACCUM, typename Callable, typename... Args>
 inline __attribute__((always_inline)) void _sfpu_check_and_call_(
     Callable&& sfpu_func, std::uint32_t dst_index_in, std::uint32_t dst_index_out, int vector_mode, Args&&... args) {
@@ -52,7 +52,7 @@ inline __attribute__((always_inline)) void _sfpu_check_and_call_(
     LLK_ASSERT(
         (dst_index_out < get_dest_max_tiles<DST_SYNC, DST_ACCUM, DstTileShape::Tile32x32>()),
         "dst_index_out exceeds max dest tiles");
-    _llk_math_eltwise_unary_sfpu_params_(
+    _llk_math_eltwise_unary_sfpu_params_split_(
         std::forward<Callable>(sfpu_func), dst_index_in, dst_index_out, vector_mode, std::forward<Args>(args)...);
 }
 
@@ -160,8 +160,8 @@ inline __attribute__((always_inline)) void _sfpu_check_and_call_(
  *
  * Same shape as their non-_SPLIT counterparts, but accept distinct
  * (DST_IDX_IN, DST_IDX_OUT) and route through the split overload of
- * ckernel::_sfpu_check_and_call_, which forwards into the matching split
- * overload of _llk_math_eltwise_unary_sfpu_params_. Use these when the
+ * ckernel::_sfpu_check_and_call_, which forwards into
+ * _llk_math_eltwise_unary_sfpu_params_split_. Use these when the
  * underlying calculate function reads from one dest tile and writes to a
  * different one.
  */

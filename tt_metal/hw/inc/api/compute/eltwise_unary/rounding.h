@@ -36,7 +36,7 @@ ALWI void ceil_tile(uint32_t idst) {
 }
 
 ALWI void ceil_tile(uint32_t idst_in, uint32_t idst_out) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::_calculate_ceil_<APPROX, 8>, idst_in, idst_out, (int)VectorMode::RC)));
 }
 
@@ -59,7 +59,7 @@ ALWI void floor_tile(uint32_t idst) {
 }
 
 ALWI void floor_tile(uint32_t idst_in, uint32_t idst_out) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::_calculate_floor_<APPROX, 8>, idst_in, idst_out, (int)VectorMode::RC)));
 }
 
@@ -82,7 +82,7 @@ ALWI void trunc_tile(uint32_t idst) {
 }
 
 ALWI void trunc_tile(uint32_t idst_in, uint32_t idst_out) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::_calculate_trunc_<APPROX, 8>, idst_in, idst_out, (int)VectorMode::RC)));
 }
 
@@ -106,7 +106,7 @@ ALWI void round_tile(uint32_t idst, int32_t decimals) {
 }
 
 ALWI void round_tile(uint32_t idst_in, uint32_t idst_out, int32_t decimals) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::_calculate_round_<APPROX, 8>, idst_in, idst_out, (int)VectorMode::RC, decimals)));
 }
 
@@ -133,7 +133,7 @@ ALWI void stochastic_round_tile(uint32_t idst) {
 }
 
 ALWI void stochastic_round_tile(uint32_t idst_in, uint32_t idst_out) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::_calculate_stochastic_round_<APPROX, 8>, idst_in, idst_out, (int)VectorMode::RC)));
 }
 
@@ -156,7 +156,7 @@ ALWI void frac_tile(uint32_t idst) {
 }
 
 ALWI void frac_tile(uint32_t idst_in, uint32_t idst_out) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::_calculate_frac_<APPROX, 8>, idst_in, idst_out, (int)VectorMode::RC)));
 }
 

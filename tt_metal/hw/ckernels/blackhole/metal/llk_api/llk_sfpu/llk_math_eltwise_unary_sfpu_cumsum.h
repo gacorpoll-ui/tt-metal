@@ -19,7 +19,7 @@ inline void llk_math_eltwise_unary_sfpu_cumsum_init() {
 template <bool APPROXIMATE /*unused*/>
 inline void llk_math_eltwise_unary_sfpu_cumsum(
     uint dst_index, bool first, int vector_mode = (int)VectorMode::RC_custom /*unused*/) {
-    _llk_math_eltwise_unary_sfpu_params_(
+    _llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::calculate_cumsum<false>,  // There is only non APPROXIMATE implementation
         dst_index,
         dst_index,
@@ -30,7 +30,7 @@ inline void llk_math_eltwise_unary_sfpu_cumsum(
 template <bool APPROXIMATE /*unused*/>
 inline void llk_math_eltwise_unary_sfpu_cumsum(
     uint dst_index_in, uint dst_index_out, bool first, int vector_mode = (int)VectorMode::RC_custom /*unused*/) {
-    _llk_math_eltwise_unary_sfpu_params_(
+    _llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::calculate_cumsum<false>,  // There is only non APPROXIMATE implementation
         dst_index_in,
         dst_index_out,

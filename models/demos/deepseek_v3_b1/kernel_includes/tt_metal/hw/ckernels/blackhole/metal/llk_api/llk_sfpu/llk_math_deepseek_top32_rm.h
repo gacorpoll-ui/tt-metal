@@ -25,7 +25,6 @@ inline void llk_math_deepseek_top32_rm_local_sort(
             ckernel::sfpu::_bitonic_top32_phases_steps_<APPROXIMATE, is_fp32_dest_acc_en>(idir);
         },
         dst_index,
-        dst_index,
         vector_mode,
         idir);
 }
@@ -38,7 +37,6 @@ inline void llk_math_deepseek_top32_rm_merge(
             ckernel::sfpu::_bitonic_top32_merge_<APPROXIMATE, is_fp32_dest_acc_en, idir>(across_tiles);
         },
         dst_index,
-        dst_index,
         vector_mode,
         across_tiles);
 }
@@ -50,7 +48,6 @@ inline void llk_math_deepseek_top32_rm_rebuild(
         [](std::uint32_t, std::uint32_t, bool idir, bool skip_second) {
             ckernel::sfpu::_bitonic_top32_rebuild_<APPROXIMATE, is_fp32_dest_acc_en>(idir, skip_second);
         },
-        dst_index,
         dst_index,
         vector_mode,
         idir,
@@ -66,7 +63,6 @@ inline void llk_math_deepseek_top32_of_1024_rm_pre_sorted_prep(
                 dst_idx);
         },
         dst_index,
-        dst_index,
         vector_mode,
         dst_index);
 }
@@ -79,7 +75,6 @@ inline void llk_math_deepseek_top32_of_1024_rm_pre_sorted_combine(
             ckernel::sfpu::_bitonic_top32_of_1024_rm_pre_sorted_combine_<APPROXIMATE, is_fp32_dest_acc_en>(dst_idx);
         },
         dst_index,
-        dst_index,
         vector_mode,
         dst_index);
 }
@@ -91,7 +86,6 @@ inline void llk_math_deepseek_top32_of_1024_rm_pre_sorted_final(
         [](std::uint32_t, std::uint32_t, std::uint32_t dst_idx) {
             ckernel::sfpu::_bitonic_top32_of_1024_rm_pre_sorted_final_<APPROXIMATE, is_fp32_dest_acc_en>(dst_idx);
         },
-        dst_index,
         dst_index,
         vector_mode,
         dst_index);

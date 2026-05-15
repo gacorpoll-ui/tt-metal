@@ -18,13 +18,13 @@ inline void llk_math_eltwise_unary_sfpu_sigmoid_init() {
 template <bool APPROXIMATE, bool is_fp32_dest_acc_en>
 inline void llk_math_eltwise_unary_sfpu_sigmoid(uint dst_index, int vector_mode = (int)VectorMode::RC) {
     _llk_math_eltwise_unary_sfpu_params_(
-        sfpu::calculate_sigmoid<APPROXIMATE, is_fp32_dest_acc_en, 8>, dst_index, dst_index, vector_mode);
+        sfpu::calculate_sigmoid<APPROXIMATE, is_fp32_dest_acc_en, 8>, dst_index, vector_mode);
 }
 
 template <bool APPROXIMATE, bool is_fp32_dest_acc_en>
 inline void llk_math_eltwise_unary_sfpu_sigmoid(
     uint dst_index_in, uint dst_index_out, int vector_mode = (int)VectorMode::RC) {
-    _llk_math_eltwise_unary_sfpu_params_(
+    _llk_math_eltwise_unary_sfpu_params_split_(
         sfpu::calculate_sigmoid<APPROXIMATE, is_fp32_dest_acc_en, 8>, dst_index_in, dst_index_out, vector_mode);
 }
 

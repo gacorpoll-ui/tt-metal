@@ -88,9 +88,9 @@ void run_kernel(RUNTIME_PARAMETERS params)
 
         // Run SFPU: read from DST_INDEX_IN, write to DST_INDEX_OUT. The split
         // helper routes through ckernel::_sfpu_check_and_call_<DST_SYNC, DST_ACCUM>
-        // (dst-bound LLK_ASSERT) and then the split overload of
-        // _llk_math_eltwise_unary_sfpu_params_, which calls the op's calculate
-        // function with (dst_index_in, dst_index_out, args...).
+        // (dst-bound LLK_ASSERT) and then _llk_math_eltwise_unary_sfpu_params_split_,
+        // which calls the op's calculate function with
+        // (dst_index_in, dst_index_out, args...).
         test_utils::call_unary_sfpu_operation_split<
             DST_SYNC,
             is_fp32_dest_acc_en,

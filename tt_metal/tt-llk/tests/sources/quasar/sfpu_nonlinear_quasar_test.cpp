@@ -105,7 +105,7 @@ struct sfpu_op_dispatcher<SfpuType::exponential>
 {
     static void call(std::uint32_t tile_idx, int num_sfpu_iterations)
     {
-        _llk_math_eltwise_unary_sfpu_params_(_calculate_exp_<true>, tile_idx, tile_idx, num_sfpu_iterations);
+        _llk_math_eltwise_unary_sfpu_params_split_(_calculate_exp_<true>, tile_idx, tile_idx, num_sfpu_iterations);
     }
 };
 
@@ -119,7 +119,7 @@ struct sfpu_op_dispatcher<SfpuType::gelu>
 
     static void call(std::uint32_t tile_idx, int num_sfpu_iterations)
     {
-        _llk_math_eltwise_unary_sfpu_params_(_calculate_gelu_, tile_idx, tile_idx, num_sfpu_iterations);
+        _llk_math_eltwise_unary_sfpu_params_split_(_calculate_gelu_, tile_idx, tile_idx, num_sfpu_iterations);
     }
 };
 
@@ -128,7 +128,7 @@ struct sfpu_op_dispatcher<SfpuType::relu>
 {
     static void call(std::uint32_t tile_idx, int num_sfpu_iterations)
     {
-        _llk_math_eltwise_unary_sfpu_params_(_calculate_relu_, tile_idx, tile_idx, num_sfpu_iterations);
+        _llk_math_eltwise_unary_sfpu_params_split_(_calculate_relu_, tile_idx, tile_idx, num_sfpu_iterations);
     }
 };
 
@@ -137,7 +137,7 @@ struct sfpu_op_dispatcher<SfpuType::reciprocal>
 {
     static void call(std::uint32_t tile_idx, int num_sfpu_iterations)
     {
-        _llk_math_eltwise_unary_sfpu_params_(_calculate_reciprocal_<true>, tile_idx, tile_idx, num_sfpu_iterations);
+        _llk_math_eltwise_unary_sfpu_params_split_(_calculate_reciprocal_<true>, tile_idx, tile_idx, num_sfpu_iterations);
     }
 };
 
@@ -146,7 +146,7 @@ struct sfpu_op_dispatcher<SfpuType::sqrt>
 {
     static void call(std::uint32_t tile_idx, int num_sfpu_iterations)
     {
-        _llk_math_eltwise_unary_sfpu_params_(_calculate_sqrt_<true>, tile_idx, tile_idx, num_sfpu_iterations);
+        _llk_math_eltwise_unary_sfpu_params_split_(_calculate_sqrt_<true>, tile_idx, tile_idx, num_sfpu_iterations);
     }
 };
 
@@ -155,7 +155,7 @@ struct sfpu_op_dispatcher<SfpuType::tanh>
 {
     static void call(std::uint32_t tile_idx, int num_sfpu_iterations)
     {
-        _llk_math_eltwise_unary_sfpu_params_(_calculate_tanh_<true>, tile_idx, tile_idx, num_sfpu_iterations);
+        _llk_math_eltwise_unary_sfpu_params_split_(_calculate_tanh_<true>, tile_idx, tile_idx, num_sfpu_iterations);
     }
 };
 
@@ -165,7 +165,7 @@ struct sfpu_op_dispatcher<SfpuType::sigmoid>
     static void call(std::uint32_t tile_idx, int num_sfpu_iterations)
     {
         // Wrap in lambda to disambiguate from the legacy 1-arg overload of _calculate_sigmoid_.
-        _llk_math_eltwise_unary_sfpu_params_(
+        _llk_math_eltwise_unary_sfpu_params_split_(
             [](std::uint32_t in, std::uint32_t out, const int iterations) { _calculate_sigmoid_(in, out, iterations); },
             tile_idx,
             tile_idx,
@@ -179,7 +179,7 @@ struct sfpu_op_dispatcher<SfpuType::silu>
     static void call(std::uint32_t tile_idx, int num_sfpu_iterations)
     {
         // Wrap in lambda to disambiguate from the legacy 1-arg overload of _calculate_silu_.
-        _llk_math_eltwise_unary_sfpu_params_(
+        _llk_math_eltwise_unary_sfpu_params_split_(
             [](std::uint32_t in, std::uint32_t out, const int iterations) { _calculate_silu_(in, out, iterations); }, tile_idx, tile_idx, num_sfpu_iterations);
     }
 };

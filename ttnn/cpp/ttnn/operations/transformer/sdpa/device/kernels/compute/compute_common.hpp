@@ -262,7 +262,7 @@ void calculate_recip_first_column(uint32_t dst_index_in, uint32_t dst_index_out)
 
 template <bool legacy_compat = true>
 void recip_tile_first_column(uint32_t idst) {
-    _llk_math_eltwise_unary_sfpu_params_(calculate_recip_first_column<legacy_compat>, idst, idst, (int)VectorMode::C);
+    _llk_math_eltwise_unary_sfpu_params_(calculate_recip_first_column<legacy_compat>, idst, (int)VectorMode::C);
 }
 #endif
 
@@ -850,7 +850,7 @@ void calculate_exponential_first_column(uint32_t dst_index_in, uint32_t dst_inde
 template <bool SDPA_EXP_APPROX_MODE, uint16_t scale_bf16>
 void exp_tile_first_column(uint32_t idst) {
     _llk_math_eltwise_unary_sfpu_params_(
-        calculate_exponential_first_column<SDPA_EXP_APPROX_MODE, scale_bf16>, idst, idst, (int)VectorMode::C);
+        calculate_exponential_first_column<SDPA_EXP_APPROX_MODE, scale_bf16>, idst, (int)VectorMode::C);
 }
 #endif  // defined(TRISC_MATH) || defined(TRISC_PACK)
 
@@ -945,7 +945,7 @@ void calculate_fused_max_sub_exp_add_tile(uint32_t dst_index_in, uint32_t dst_in
 template <bool SDPA_EXP_APPROX_MODE, int vector_mode = (int)VectorMode::C>
 void fused_max_sub_exp_add_tile(uint32_t idst, int scale_bf16) {
     _llk_math_eltwise_unary_sfpu_params_(
-        calculate_fused_max_sub_exp_add_tile<SDPA_EXP_APPROX_MODE>, idst, idst, vector_mode, scale_bf16);
+        calculate_fused_max_sub_exp_add_tile<SDPA_EXP_APPROX_MODE>, idst, vector_mode, scale_bf16);
 }
 #endif
 
@@ -1115,7 +1115,7 @@ void calculate_softplus_first_column(
 
 void softplus_tile_first_column(uint32_t idst, uint beta, uint beta_reciprocal, uint threshold) {
     _llk_math_eltwise_unary_sfpu_params_(
-        calculate_softplus_first_column<APPROX>, idst, idst, (int)VectorMode::C, beta, beta_reciprocal, threshold);
+        calculate_softplus_first_column<APPROX>, idst, (int)VectorMode::C, beta, beta_reciprocal, threshold);
 }
 #endif
 
@@ -1933,7 +1933,8 @@ void sdpa_inner_loop(
             sub_exp_block_bcast_cols_inplace<cb_qk_im, Sq_chunk_t, scale_fp32, true>(
                 alias_cur_max, alias_cur_sum, Sk_chunk_t);
 
-            // Reconfigure unpackers: srcA (context 0) = cb_v_in, srcB (context 1) = cb_qk_im (operands are swapped in matmul)
+            // Reconfigure unpackers: srcA (context 0) = cb_v_in, srcB (context 1) = cb_qk_im (operands are swapped in
+            // matmul)
             reconfig_data_format(cb_v_in, cb_qk_im);
             pack_reconfig_data_format(alias_mm2_cur_out);
 

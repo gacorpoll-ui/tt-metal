@@ -33,7 +33,7 @@ ALWI void rand_tile(uint32_t idst, uint32_t from, uint32_t scale) {
 }
 
 ALWI void rand_tile(uint32_t idst_in, uint32_t idst_out, uint32_t from, uint32_t scale) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::rand<APPROX>, idst_in, idst_out, (int)VectorMode::RC, from, scale)));
 }
 

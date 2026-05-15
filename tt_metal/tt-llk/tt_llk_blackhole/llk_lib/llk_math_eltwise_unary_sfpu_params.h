@@ -14,7 +14,7 @@
 // which signature it accepts. Some calculate functions take (dst_in, dst_out,
 // args...) — these are the split-aware ones added on top of the legacy
 // (args...) ones (e.g. TopK helpers). This helper selects the right shape at
-// compile time so the single-idx params overload can drive both kinds of
+// compile time so the single-idx `_params_` template can drive both kinds of
 // callable while keeping in == out for the legacy single-dst contract.
 template <typename Callable, typename... Args>
 inline void _llk_math_eltwise_unary_sfpu_dispatch_(Callable&& sfpu_func, std::uint32_t dst_index, Args&&... args)
@@ -29,6 +29,10 @@ inline void _llk_math_eltwise_unary_sfpu_dispatch_(Callable&& sfpu_func, std::ui
     }
 }
 
+// Single-index variant. The dispatch helper above lets a callable that
+// accepts (dst_in, dst_out, Args&...) work here by repeating dst_index for
+// both positions (in == out), so legacy single-dst paths and macro callers
+// can drive split-aware SFPU calculate functions without changing shape.
 template <typename Callable, typename... Args>
 inline void _llk_math_eltwise_unary_sfpu_params_(
     Callable&& sfpu_func, std::uint32_t dst_index, int vector_mode = static_cast<int>(VectorMode::RC), Args&&... args)
@@ -80,14 +84,16 @@ inline void _llk_math_eltwise_unary_sfpu_params_(
     _llk_math_eltwise_unary_sfpu_done_();
 }
 
-// Split-dest overload: source tile index (dst_index_in) is used to position
+// Split-dest variant: source tile index (dst_index_in) is used to position
 // the dest face pointer at the start; the callable then receives both indices
 // so an SFPU op can read from dst_index_in and write to dst_index_out.
+// Distinct name (not an overload of _params_) so callers pick the shape
+// explicitly and overload resolution can't conflate the two.
 // The dst-bound assert lives in ckernel::_sfpu_check_and_call_ (see the
 // per-arch llk_math_eltwise_unary_sfpu_macros.h), so it is intentionally not
 // duplicated here.
 template <typename Callable, typename... Args>
-inline void _llk_math_eltwise_unary_sfpu_params_(
+inline void _llk_math_eltwise_unary_sfpu_params_split_(
     Callable&& sfpu_func, std::uint32_t dst_index_in, std::uint32_t dst_index_out, int vector_mode = static_cast<int>(VectorMode::RC), Args&&... args)
 {
     _llk_math_eltwise_unary_sfpu_start_(dst_index_in);

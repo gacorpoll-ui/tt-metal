@@ -42,6 +42,7 @@ inline void _llk_math_eltwise_unary_sfpu_init_()
     _llk_math_sfpu_init_();
 }
 
+// Single-index variant: forwards to the legacy single-dst path.
 template <class F, class... ARGS>
 inline void _llk_math_eltwise_unary_sfpu_params_(F&& sfpu_func, std::uint32_t dst_tile_index, ARGS&&... args)
 {
@@ -50,13 +51,15 @@ inline void _llk_math_eltwise_unary_sfpu_params_(F&& sfpu_func, std::uint32_t ds
 
 /**
  * @brief Runs SFPU operation for a tile (default 32x32) with split dest indices.
+ * Distinct name (not an overload of _params_) so callers pick the shape
+ * explicitly and overload resolution can't conflate the two.
  * @param sfpu_func: SFPU callback — receives (dst_tile_index_in, dst_tile_index_out, args...)
  * @param dst_tile_index_in: tile in destination register to read from
  * @param dst_tile_index_out: tile in destination register to write to
  * @param args: forwarded to sfpu_func after the two tile indices
  */
 template <class F, class... ARGS>
-inline void _llk_math_eltwise_unary_sfpu_params_(F&& sfpu_func, std::uint32_t dst_tile_index_in, std::uint32_t dst_tile_index_out, ARGS&&... args)
+inline void _llk_math_eltwise_unary_sfpu_params_split_(F&& sfpu_func, std::uint32_t dst_tile_index_in, std::uint32_t dst_tile_index_out, ARGS&&... args)
 {
     _llk_math_eltwise_unary_sfpu_start_(dst_tile_index_in);
 

@@ -54,7 +54,7 @@ ALWI void gelu_tile_pack(uint32_t idst) {
 
 template <bool fast_and_approx = true>
 ALWI void gelu_tile(uint32_t idst_in, uint32_t idst_out) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::calculate_gelu<fast_and_approx, DST_ACCUM_MODE>, idst_in, idst_out, (int)VectorMode::RC)));
 }
 
@@ -93,7 +93,7 @@ ALWI void gelu_derivative_tile(uint32_t idst) {
 
 template <bool fast_and_approx = false>
 ALWI void gelu_derivative_tile(uint32_t idst_in, uint32_t idst_out) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::calculate_gelu_derivative_polynomial<fast_and_approx>, idst_in, idst_out, (int)VectorMode::RC)));
 }
 

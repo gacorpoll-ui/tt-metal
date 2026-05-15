@@ -89,7 +89,7 @@ template <
     InputClamping input_clamping = InputClamping::ClampToNegative,
     int iterations = 8>
 ALWI void exp_tile(uint32_t idst_in, uint32_t idst_out, int vector_mode, uint16_t scale = p_sfpu::kCONST_1_FP16B) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::calculate_exponential<
             approx,
             DST_ACCUM_MODE,

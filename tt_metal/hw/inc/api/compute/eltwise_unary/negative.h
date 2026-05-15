@@ -37,7 +37,7 @@ ALWI void negative_tile(uint32_t idst) {
 }
 
 ALWI void negative_tile(uint32_t idst_in, uint32_t idst_out) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::_calculate_negative_<APPROX, 8>, idst_in, idst_out, (int)VectorMode::RC)));
 }
 
@@ -46,7 +46,7 @@ ALWI void negative_tile_int32(uint32_t idst) {
 }
 
 ALWI void negative_tile_int32(uint32_t idst_in, uint32_t idst_out) {
-    MATH((_llk_math_eltwise_unary_sfpu_params_(
+    MATH((_llk_math_eltwise_unary_sfpu_params_split_(
         ckernel::sfpu::_calculate_negative_int_<APPROX, 8>, idst_in, idst_out, (int)VectorMode::RC)));
 }
 
