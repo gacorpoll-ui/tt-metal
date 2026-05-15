@@ -16,6 +16,7 @@ import ttnn
 MESH_GRAPH_DESC_1x16 = (
     "tests/tt_metal/tt_fabric/custom_mesh_descriptors/single_galaxy_1x16_torus_graph_descriptor.textproto"
 )
+MESH_GRAPH_DESC_BH_LB = "tt_metal/fabric/mesh_graph_descriptors/p150_x8_mesh_graph_descriptor.textproto"
 MESH_GRAPH_DESC_1x8 = (
     "tests/tt_metal/tt_fabric/custom_mesh_descriptors/single_galaxy_1x8_torus_graph_descriptor.textproto"
 )
@@ -682,6 +683,15 @@ def _run_test(
             ),
             id="1x16",
         ),
+        pytest.param(
+            (2, 4),
+            (2, 4),
+            marks=pytest.mark.skipif(
+                not is_mesh_graph_descriptor_set(MESH_GRAPH_DESC_BH_LB),
+                reason=f"BH single LB (2x4 LINE/LINE) requires TT_MESH_GRAPH_DESC_PATH={MESH_GRAPH_DESC_BH_LB}",
+            ),
+            id="bh_lb_2x4",
+        ),
     ],
     indirect=["mesh_device"],
 )
@@ -717,6 +727,10 @@ def test_decode(
 ):
     experts = experts_per_device * mesh_shape[cluster_axis]
     mesh_device.disable_and_clear_program_cache()
+
+    # BH single LB exposes 2 fabric channels per direction (vs WH 4); override the parametrized value.
+    if is_mesh_graph_descriptor_set(MESH_GRAPH_DESC_BH_LB):
+        num_links = 2
 
     worker_cores = ttnn.CoreRangeSet([ttnn.CoreRange(*[ttnn.CoreCoord(c) for c in worker_core_range])])
     mux_cores = ttnn.CoreRangeSet([ttnn.CoreRange(*[ttnn.CoreCoord(c) for c in mux_core_range])])

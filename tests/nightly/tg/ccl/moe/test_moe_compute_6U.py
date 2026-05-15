@@ -36,6 +36,7 @@ MESH_GRAPH_DESC_1x16 = (
 MESH_GRAPH_DESC_1x8 = (
     "tests/tt_metal/tt_fabric/custom_mesh_descriptors/single_galaxy_1x8_torus_graph_descriptor.textproto"
 )
+MESH_GRAPH_DESC_BH_LB = "tt_metal/fabric/mesh_graph_descriptors/p150_x8_mesh_graph_descriptor.textproto"
 # FYI: These tests also work in a MESH_GRAPH_DESC_1x4 setting (~1 minute to set up), but not in a 1x2 setting.
 
 
@@ -1823,6 +1824,93 @@ def test_moe_compute_1x16(
 ):
     _run_model_test(
         mesh_device, mesh_shape, enable_trace, model_cfg, test_mode, has_bias, experts_per_device, activation_type
+    )
+
+
+# ---------------------------------------------------------------------------
+# BH single Loudbox bring-up (2x4 mesh) - #43444
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not is_mesh_graph_descriptor_set(MESH_GRAPH_DESC_BH_LB),
+    reason=f"BH Loudbox test requires TT_MESH_GRAPH_DESC_PATH={MESH_GRAPH_DESC_BH_LB}",
+)
+@pytest.mark.parametrize("device_params", [MOE_DEVICE_PARAMS], indirect=True)
+@pytest.mark.parametrize("mesh_shape, mesh_device", [((2, 4), (2, 4))], indirect=["mesh_device"])
+@pytest.mark.parametrize("cluster_axis", [1])
+@pytest.mark.parametrize("has_bias", [False, True])
+def test_moe_compute_bh_lb(
+    mesh_device,
+    mesh_shape,
+    cluster_axis,
+    has_bias,
+):
+    """Headline gate for #43444: fused MoE on BH single Loudbox.
+
+    Uses canonical `p150_x8_mesh_graph_descriptor.textproto`. POR cabling is a 2x4
+    LINE/LINE mesh with no physical ring closure.
+
+    Known POR single-LB blockers (op-side follow-up required before this gate passes;
+    audited against new moe_compute rebased on #43932):
+
+    1. Writer indexes absent neighbor on LINE endpoints (highest priority).
+       `fabric_multicast_bidirectional_atomic_inc_ring_1d` in
+       ttnn/cpp/ttnn/operations/ccl/common/kernels/moe_utils.hpp unconditionally
+       indexes fabric_connections[positive_direction] AND fabric_connections[negative_direction];
+       LINE endpoints have only one neighbor, so the other slot is uninitialized.
+
+    2. Op forwards Topology::Ring verbatim on Linear fabric.
+       moe_compute_device_operation.cpp passes `topology.value_or(Topology::Ring)`
+       through without calling `ttnn::ccl::get_usable_topology()` (which exists in
+       ccl_common.cpp but is unused by this op). Writer therefore runs ring-shaped
+       code paths on a line, compounding (1).
+
+    3. experts_per_device computed from full-mesh num_devices, not cluster axis.
+       Three sites: moe_compute_device_operation.cpp, moe_compute_program_factory.cpp,
+       selective_reduce_combine_program_factory.cpp. On (2,4) with cluster_axis=1,
+       num_devices=8 but the cluster line has 4 — DP-replicated dim should not divide
+       expert work. Test's experts=16 coincidentally yields ceil(16/8)=2; correct
+       cax-aware value is ceil(16/4)=4. Silently wrong whenever off-axis dim > 1.
+
+    Cluster_axis=[1] only; cax=0 has a separate `get_linearized_mesh_coord` issue.
+
+    Intra-chip dm1 matmul-core ring is fabric-topology-independent and not a blocker.
+
+    Until blockers (1)-(3) are fixed, this test serves as the target configuration
+    and skipif-gated documentation. Activate with
+    `TT_MESH_GRAPH_DESC_PATH=tt_metal/fabric/mesh_graph_descriptors/p150_x8_mesh_graph_descriptor.textproto`.
+    """
+    experts_per_device = 2
+    tokens_per_device = 32
+    N = 2880
+    hidden_size = 2880
+    output_height_shard_dim = 4
+    output_width_shard_dim = 3
+    dtype = ttnn.bfloat16
+    activation_type = MoEActivationFunction.SILU
+
+    selected_experts_k = 8
+    num_layers = 2
+    num_iterations = 2
+
+    run_moe_compute_test(
+        mesh_device=mesh_device,
+        mesh_shape=mesh_shape,
+        cluster_axis=cluster_axis,
+        experts_per_device=experts_per_device,
+        tokens_per_device=tokens_per_device,
+        selected_experts_k=selected_experts_k,
+        num_layers=num_layers,
+        num_iterations=num_iterations,
+        N=N,
+        hidden_size=hidden_size,
+        output_height_shard_dim=output_height_shard_dim,
+        output_width_shard_dim=output_width_shard_dim,
+        dtype=dtype,
+        enable_trace=False,
+        activation_type=activation_type,
+        has_bias=has_bias,
     )
 
 

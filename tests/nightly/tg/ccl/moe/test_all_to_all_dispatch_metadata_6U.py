@@ -27,6 +27,7 @@ MESH_GRAPH_DESC_16x1 = (
 MESH_GRAPH_DESC_1x16 = (
     "tests/tt_metal/tt_fabric/custom_mesh_descriptors/single_galaxy_1x16_torus_graph_descriptor.textproto"
 )
+MESH_GRAPH_DESC_BH_LB = "tt_metal/fabric/mesh_graph_descriptors/p150_x8_mesh_graph_descriptor.textproto"
 MESH_GRAPH_DESC_1x8 = (
     "tests/tt_metal/tt_fabric/custom_mesh_descriptors/single_galaxy_1x8_torus_graph_descriptor.textproto"
 )
@@ -754,8 +755,12 @@ def get_shared_expert_to_device_map(routed_experts, devices, mode):
 # Correctness test - single focused test case for pipeline validation
 # Requires TT_MESH_GRAPH_DESC_PATH to be set to the 1x16 mesh descriptor before running
 @pytest.mark.skipif(
-    not (is_mesh_graph_descriptor_set(MESH_GRAPH_DESC_1x16) or is_mesh_graph_descriptor_set(MESH_GRAPH_DESC_1x8)),
-    reason=f"Requires TT_MESH_GRAPH_DESC_PATH to be 1x16 or 1x8 descriptor",
+    not (
+        is_mesh_graph_descriptor_set(MESH_GRAPH_DESC_1x16)
+        or is_mesh_graph_descriptor_set(MESH_GRAPH_DESC_1x8)
+        or is_mesh_graph_descriptor_set(MESH_GRAPH_DESC_BH_LB)
+    ),
+    reason=f"Requires TT_MESH_GRAPH_DESC_PATH to be 1x16, 1x8, or BH LB descriptor",
 )
 @pytest.mark.parametrize(
     "device_params",
@@ -793,6 +798,16 @@ def get_shared_expert_to_device_map(routed_experts, devices, mode):
             ),
             id="1x16",
         ),
+        pytest.param(
+            (2, 4),
+            (2, 4),
+            1,
+            marks=pytest.mark.skipif(
+                not is_mesh_graph_descriptor_set(MESH_GRAPH_DESC_BH_LB),
+                reason=f"BH single LB (2x4 LINE/LINE) requires TT_MESH_GRAPH_DESC_PATH={MESH_GRAPH_DESC_BH_LB}",
+            ),
+            id="bh_lb_2x4",
+        ),
     ],
     indirect=["mesh_device"],
 )
@@ -806,7 +821,8 @@ def test_correctness(mesh_device, mesh_shape, cluster_axis, routed_experts_per_d
     seq_len = 1
     num_iters = 20
     warmup_iters = 5
-    num_links = 4
+    # BH has 2 fabric channels vs WH's 4; auto-detect at the op layer (test driver passes value through)
+    num_links = 2 if is_mesh_graph_descriptor_set(MESH_GRAPH_DESC_BH_LB) else 4
     dtype = ttnn.bfloat16
     congestion_scheme = "random_sequential_experts"
     worker_mode = ttnn.WorkerMode.DIRECT
