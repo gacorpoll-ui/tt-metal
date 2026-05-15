@@ -756,6 +756,16 @@ except Exception as e:
   echo "LOG_METAL: Running run_t3000_racecondition_hunt_tests"
 
   # ===========================================================================
+  # CANARY: fabric mesh tests that regressed on this branch — run first so any
+  # failure is caught immediately without waiting through the full suite.
+  # record_test exits 1 on first failure (fail-fast).
+  # ===========================================================================
+  echo "LOG_METAL: [CANARY] fabric regression tests (fail-fast)"
+  GTEST_OUTPUT="xml:/tmp/gtest_last_result.xml" timeout 60 \
+    ./build/test/ttnn/unit_tests_ttnn_ccl_multi_tensor \
+    --gtest_filter="MeshDevice1x4Fixture.AllGatherPersistentOutput:MeshDevice1x4Fixture.ReduceScatter:MeshDevice1x4Fixture.AllReduce:MeshDevice2x4Fabric1DFixture.AllGatherEthTxqTeardownRace" ; record_test
+
+  # ===========================================================================
   # BATCH 1: AllGather — primary goal of this branch.
   # ===========================================================================
   echo "LOG_METAL: [BATCH 1/2] AllGather tests"
