@@ -83,6 +83,8 @@ inline void wait_for_notification(
     while (*poll_addr != value
 #ifndef ARCH_WORMHOLE
            && !got_immediate_termination_signal<RISC_CPU_DATA_CACHE_ENABLED>(termination_signal_ptr)
+#else
+           && *termination_signal_ptr != static_cast<uint32_t>(tt::tt_fabric::TerminationSignal::IMMEDIATELY_TERMINATE)
 #endif
     ) {
         router_invalidate_l1_cache<RISC_CPU_DATA_CACHE_ENABLED>();

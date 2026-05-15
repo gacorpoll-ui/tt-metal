@@ -38,6 +38,8 @@ FORCE_INLINE void fabric_sender_side_handshake(
     while (handshake_info->local_value != MAGIC_HANDSHAKE_VALUE
 #ifndef ARCH_WORMHOLE
            && !tt::tt_fabric::got_immediate_termination_signal<RISC_CPU_DATA_CACHE_ENABLED>(termination_signal_ptr)
+#else
+           && *termination_signal_ptr != static_cast<uint32_t>(tt::tt_fabric::TerminationSignal::IMMEDIATELY_TERMINATE)
 #endif
     ) {
         if (count == HS_CONTEXT_SWITCH_TIMEOUT) {
@@ -66,7 +68,9 @@ FORCE_INLINE void fabric_sender_side_handshake(
         internal_::eth_send_packet(0, scratch_addr, local_val_addr, 1);
     }
 #else
-    internal_::eth_send_packet(0, scratch_addr, local_val_addr, 1);
+    if (*termination_signal_ptr != static_cast<uint32_t>(tt::tt_fabric::TerminationSignal::IMMEDIATELY_TERMINATE)) {
+        internal_::eth_send_packet(0, scratch_addr, local_val_addr, 1);
+    }
 #endif
 }
 
@@ -90,6 +94,8 @@ FORCE_INLINE void fabric_receiver_side_handshake(
     while (handshake_info->local_value != MAGIC_HANDSHAKE_VALUE
 #ifndef ARCH_WORMHOLE
            && !tt::tt_fabric::got_immediate_termination_signal<RISC_CPU_DATA_CACHE_ENABLED>(termination_signal_ptr)
+#else
+           && *termination_signal_ptr != static_cast<uint32_t>(tt::tt_fabric::TerminationSignal::IMMEDIATELY_TERMINATE)
 #endif
     ) {
         if (count == HS_CONTEXT_SWITCH_TIMEOUT) {
@@ -112,7 +118,9 @@ FORCE_INLINE void fabric_receiver_side_handshake(
         internal_::eth_send_packet(0, scratch_addr, local_val_addr, 1);
     }
 #else
-    internal_::eth_send_packet(0, scratch_addr, local_val_addr, 1);
+    if (*termination_signal_ptr != static_cast<uint32_t>(tt::tt_fabric::TerminationSignal::IMMEDIATELY_TERMINATE)) {
+        internal_::eth_send_packet(0, scratch_addr, local_val_addr, 1);
+    }
 #endif
 }
 
