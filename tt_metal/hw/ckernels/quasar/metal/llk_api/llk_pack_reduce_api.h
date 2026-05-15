@@ -15,7 +15,7 @@
  * @tparam untilize Unused on Quasar
  * @tparam reduce_dim The reduce op dimension, values = [REDUCE_ROW, REDUCE_COL, REDUCE_SCALAR]
  */
-template <bool untilize, ReduceDim reduce_dim>
+template <[[maybe_unused]] bool untilize, ReduceDim reduce_dim>
 inline void llk_pack_reduce_mask_config() {
     static_assert(!untilize, "Quasar pack reduce mask does not support untilize=true");
     _llk_pack_reduce_mask_config_<reduce_dim>();
