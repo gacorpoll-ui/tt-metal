@@ -269,16 +269,17 @@ ALWI void pack_rows_uninit() { PACK((llk_pack_rows_uninit())); }
  *
  * Return value: None
  *
- * | Param Type | Name   | Description                                                         | Type                  | Valid Range | Required |
- * |------------|--------|---------------------------------------------------------------------|-----------------------|-------------|----------|
- * | Function   | config | ReLU configuration (ReluConfig on Quasar, packed uint32_t on WH/BH) | ReluConfig / uint32_t | Any         | True     |
+ * | Param Type | Name   | Description                                                                  | Type | Valid
+ * Range | Required |
+ * |------------|--------|-------------------------------------------------------------------------------|------------------------------------|-------------|----------|
+ * | Function   | config | ReLU configuration (ReluConfig on Quasar; uint32_t or ReluType on WH/BH) | ReluConfig /
+ * uint32_t / ReluType | Any         | True     |
  */
- #ifdef ARCH_QUASAR
- ALWI void pack_relu_config(const ReluConfig& config) { PACK((llk_pack_relu_config(config))); }
- #else
- ALWI void pack_relu_config(const uint32_t config) {
-     PACK((llk_pack_relu_config(config)));
- }
- #endif
+#ifdef ARCH_QUASAR
+ALWI void pack_relu_config(const ReluConfig& config) { PACK((llk_pack_relu_config(config))); }
+#else
+ALWI void pack_relu_config(uint32_t config) { PACK((llk_pack_relu_config(config))); }
+ALWI void pack_relu_config(ReluType relu_type) { PACK((llk_pack_relu_config(relu_type))); }
+#endif
 
 }  // namespace ckernel

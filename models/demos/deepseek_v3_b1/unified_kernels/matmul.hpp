@@ -169,12 +169,17 @@ struct Matmul {
 
                     // Use 2 iterations for 1x32 tiny tiles
                     if constexpr (CTArgs::fuse_sigmoid) {
+#ifdef ARCH_BLACKHOLE
                         PACK((ckernel::
                                   llk_math_eltwise_unary_sfpu_sigmoid<CTArgs::fused_activation_approx_mode, false, 2>(
-                                      0, (int)VectorMode::R)));
+                                      0, ckernel::VectorMode::R)));
+#else
+                        PACK((ckernel::llk_math_eltwise_unary_sfpu_sigmoid<CTArgs::fused_activation_approx_mode, false>(
+                            0, ckernel::VectorMode::R)));
+#endif
                     } else {
                         PACK((ckernel::llk_math_eltwise_unary_sfpu_silu<CTArgs::fused_activation_approx_mode, false, 2>(
-                            0, (int)VectorMode::R)));
+                            0, VectorMode::R)));
                     }
 
                     PACK(TTI_STALLWAIT(p_stall::STALL_PACK, p_stall::WAIT_SFPU));

@@ -105,4 +105,8 @@ inline void llk_pack_reconfig_data_format(const std::uint32_t old_output, const 
 
 TT_ALWAYS_INLINE void llk_pack_relu_config(const std::uint32_t config) { _llk_pack_relu_config_(config); }
 
+TT_ALWAYS_INLINE void llk_pack_relu_config(ReluType relu_type) {
+    llk_pack_relu_config(static_cast<std::uint32_t>(relu_type));
+}
+
 inline void llk_pack_reconfig_l1_acc(const std::uint32_t enable) { _llk_pack_reconfig_l1_acc_(enable); }

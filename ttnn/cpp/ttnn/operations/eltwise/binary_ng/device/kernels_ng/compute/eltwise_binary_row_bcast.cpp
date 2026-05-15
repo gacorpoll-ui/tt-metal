@@ -43,7 +43,7 @@ void kernel_main() {
 
     binary_op_init_common(cb_post_lhs, cb_post_rhs, cb_out);
 #ifdef PACK_RELU
-    PACK((llk_pack_relu_config(static_cast<std::uint32_t>(ReluType::ZERO_RELU))));
+    PACK((llk_pack_relu_config(ReluType::ZERO_RELU)));
 #endif
 
     for (uint32_t tile_id = 0; tile_id < num_tiles; ++tile_id) {

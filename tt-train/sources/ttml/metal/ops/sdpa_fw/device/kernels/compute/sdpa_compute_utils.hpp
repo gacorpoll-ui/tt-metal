@@ -42,7 +42,7 @@ void calculate_recip_first_column() {
 }
 
 void recip_tile_first_column(uint32_t idst) {
-    _llk_math_eltwise_unary_sfpu_params_(calculate_recip_first_column, idst, (int)VectorMode::C);
+    _llk_math_eltwise_unary_sfpu_params_(calculate_recip_first_column, idst, VectorMode::C);
 }
 
 // First-column exp with fused scale: exp(scale * x) on column 0 only.
@@ -63,7 +63,7 @@ void calculate_exponential_first_column() {
 
 template <uint16_t scale_bf16>
 void exp_tile_first_column(uint32_t idst) {
-    _llk_math_eltwise_unary_sfpu_params_(calculate_exponential_first_column<scale_bf16>, idst, (int)VectorMode::C);
+    _llk_math_eltwise_unary_sfpu_params_(calculate_exponential_first_column<scale_bf16>, idst, VectorMode::C);
 }
 #endif
 
@@ -164,7 +164,7 @@ void apply_exp_inplace_and_find_exp_sum(uint32_t cb_attention_weights, uint32_t 
     // Fused scale+exp: compute exp(scale * (score - max)) in a single SFPU pass.
     constexpr uint16_t scaler_bf16 = static_cast<uint16_t>(scaler_fp32 >> 16);
     exp_tile_init</* approx */ false, scaler_fp32>();
-    exp_tile</* approx */ false, /* scale_en */ true>(exp_dst_idx, (int)VectorMode::RC, scaler_bf16);
+    exp_tile</* approx */ false, /* scale_en */ true>(exp_dst_idx, VectorMode::RC, scaler_bf16);
     tile_regs_commit();
 
     tile_regs_wait();

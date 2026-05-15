@@ -17,7 +17,7 @@ inline void _llk_math_eltwise_ternary_sfpu_params_(
     std::uint32_t dst_index_in1,
     std::uint32_t dst_index_in2,
     std::uint32_t dst_index_out,
-    int vector_mode = static_cast<int>(VectorMode::RC),
+    VectorMode vector_mode = VectorMode::RC,
     Args&&... args)
 {
     LLK_ASSERT((dst_index_in0 < get_dest_max_tiles<DST_SYNC_MODE, DST_ACCUM_MODE, DstTileShape::Tile32x32>()), "dst_index_in0 exceeds max dest tiles");
@@ -27,7 +27,7 @@ inline void _llk_math_eltwise_ternary_sfpu_params_(
 
     _llk_math_eltwise_ternary_sfpu_start_(0); // Reuse same sync primitive
 
-    if (vector_mode == static_cast<int>(VectorMode::R))
+    if (vector_mode == VectorMode::R)
     {
         // Row vector - Face0 + Face1
         for (int face = 0; face < 2; face++)
@@ -42,7 +42,7 @@ inline void _llk_math_eltwise_ternary_sfpu_params_(
             TTI_SETRWC(p_setrwc::CLR_NONE, p_setrwc::CR_D, 8, 0, 0, p_setrwc::SET_D);
         }
     }
-    else if (vector_mode == static_cast<int>(VectorMode::C))
+    else if (vector_mode == VectorMode::C)
     {
         // Column vector - Face0 + Face2
         for (int face = 0; face < 2; face++)
@@ -54,7 +54,7 @@ inline void _llk_math_eltwise_ternary_sfpu_params_(
             }
         }
     }
-    else if (vector_mode == static_cast<int>(VectorMode::RC))
+    else if (vector_mode == VectorMode::RC)
     {
         // All 4 faces
         for (int face = 0; face < 4; face++)

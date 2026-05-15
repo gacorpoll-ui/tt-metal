@@ -94,3 +94,7 @@ TT_ALWAYS_INLINE void llk_pack_relu_config(const std::uint32_t config) {
 TT_ALWAYS_INLINE void llk_pack_relu_config(const ckernel::ReluConfig& relu_config) {
     _llk_pack_relu_config_<p_pacr::PACK0, false>(relu_config);
 }
+
+TT_ALWAYS_INLINE void llk_pack_relu_config(ckernel::ReluType relu_type) {
+    llk_pack_relu_config(ckernel::ReluConfig::from_packed(static_cast<std::uint32_t>(relu_type)));
+}
