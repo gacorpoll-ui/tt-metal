@@ -95,13 +95,16 @@ void allocate_cbs(
 
 // Same allocation policy as allocate_cbs(), but appends CBDescriptor entries to `desc` (used by
 // ProgramDescriptor-based conv2d factories). `all_cores` must be the logical core grid for the CBs.
+// `l1_indices_buffer` is the Buffer backing the sliding-window indices tensor. In the descriptor
+// migration this typically comes from a DeviceStorage produced by the factory's prepare_resources
+// hook (not a fresh Tensor), so it is passed as a raw Buffer* instead of a Tensor reference.
 void allocate_cbs_to_program_descriptor(
     std::vector<CBInfo>& cb_info,
     tt::tt_metal::ProgramDescriptor& desc,
     const CoreRangeSet& all_cores,
     const Tensor& input_tensor,
     const Tensor& output_tensor,
-    const Tensor& l1_indices_tensor);
+    tt::tt_metal::Buffer* l1_indices_buffer);
 
 const CBInfo& get_cb_info_by_name(const std::vector<CBInfo>& cb_info, Conv2dCb cb_name);
 CBInfo& access_cb_info_by_name(const std::vector<CBInfo>& cb_info, Conv2dCb cb_name);

@@ -395,7 +395,7 @@ void allocate_cbs_to_program_descriptor(
     const CoreRangeSet& all_cores,
     const Tensor& input_tensor,
     const Tensor& output_tensor,
-    const Tensor& l1_indices_tensor) {
+    tt::tt_metal::Buffer* l1_indices_buffer) {
     uint32_t cb_index = 0;
     for (auto& cb : cb_info) {
         if (cb.num_pages == 0) {
@@ -410,7 +410,7 @@ void allocate_cbs_to_program_descriptor(
             } else if (cb.name == Conv2dCb::OUT || cb.name == Conv2dCb::MATMUL_PARTIALS) {
                 buffer = output_tensor.buffer();
             } else if (cb.name == Conv2dCb::READER_INDICES) {
-                buffer = l1_indices_tensor.buffer();
+                buffer = l1_indices_buffer;
             } else {
                 TT_THROW(
                     "Unexpected circular buffer name {}. Expected one of: SHARDED_ACT_CB, OUT0_CB, READER_INDICES_CB",
