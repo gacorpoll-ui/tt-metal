@@ -3508,6 +3508,37 @@ void FabricFirmwareInitializer::compile_and_configure_fabric() {
     }
     log_info(tt::LogMetal, "Fabric initialized on {} devices", configured_count);
 
+    // FIX CV (#42429): MMIO-first HANDSHAKE_READY staging for the init path.
+    //
+    // Unlike quiesce_internal() which has 3-pass MMIO-first staging (Pass 1a/1b/1c), the
+    // configure_fabric() init path had no staging — all ERISCs were launched without
+    // waiting for any to reach HANDSHAKE_READY before launching the next batch.
+    //
+    // This creates the same race FIX CU was designed to prevent: non-MMIO ERISCs may
+    // enter the ETH handshake loop before their MMIO peers have finished channel setup.
+    //
+    // Fix: After both passes of configure_fabric(), poll MMIO devices first for
+    // HANDSHAKE_READY, then non-MMIO.  This ensures MMIO ERISCs are ready to receive
+    // handshake packets before non-MMIO ERISCs begin trying to handshake with them.
+    //
+    // Dead-relay devices are skipped — their ERISCs have no firmware loaded.
+    {
+        // Pass A: Wait for MMIO devices to reach HANDSHAKE_READY.
+        for (auto* dev : compiled_devices) {
+            if (dev && cluster_.get_associated_mmio_device(dev->id()) == dev->id() &&
+                dead_relay_devices_.count(dev->id()) == 0) {
+                dev->wait_for_eth_cores_launched();
+            }
+        }
+        // Pass B: Wait for non-MMIO devices to reach HANDSHAKE_READY.
+        for (auto* dev : compiled_devices) {
+            if (dev && cluster_.get_associated_mmio_device(dev->id()) != dev->id() &&
+                dead_relay_devices_.count(dev->id()) == 0) {
+                dev->wait_for_eth_cores_launched();
+            }
+        }
+    }
+
     // FIX FQ-5 (#42429): Log exactly which ETH cores received fabric/dispatch firmware and
     // which were skipped (probe-dead, base-UMD, external, or dead-relay).  This makes the
     // "ERISC in base firmware" condition immediately diagnosable when a relay command targets
