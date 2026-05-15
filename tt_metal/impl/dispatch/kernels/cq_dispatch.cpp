@@ -273,27 +273,34 @@ void completion_queue_reserve_back(uint32_t num_pages) {
     uint32_t completion_rd_ptr;
     uint32_t completion_rd_toggle;
     uint32_t available_space;
-
+    // TODO: Remove. This is to just verify we're reading the correct core and that this function is even running.
+    get_telemetry_ptr<DispatchTelemetry, dispatch_telemetry_base>()->blocked_by_host_count++;
     {
         DispatchTelemetryBlockGuard telemetry_blocked;
-        do {
+        auto update_completion_queue_read_ptr = [&]() -> uint32_t __attribute__((always_inline)) {
             invalidate_l1_cache();
             completion_rd_ptr_and_toggle = *get_cq_completion_read_ptr();
             completion_rd_ptr = completion_rd_ptr_and_toggle & 0x7fffffff;
             completion_rd_toggle = completion_rd_ptr_and_toggle >> 31;
+
             // Toggles not equal means write ptr has wrapped but read ptr has not
             // so available space is distance from write ptr to read ptr
             // Toggles are equal means write ptr is ahead of read ptr
             // so available space is total space minus the distance from read to write ptr
-            available_space =
-                completion_rd_toggle != cq_write_interface.completion_fifo_wr_toggle
+            return completion_rd_toggle != cq_write_interface.completion_fifo_wr_toggle
                     ? completion_rd_ptr - cq_write_interface.completion_fifo_wr_ptr
                     : (completion_queue_size_16B - (cq_write_interface.completion_fifo_wr_ptr - completion_rd_ptr));
+        };
 
-            if (data_size_16B > available_space) {
-                telemetry_blocked.mark_blocked();
-            }
-        } while (data_size_16B > available_space);
+        available_space = update_completion_queue_read_ptr();
+        DEVICE_PRINT("available_space: {} data_size_16B: {}\n", available_space, data_size_16B);
+        if (data_size_16B > available_space) {
+            telemetry_blocked.mark_blocked();
+            do {
+                available_space = update_completion_queue_read_ptr();
+                DEVICE_PRINT("Retry - available_space: {} data_size_16B: {}\n", available_space, data_size_16B);
+            } while (data_size_16B > available_space);
+        }
     }
 
     WAYPOINT("QRBD");
