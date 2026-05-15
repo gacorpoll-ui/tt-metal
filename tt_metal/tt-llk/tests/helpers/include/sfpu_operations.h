@@ -159,8 +159,7 @@ template <
     bool FAST_MODE      = false,
     bool STABLE_SORT    = false,
     bool CLAMP_NEGATIVE = false>
-void call_unary_sfpu_operation(
-    std::uint32_t dst_index, std::uint32_t math_format = 0, float fill_const_value = 5.0f, int vector_mode = static_cast<int>(VectorMode::None))
+void call_unary_sfpu_operation(std::uint32_t dst_index, std::uint32_t math_format = 0, float fill_const_value = 5.0f, VectorMode vector_mode = VectorMode::None)
 {
     if constexpr (OPERATION == SfpuType::abs)
     {
