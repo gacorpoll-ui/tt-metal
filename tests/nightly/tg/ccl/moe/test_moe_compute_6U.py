@@ -10,6 +10,10 @@ import os
 import pytest
 import random
 import torch
+
+# Force torch CPU ops to use all cores. bf16 matmul on CPU is single-thread on
+# some torch builds even with OMP_NUM_THREADS set; this is the runtime knob.
+torch.set_num_threads(os.cpu_count())
 import ttnn
 from ttnn.operations.ccl import MoEActivationFunction
 
@@ -1479,8 +1483,10 @@ def run_moe_compute_test(
         torch_b2=torch_b2 if has_bias else None,
         activation_type=activation_type,
     )
+    logger.info(f"Matmul goldens done (shape={tuple(matmul_goldens.shape)}, dtype={matmul_goldens.dtype})")
 
     # compute goldens for combine
+    logger.info(f"Computing combine goldens")
     combine_goldens = compute_combine_golden(
         num_layers,
         experts,
@@ -1492,6 +1498,7 @@ def run_moe_compute_test(
         activation_goldens,
         cluster_axis,
     )
+    logger.info(f"Combine goldens done")
 
     # Get memory configurations for weights (handles bias padding)
     w0_w1_mem_config, w2_mem_config, K_for_shard, w2_N_total = get_weight_mem_configs(
@@ -1902,7 +1909,9 @@ def test_moe_compute_bh_lb(
     on a real BH Loudbox.
     """
     experts_per_device = 2
-    tokens_per_device = 32
+    # Reduced from 32 to keep host-side golden compute fast on BH single-LB;
+    # 8 is in the standard parametrize set [3, 8, 16, 32] elsewhere.
+    tokens_per_device = 8
     N = 2880
     hidden_size = 2880
     output_height_shard_dim = 4
