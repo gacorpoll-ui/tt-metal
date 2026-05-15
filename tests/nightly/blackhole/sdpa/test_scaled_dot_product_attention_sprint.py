@@ -41,6 +41,7 @@ def run_sdpa_noncausal(
     pcc_threshold=0.9998,
     rmse_threshold=None,
     do_check=True,
+    global_q_scheduling=False,
 ):
     # Ensure same seed, reproducibility
     torch.manual_seed(1234)
@@ -52,6 +53,7 @@ def run_sdpa_noncausal(
         q_chunk_size=q_chunk_size,
         k_chunk_size=k_chunk_size,
         exp_approx_mode=False,
+        global_q_scheduling=global_q_scheduling,
     )
 
     # BH adaptation: use init_device_compute_kernel_config instead of WormholeComputeKernelConfig
@@ -207,6 +209,7 @@ def test_sdpa_sweep_perf_impl(device, b, nh, s, d, q_chunk_size, k_chunk_size, d
 
 # === TEST 2: ACCURACY VERIFICATION ===
 @pytest.mark.parametrize("dtype", [ttnn.bfloat16], ids=["bf16"])
+@pytest.mark.parametrize("global_q_scheduling", [False, True], ids=["hier", "global_q"])
 @pytest.mark.parametrize("q_chunk_size", Q_CHUNK_SIZES, ids=[f"q{s}" for s in Q_CHUNK_SIZES])
 @pytest.mark.parametrize("k_chunk_size", K_CHUNK_SIZES, ids=[f"k{s}" for s in K_CHUNK_SIZES])
 @pytest.mark.parametrize(
@@ -214,10 +217,11 @@ def test_sdpa_sweep_perf_impl(device, b, nh, s, d, q_chunk_size, k_chunk_size, d
     INPUT_SHAPES,
     ids=INPUT_IDS,
 )
-def test_sdpa_accuracy(device, b, nh, s, d, q_chunk_size, k_chunk_size, dtype):
+def test_sdpa_accuracy(device, b, nh, s, d, q_chunk_size, k_chunk_size, global_q_scheduling, dtype):
     """
     Test SDPA accuracy for the given shapes and chunk size configurations.
-    Verifies PCC > 0.9997 against PyTorch reference.
+    Verifies PCC > 0.9997 against PyTorch reference. Runs both the default
+    hierarchical work distribution and the global_q_scheduling distribution.
     """
     # nkv = nh for non-GQA case
     pcc_threshold = 0.9997
@@ -235,6 +239,7 @@ def test_sdpa_accuracy(device, b, nh, s, d, q_chunk_size, k_chunk_size, dtype):
         pcc_threshold=pcc_threshold,
         rmse_threshold=rmse_threshold,
         do_check=True,
+        global_q_scheduling=global_q_scheduling,
     )
 
 

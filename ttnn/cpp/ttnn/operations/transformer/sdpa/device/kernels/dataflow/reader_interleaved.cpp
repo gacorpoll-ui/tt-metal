@@ -84,6 +84,12 @@ void kernel_main() {
     constexpr auto page_table_args = TensorAccessorArgs<mask_args.next_compile_time_args_offset()>();
     constexpr auto attention_sink_args = TensorAccessorArgs<page_table_args.next_compile_time_args_offset()>();
     constexpr auto chunk_start_idx_args = TensorAccessorArgs<attention_sink_args.next_compile_time_args_offset()>();
+    // Global Q scheduling: zigzag sub-mode and enable flag (tail args; zigzag only meaningful
+    // when enabled).
+    constexpr bool global_q_use_zigzag =
+        get_compile_time_arg_val(chunk_start_idx_args.next_compile_time_args_offset()) == 1;
+    constexpr bool global_q_scheduling =
+        get_compile_time_arg_val(chunk_start_idx_args.next_compile_time_args_offset() + 1) == 1;
 
     uint32_t argidx = 0;
     const uint32_t q_addr = get_arg_val<uint32_t>(argidx++);
@@ -113,6 +119,12 @@ void kernel_main() {
     uint32_t chunked_q_chunk_offset_phase_2_local = chunked_q_chunk_offset_phase_2;
 
     const uint32_t q_chunks_per_core = local_q_end - local_q_start;
+
+    // Global Q scheduling runtime args (parsed after chain metadata so the host-side ordering
+    // aligns for both causal and non-causal). Host enforces no chunked/no attention_sink under
+    // global_q_scheduling.
+    uint32_t global_q_start = 0;
+    uint32_t global_q_count = 0;
 
     // Parse chain metadata for KV forwarding (non-causal only)
     uint32_t is_chain_participant = 0;
@@ -186,6 +198,12 @@ void kernel_main() {
                 receiver_semaphore_noc_addr = get_noc_addr(next_physical_x, next_physical_y, receiver_semaphore_addr);
             }
         }
+    }
+
+    if constexpr (global_q_scheduling) {
+        // Global Q scheduling runtime args sit right after chain metadata.
+        global_q_start = get_arg_val<uint32_t>(argidx++);
+        global_q_count = get_arg_val<uint32_t>(argidx++);
     }
 
     // When chunked: only process K/V up to (chunk_start_idx + Q_chunk_length) tokens.
@@ -282,68 +300,13 @@ void kernel_main() {
             valid_Skt_bound = valid_Skt + chunked_q_chunk_offset * Sq_chunk_t;
         }
 
-        for (uint32_t nb = local_batch_start; nb < local_batch_end; ++nb) {
-            if constexpr (is_chunked) {
-                // Chunked means that we have paged attention
-                cb_reserve_back(cb_id_page_table, 1);
-                page_table_ptr = read_page_table_for_batch(
-                    cb_id_page_table, nb, page_table_args, page_table_addr, page_table_stick_size);
-                cb_push_back(cb_id_page_table, 1);
-            }
-
-            // Calculate mask batch offset based on broadcasting (using unpadded mask dimensions):
-            // - If batch is broadcasted [1 x ...]: always use batch=0, so offset = 0
-            // - If batch is not broadcasted [b x ...]: use actual batch nb
-            uint32_t mask_batch_offset = 0;
-            if constexpr (!broadcast_provided_mask_batch) {
-                if constexpr (broadcast_provided_mask_heads) {
-                    // [b x 1 x s x s]: batch offset without head factor
-                    mask_batch_offset = nb * valid_Sqt * valid_Skt;
-                } else {
-                    // [b x h x s x s]: batch offset with all heads
-                    mask_batch_offset = nb * valid_Sqt * valid_Skt * NQH;
-                }
-            }
-            for (uint32_t nq = local_nh_start; nq < local_nh_end; ++nq) {
-                // Read attention sink for this Q chunk if enabled
-                if constexpr (use_attention_sink) {
-                    cb_reserve_back(cb_attention_sink, Sq_chunk_t);
-                    uint32_t attention_sink_write_ptr = get_write_ptr(cb_attention_sink);
-
-                    // Attention sink has shape [1, NH, 1, 1] - single value per head
-                    // Read the single tile for this head into the first tile of the CB
-                    const uint32_t sink_tile_id =
-                        attention_sink_tile_shape.id_of(0, nq, 0, 0);  // batch=0 since shape is [1,NH,1,1]
-                    noc_async_read_tile(sink_tile_id, attention_sink_reader, attention_sink_write_ptr);
-                    noc_async_read_barrier();
-
-                    // Fill all Sq_chunk_t tiles in the CB by copying the first element of the source tile
-                    // to the first element of every row in each destination tile
-                    fill_attention_sink_tiles<attention_sink_tile_bytes>(
-                        cb_attention_sink, Sq_chunk_t, attention_sink_write_ptr);
-
-                    cb_push_back(cb_attention_sink, Sq_chunk_t);
-                }
-                for (uint32_t q_iter = 0; q_iter < q_chunks_per_core; ++q_iter) {
-                    /*
-                    Read a chunk of Q. BALANCED_Q_PARALLEL evenly distributes Q chunks
-                    across cores when causal and other conditions are met.
-                    When chunked, we must treat Q as offset by some factor.
-                    When causal, we set up the bounds such that we only read the lower triangle of K and V.
-                    When non-causal, read all of K and V.
-                    */
-                    uint32_t q_chunk;
-#if defined BALANCED_Q_PARALLEL
-                    uint32_t q_chunk_div_2 = q_chunks_per_core / 2;
-                    if (q_iter < q_chunk_div_2) {  // bottom half
-                        q_chunk = local_q_start + q_iter;
-                    } else {
-                        uint32_t back_q_iter = q_iter - q_chunk_div_2;  // Back half should start at 0
-                        q_chunk = q_num_chunks - 1 - (local_q_start + back_q_iter);
-                    }
-#else
-                    q_chunk = local_q_start + q_iter;
-#endif
+        // Body run once per (nb, nq, q_chunk) triple. Hierarchical mode iterates explicitly;
+        // global Q scheduling decomposes a flat index. Shared as a lambda to keep one definition.
+        // q_iter is used only by non-causal chain forwarding (disabled under global Q mode, where
+        // we just pass the flat iter index).
+        auto
+            read_one_chunk =
+                [&](uint32_t nb, uint32_t nq, uint32_t q_chunk, uint32_t q_iter, uint32_t mask_batch_offset) {
                     /*
                     Determine how many rows of Q will be read. Both start and end rows are
                     capped by valid_Sqt, since Sq padding is independent of Sk padding.
@@ -650,13 +613,93 @@ void kernel_main() {
                                 cb_push_back(cb_v_in, v_chunk_tiles);
                             }
                         }
+                    }  // close k_chunk
+                };  // close read_one_chunk lambda
+
+        if constexpr (global_q_scheduling) {
+            // Global Q scheduling: iterate over a linear range of B*NQH*q_num_chunks chunks.
+            // Restrictions enforced on host: !is_chunked, !use_attention_sink. Chain forwarding is
+            // disabled (host sets is_chain_participant=0 on every core).
+            uint32_t prev_nb_global_q = static_cast<uint32_t>(-1);
+            uint32_t mask_batch_offset = 0;
+            for (uint32_t global_q_iter = 0; global_q_iter < global_q_count; ++global_q_iter) {
+                const auto decoded =
+                    decompose_global_q_index(global_q_start + global_q_iter, q_num_chunks, NQH, global_q_use_zigzag);
+                if (decoded.nb != prev_nb_global_q) {
+                    prev_nb_global_q = decoded.nb;
+                    if constexpr (!broadcast_provided_mask_batch) {
+                        if constexpr (broadcast_provided_mask_heads) {
+                            mask_batch_offset = decoded.nb * valid_Sqt * valid_Skt;
+                        } else {
+                            mask_batch_offset = decoded.nb * valid_Sqt * valid_Skt * NQH;
+                        }
                     }
                 }
+                read_one_chunk(decoded.nb, decoded.nq, decoded.q_chunk, global_q_iter, mask_batch_offset);
             }
+        } else {
+            for (uint32_t nb = local_batch_start; nb < local_batch_end; ++nb) {
+                if constexpr (is_chunked) {
+                    // Chunked means that we have paged attention
+                    cb_reserve_back(cb_id_page_table, 1);
+                    page_table_ptr = read_page_table_for_batch(
+                        cb_id_page_table, nb, page_table_args, page_table_addr, page_table_stick_size);
+                    cb_push_back(cb_id_page_table, 1);
+                }
 
-            if constexpr (is_chunked) {
-                cb_pop_front(cb_id_page_table, 1);
+                // Calculate mask batch offset based on broadcasting (using unpadded mask dimensions):
+                // - If batch is broadcasted [1 x ...]: always use batch=0, so offset = 0
+                // - If batch is not broadcasted [b x ...]: use actual batch nb
+                uint32_t mask_batch_offset = 0;
+                if constexpr (!broadcast_provided_mask_batch) {
+                    if constexpr (broadcast_provided_mask_heads) {
+                        mask_batch_offset = nb * valid_Sqt * valid_Skt;
+                    } else {
+                        mask_batch_offset = nb * valid_Sqt * valid_Skt * NQH;
+                    }
+                }
+                for (uint32_t nq = local_nh_start; nq < local_nh_end; ++nq) {
+                    // Read attention sink for this Q chunk if enabled
+                    if constexpr (use_attention_sink) {
+                        cb_reserve_back(cb_attention_sink, Sq_chunk_t);
+                        uint32_t attention_sink_write_ptr = get_write_ptr(cb_attention_sink);
+
+                        // Attention sink has shape [1, NH, 1, 1] - single value per head
+                        // Read the single tile for this head into the first tile of the CB
+                        const uint32_t sink_tile_id =
+                            attention_sink_tile_shape.id_of(0, nq, 0, 0);  // batch=0 since shape is [1,NH,1,1]
+                        noc_async_read_tile(sink_tile_id, attention_sink_reader, attention_sink_write_ptr);
+                        noc_async_read_barrier();
+
+                        // Fill all Sq_chunk_t tiles in the CB by copying the first element of the
+                        // source tile to the first element of every row in each destination tile
+                        fill_attention_sink_tiles<attention_sink_tile_bytes>(
+                            cb_attention_sink, Sq_chunk_t, attention_sink_write_ptr);
+
+                        cb_push_back(cb_attention_sink, Sq_chunk_t);
+                    }
+                    for (uint32_t q_iter = 0; q_iter < q_chunks_per_core; ++q_iter) {
+                        // BALANCED_Q_PARALLEL evenly distributes Q chunks across cores when causal
+                        // and other conditions are met.
+                        uint32_t q_chunk;
+#if defined BALANCED_Q_PARALLEL
+                        uint32_t q_chunk_div_2 = q_chunks_per_core / 2;
+                        if (q_iter < q_chunk_div_2) {  // bottom half
+                            q_chunk = local_q_start + q_iter;
+                        } else {
+                            uint32_t back_q_iter = q_iter - q_chunk_div_2;  // Back half should start at 0
+                            q_chunk = q_num_chunks - 1 - (local_q_start + back_q_iter);
+                        }
+#else
+                        q_chunk = local_q_start + q_iter;
+#endif
+                        read_one_chunk(nb, nq, q_chunk, q_iter, mask_batch_offset);
+                    }
+                }
+                if constexpr (is_chunked) {
+                    cb_pop_front(cb_id_page_table, 1);
+                }
             }
         }
-    }
+    }  // close phase
 }

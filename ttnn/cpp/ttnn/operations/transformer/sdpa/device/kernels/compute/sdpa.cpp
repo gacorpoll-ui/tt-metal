@@ -49,6 +49,9 @@ void kernel_main() {
     constexpr uint32_t valid_Skt = get_compile_time_arg_val(31);
     constexpr bool uniform_dataformat = get_compile_time_arg_val(32) == 1;
     constexpr uint32_t k_partial_col = get_compile_time_arg_val(33);
+    // Global Q scheduling: enable flag and zigzag sub-mode (only meaningful when enabled).
+    constexpr bool global_q_use_zigzag = get_compile_time_arg_val(34) == 1;
+    constexpr bool global_q_scheduling = get_compile_time_arg_val(35) == 1;
 
     const uint32_t core_id = get_arg_val<uint32_t>(0);
     const uint32_t local_batch_start = get_arg_val<uint32_t>(1);
@@ -64,6 +67,17 @@ void kernel_main() {
     uint32_t chunked_q_chunk_offset_phase_2 = 0;
     if (num_phases == 2) {
         chunked_q_chunk_offset_phase_2 = get_arg_val<uint32_t>(10);
+    }
+
+    // Global Q scheduling: non-chunked, no attention sink, single phase. Args sit right after
+    // chunked_q_chunk_offset_phase_1 (host packs them at slots 10..11). When disabled, slots
+    // 10..11 are unused by this kernel (num_phases==1 means arg 10 is also unused otherwise),
+    // so an unconditional read is safe — the lambda below only uses them in the enabled branch.
+    uint32_t global_q_start = 0;
+    uint32_t global_q_count = 0;
+    if constexpr (global_q_scheduling) {
+        global_q_start = get_arg_val<uint32_t>(10);
+        global_q_count = get_arg_val<uint32_t>(11);
     }
 
     const uint32_t q_chunks_per_core = local_q_end - local_q_start;
@@ -201,62 +215,83 @@ void kernel_main() {
                 chunked_q_chunk_offset = chunked_q_chunk_offset_phase_2;
             }
 
-            for (uint32_t nb = local_batch_start; nb < local_batch_end; ++nb) {
-                for (uint32_t nq = local_nh_start; nq < local_nh_end; ++nq) {
-                    sdpa_standard<
-                        cb_qk_im,
-                        cb_identity_scale_in,
-                        cb_attention_sink,
-                        Sq_chunk_t,
-                        Sk_chunk_t,
-                        DHt,
-                        vDHt,
-                        use_attention_sink,
-                        is_causal,
-                        use_provided_mask,
-                        use_padded_mask,
-                        is_chunked,
-                        scale_fp32,
-                        sliding_window_size,
-                        use_lightweight_causal_mask>(
-                        Skt,
-                        qk_in0_block_w,
-                        qk_subblock_w,
-                        qk_subblock_h,
-                        qk_in0_num_subblocks,
-                        qk_in1_num_subblocks,
-                        qk_num_blocks,
-                        out_in0_block_w,
-                        out_subblock_w,
-                        out_subblock_h,
-                        out_in0_num_subblocks,
-                        out_in1_num_subblocks,
-                        out_num_blocks,
-                        0,                  // iter_q_start
-                        q_chunks_per_core,  // iter_q_end
-                        q_num_chunks,
-                        local_q_start,
-                        chunked_q_chunk_offset,
-                        k_num_chunks,
-                        q_chunk_tiles,
-                        k_chunk_tiles,
-                        v_chunk_tiles,
-                        qk_chunk_tiles,
-                        out_chunk_tiles,
-                        cb_q_in,
-                        cb_k_in,
-                        cb_v_in,
-                        cb_mask_in,
-                        cb_col_identity,
-                        cb_out_im_A,
-                        cb_out_im_B,
-                        cb_max_A,
-                        cb_max_B,
-                        cb_sum_A,
-                        cb_sum_B,
-                        cb_exp_max_diff,
-                        cb_out,
-                        lw_mask);
+            // Run sdpa_standard once per (nb, nq, q_chunk) triple. Under global Q scheduling the
+            // outer iteration is a flat range over B*NQH*q_num_chunks chunks (iter_q_start/end pair
+            // collapses to one chunk, with local_q_start carrying the absolute q_chunk index).
+            // Under hierarchical scheduling the (nb, nq) loops iterate explicitly and
+            // sdpa_standard's inner loop walks q_chunks_per_core chunks per (nb, nq).
+            auto run_sdpa_standard = [&](uint32_t iter_q_start, uint32_t iter_q_end, uint32_t inner_q_start) {
+                sdpa_standard<
+                    cb_qk_im,
+                    cb_identity_scale_in,
+                    cb_attention_sink,
+                    Sq_chunk_t,
+                    Sk_chunk_t,
+                    DHt,
+                    vDHt,
+                    use_attention_sink,
+                    is_causal,
+                    use_provided_mask,
+                    use_padded_mask,
+                    is_chunked,
+                    scale_fp32,
+                    sliding_window_size,
+                    use_lightweight_causal_mask>(
+                    Skt,
+                    qk_in0_block_w,
+                    qk_subblock_w,
+                    qk_subblock_h,
+                    qk_in0_num_subblocks,
+                    qk_in1_num_subblocks,
+                    qk_num_blocks,
+                    out_in0_block_w,
+                    out_subblock_w,
+                    out_subblock_h,
+                    out_in0_num_subblocks,
+                    out_in1_num_subblocks,
+                    out_num_blocks,
+                    iter_q_start,
+                    iter_q_end,
+                    q_num_chunks,
+                    inner_q_start,
+                    chunked_q_chunk_offset,
+                    k_num_chunks,
+                    q_chunk_tiles,
+                    k_chunk_tiles,
+                    v_chunk_tiles,
+                    qk_chunk_tiles,
+                    out_chunk_tiles,
+                    cb_q_in,
+                    cb_k_in,
+                    cb_v_in,
+                    cb_mask_in,
+                    cb_col_identity,
+                    cb_out_im_A,
+                    cb_out_im_B,
+                    cb_max_A,
+                    cb_max_B,
+                    cb_sum_A,
+                    cb_sum_B,
+                    cb_exp_max_diff,
+                    cb_out,
+                    lw_mask);
+            };
+
+            if constexpr (global_q_scheduling) {
+                for (uint32_t global_q_iter = 0; global_q_iter < global_q_count; ++global_q_iter) {
+                    const uint32_t remapped =
+                        remap_q_index(global_q_start + global_q_iter, q_num_chunks, global_q_use_zigzag);
+                    const uint32_t q_chunk_abs = remapped % q_num_chunks;
+                    run_sdpa_standard(/*iter_q_start=*/0, /*iter_q_end=*/1, /*inner_q_start=*/q_chunk_abs);
+                }
+            } else {
+                for (uint32_t nb = local_batch_start; nb < local_batch_end; ++nb) {
+                    for (uint32_t nq = local_nh_start; nq < local_nh_end; ++nq) {
+                        run_sdpa_standard(
+                            /*iter_q_start=*/0,
+                            /*iter_q_end=*/q_chunks_per_core,
+                            /*inner_q_start=*/local_q_start);
+                    }
                 }
             }
         }
