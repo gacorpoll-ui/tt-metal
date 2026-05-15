@@ -25,7 +25,7 @@ sfpi_inline sfpi::vInt compute_unsigned_remainder_int32(const sfpi::vInt& a_sign
 
     // Convert to float for reciprocal computation
     // Handle edge case: if conversion results in negative
-    sfpi::vFloat b_f = sfpi::int32_to_float(b, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat b_f = sfpi::sfpi::int32_to_float(b, sfpi::RoundMode::NearestEven);
     v_if(b_f < 0.0f) { b_f = TWO_POW_31; }
     v_endif;
 
@@ -46,7 +46,7 @@ sfpi_inline sfpi::vInt compute_unsigned_remainder_int32(const sfpi::vInt& a_sign
     sfpi::vUInt a = sfpi::abs(a_signed);
     inv_b_f = e * inv_b_f + inv_b_f;
 
-    sfpi::vFloat a_f = sfpi::int32_to_float(a, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat a_f = sfpi::sfpi::int32_to_float(a, sfpi::RoundMode::NearestEven);
     v_if(a_f < 0.0f) { a_f = TWO_POW_31; }
     v_endif;
 
@@ -65,10 +65,10 @@ sfpi_inline sfpi::vInt compute_unsigned_remainder_int32(const sfpi::vInt& a_sign
 
     // Split q and b into 11-bit chunks to compute q * b
     sfpi::vUInt MASK_11 = 0x7ff;
-    sfpi::vFloat q1 = int32_to_float(q & MASK_11, sfpi::RoundMode::NearestEven);
-    sfpi::vFloat q2 = int32_to_float(q >> 11, sfpi::RoundMode::NearestEven);
-    sfpi::vFloat b1 = int32_to_float((b >> 11) & MASK_11, sfpi::RoundMode::NearestEven);
-    sfpi::vFloat b0 = int32_to_float(b & MASK_11, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat q1 = sfpi::int32_to_float(q & MASK_11, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat q2 = sfpi::int32_to_float(q >> 11, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat b1 = sfpi::int32_to_float((b >> 11) & MASK_11, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat b0 = sfpi::int32_to_float(b & MASK_11, sfpi::RoundMode::NearestEven);
 
     // hi = q2 * b0 + q1 * b1 (high part)
     // lo = q1 * b0 (low part)
@@ -84,18 +84,18 @@ sfpi_inline sfpi::vInt compute_unsigned_remainder_int32(const sfpi::vInt& a_sign
     sfpi::vInt r = a - qb;
 
     // Use abs(r) for correction computation
-    sfpi::vFloat r_f = sfpi::int32_to_float(sfpi::abs(r), sfpi::RoundMode::NearestEven);
+    sfpi::vFloat r_f = sfpi::sfpi::int32_to_float(sfpi::abs(r), sfpi::RoundMode::NearestEven);
 
     // Compute correction: r / b in float32
     sfpi::vFloat correction_f = r_f * inv_b_f;
     sfpi::vInt correction = sfpi::float_to_uint16(correction_f, sfpi::RoundMode::NearestEven);
-    correction_f = sfpi::int32_to_float(correction, sfpi::RoundMode::NearestEven);
+    correction_f = sfpi::sfpi::int32_to_float(correction, sfpi::RoundMode::NearestEven);
 
     // Recompute b chunks for correction multiplication to reduce register pressure
     b = sfpi::abs(b_signed);
-    b0 = int32_to_float(b & MASK_11, sfpi::RoundMode::NearestEven);
-    b1 = int32_to_float((b >> 11) & MASK_11, sfpi::RoundMode::NearestEven);
-    sfpi::vFloat b2 = sfpi::int32_to_float(b >> 22, sfpi::RoundMode::NearestEven);
+    b0 = sfpi::int32_to_float(b & MASK_11, sfpi::RoundMode::NearestEven);
+    b1 = sfpi::int32_to_float((b >> 11) & MASK_11, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat b2 = sfpi::sfpi::int32_to_float(b >> 22, sfpi::RoundMode::NearestEven);
 
     // tmp = correction * (b2<<22 + b1<<11 + b0)
     sfpi::vFloat low = correction_f * b0 + MANTISSA_ALIGNMENT_OFFSET;

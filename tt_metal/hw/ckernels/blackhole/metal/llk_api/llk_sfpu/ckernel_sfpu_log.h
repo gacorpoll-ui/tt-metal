@@ -39,7 +39,7 @@ sfpi_inline sfpi::vFloat calculate_log_body(sfpi::vFloat in, const uint log_base
     v_if(exp < 0) { exp = sfpi::setsgn(~exp + 1, 1); }
     v_endif;
 
-    sfpi::vFloat expf = sfpi::int32_to_float(exp, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat expf = sfpi::sfpi::int32_to_float(exp, sfpi::RoundMode::NearestEven);
     sfpi::vFloat vConstLn2 = sfpi::vConstFloatPrgm0;
     sfpi::vFloat result = expf * vConstLn2 + series_result;  // exp correction: ln(1+x) + exp*ln(2)
 
@@ -149,7 +149,7 @@ sfpi_inline sfpi::vFloat calculate_log_f32_body(sfpi::vFloat val, const uint log
         sfpi::vFloat ln_m = 2.0f * (z * p);
 
         // We want to convert exponent to floating point using int32 -> float conversion.
-        // However, int32_to_float takes a sign-magnitude
+        // However, sfpi::int32_to_float takes a sign-magnitude
         // This is not an issue for positive numbers (same representation)
         // For negative numbers, we need to explicitly convert to sign-magnitude format
         v_if(exp < 0) {
@@ -160,8 +160,8 @@ sfpi_inline sfpi::vFloat calculate_log_f32_body(sfpi::vFloat val, const uint log
         }
         v_endif;
 
-        // Convert to float - int32_to_float handles sign-magnitude format correctly
-        sfpi::vFloat expf = sfpi::int32_to_float(exp, sfpi::RoundMode::NearestEven);
+        // Convert to float - sfpi::int32_to_float handles sign-magnitude format correctly
+        sfpi::vFloat expf = sfpi::sfpi::int32_to_float(exp, sfpi::RoundMode::NearestEven);
 
         // Step 5: Combine: ln(x) = exp×ln(2) + ln(m)
         result = expf * sfpi::vConstFloatPrgm2 + ln_m;  // log(x) = log2(x) / log(2)
