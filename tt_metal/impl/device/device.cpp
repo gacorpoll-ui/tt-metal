@@ -696,6 +696,49 @@ void Device::configure_fabric(
                 if (!is_skip_reset_chan) {
                     try {
                         detail::WriteToDeviceL1(this, logical_core, router_sync_address, canary_buf, CoreType::ETH);
+                        // FIX CX (#42429): PCIe write-readback serialization barrier.
+                        //
+                        // ConfigureDeviceWithProgram (firmware binary write) and the canary write
+                        // above are posted PCIe/relay writes — they can still be in-flight when
+                        // write_launch_msg_to_core fires, causing the ERISC to start executing
+                        // firmware that is partially written to L1.
+                        //
+                        // For MMIO devices without dead channels, l1_barrier() (above) already
+                        // serializes the firmware writes.  But l1_barrier() is skipped when dead
+                        // channels are present (it would hang on the dead relay path), and the
+                        // canary write itself happens after l1_barrier() anyway.
+                        //
+                        // A blocking PCIe/relay read of the just-written canary word forces all
+                        // prior writes on the same PCIe/relay path to commit before the read
+                        // returns — providing a cheap per-core serialization barrier.  If the
+                        // readback value doesn't match we log a warning (not a throw) to avoid
+                        // aborting the fabric init on transient errors.
+                        std::vector<uint32_t> readback_buf(1, 0xBAD1BAD1u);
+                        try {
+                            detail::ReadFromDeviceL1(
+                                this, logical_core, router_sync_address, sizeof(uint32_t), readback_buf, CoreType::ETH);
+                            if (readback_buf[0] != kHostPreLaunchCanary) {
+                                log_warning(
+                                    tt::LogMetal,
+                                    "configure_fabric: Device {} core ({},{}) canary readback mismatch: "
+                                    "expected 0x{:08X} got 0x{:08X} — PCIe/relay write may be "
+                                    "in-flight (FIX CX #42429)",
+                                    this->id_,
+                                    logical_core.x,
+                                    logical_core.y,
+                                    kHostPreLaunchCanary,
+                                    readback_buf[0]);
+                            }
+                        } catch (const std::exception& rb_ex) {
+                            log_warning(
+                                tt::LogMetal,
+                                "configure_fabric: Device {} core ({},{}) canary readback failed "
+                                "(FIX CX #42429): {}",
+                                this->id_,
+                                logical_core.x,
+                                logical_core.y,
+                                rb_ex.what());
+                        }
                     } catch (const std::exception& e) {
                         log_warning(
                             tt::LogMetal,
