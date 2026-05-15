@@ -2895,7 +2895,7 @@ void Device::open_erisc_handshake_gate() {
     const auto& hal = env_impl.get_hal();
 
     const auto [erisc_sync_addr, unused_expected] = builder_ctx.get_fabric_router_sync_address_and_status();
-    const std::vector<uint32_t> gate_open_val = {static_cast<uint32_t>(tt::tt_fabric::EDMStatus::HOST_GATE_OPEN)};
+    std::vector<uint32_t> gate_open_val = {static_cast<uint32_t>(tt::tt_fabric::EDMStatus::HOST_GATE_OPEN)};
 
     std::vector<std::vector<CoreCoord>> logical_cores_used = fabric_program_->impl().logical_cores();
     for (uint32_t pct_idx = 0; pct_idx < logical_cores_used.size(); pct_idx++) {
