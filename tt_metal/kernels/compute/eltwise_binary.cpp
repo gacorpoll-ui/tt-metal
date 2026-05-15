@@ -58,7 +58,7 @@ void kernel_main() {
 #endif
 
 #ifdef PACK_RELU
-    PACK((llk_pack_relu_config(ReluType::ZERO_RELU)));
+    PACK((llk_pack_relu_config(static_cast<std::uint32_t>(ReluType::ZERO_RELU))));
 #endif
 
     for (uint32_t block = 0; block < per_core_block_cnt; ++block) {

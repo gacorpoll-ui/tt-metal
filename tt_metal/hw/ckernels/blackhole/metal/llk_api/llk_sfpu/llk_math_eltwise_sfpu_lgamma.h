@@ -52,7 +52,7 @@ inline void llk_math_eltwise_binary_sfpu_lgamma_stirling_init() {
 
 template <bool APPROXIMATE, bool is_fp32_dest_acc_en>
 inline void llk_math_eltwise_binary_sfpu_lgamma_stirling(
-    uint32_t dst_index0, uint32_t dst_index1, uint32_t odst, int vector_mode = (int)VectorMode::RC) {
+    uint32_t dst_index0, uint32_t dst_index1, uint32_t odst, VectorMode vector_mode = VectorMode::RC) {
     _llk_math_eltwise_binary_sfpu_params_(
         sfpu::calculate_lgamma_stirling_fp32<APPROXIMATE, is_fp32_dest_acc_en>,
         dst_index0,

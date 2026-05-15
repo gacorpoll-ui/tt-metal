@@ -473,7 +473,7 @@ void call_binary_sfpu_operation(
     const std::uint32_t dst_index_in0 = 0,
     const std::uint32_t dst_index_in1 = 1,
     const std::uint32_t dst_index_out = 0,
-    int vector_mode                   = static_cast<int>(VectorMode::RC))
+    ckernel::VectorMode vector_mode   = ckernel::VectorMode::RC)
 {
     // NOTE: The functions invoked via SFPU_BINARY_CALL below run inside
     // _llk_math_eltwise_binary_sfpu_params_, which already loops over 4 faces
@@ -553,7 +553,7 @@ void call_binary_sfpu_operation(
             dst_index_in0,
             dst_index_in1,
             dst_index_out,
-            static_cast<int>(VectorMode::RC_custom));
+            ckernel::VectorMode::RC_custom);
     }
     else
     {

@@ -135,7 +135,7 @@ void update_cur_row_max_value(
 
         // find max value between current max and previous max
         binary_max_tile_init();
-        binary_max_tile(reduce_dst_idx, prev_max_dst_idx, reduce_dst_idx, static_cast<int>(VectorMode::C));
+        binary_max_tile(reduce_dst_idx, prev_max_dst_idx, reduce_dst_idx, VectorMode::C);
     }
     tile_regs_commit();
 

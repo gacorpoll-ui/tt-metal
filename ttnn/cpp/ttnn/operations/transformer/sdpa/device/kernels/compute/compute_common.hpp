@@ -56,7 +56,7 @@ void max_block_inplace(uint32_t in0, uint32_t in1) {
         acquire_dst();
         copy_tile(in0, i, dst_reg_0);
         copy_tile(in1, i, dst_reg_1);
-        binary_max_tile(dst_reg_0, dst_reg_1, dst_reg_0, static_cast<int>(VectorMode::C));
+        binary_max_tile(dst_reg_0, dst_reg_1, dst_reg_0, VectorMode::C);
         pack_tile(dst_reg_0, in0);
         release_dst();
     }
@@ -68,7 +68,7 @@ void max_block_inplace(uint32_t in0, uint32_t in1) {
 /**
  * out_cb = eltwise_max(in0, in1)
  */
-template <int vector_mode = (int)VectorMode::RC>
+template <VectorMode vector_mode = VectorMode::RC>
 void max_block(uint32_t in0, uint32_t in1, uint32_t out_cb, uint32_t num_tiles) {
     // inputs come in full, outputs go out full
     copy_tile_to_dst_init_short(in0);
@@ -83,7 +83,7 @@ void max_block(uint32_t in0, uint32_t in1, uint32_t out_cb, uint32_t num_tiles) 
         acquire_dst();
         copy_tile(in0, i, dst_reg_0);
         copy_tile(in1, i, dst_reg_1);
-        binary_max_tile(dst_reg_0, dst_reg_1, dst_reg_0, static_cast<int>(VectorMode::C));
+        binary_max_tile(dst_reg_0, dst_reg_1, dst_reg_0, vector_mode);
         pack_tile(dst_reg_0, out_cb, i);
         release_dst();
     }
@@ -100,7 +100,7 @@ template <
     uint32_t scale_cb,
     uint32_t rows,
     uint32_t cols,
-    int vector_mode = static_cast<int>(VectorMode::C)>
+    VectorMode vector_mode = VectorMode::C>
 void reduce_c(uint32_t out_cb, uint32_t prev_cb, bool do_eltwise_max = false) {
     // Precondition: in0_cb has rows*cols produced. in0_cb has tiles in row-major order
     // Precondition: scale_cb has 1 produced
@@ -179,7 +179,7 @@ template <
     uint32_t in0_cb,
     uint32_t scale_cb,
     uint32_t rows,
-    int vector_mode = static_cast<int>(VectorMode::C)>
+    VectorMode vector_mode = VectorMode::C>
 void reduce_c(uint32_t out_cb, uint32_t prev_cb, uint32_t cols, bool do_eltwise_max = false) {
     // Precondition: in0_cb has rows*cols produced. in0_cb has tiles in row-major order
     // Precondition: scale_cb has 1 produced
@@ -207,7 +207,7 @@ void reduce_c(uint32_t out_cb, uint32_t prev_cb, uint32_t cols, bool do_eltwise_
         if (do_eltwise_max) {
             copy_tile_to_dst_init_short(prev_cb);
             copy_tile(prev_cb, i, prev_max_dst_idx);
-            binary_max_tile(reduce_dst_idx, prev_max_dst_idx, reduce_dst_idx, static_cast<int>(vector_mode));
+            binary_max_tile(reduce_dst_idx, prev_max_dst_idx, reduce_dst_idx, vector_mode);
         }
 
         pack_tile(reduce_dst_idx, out_cb);
@@ -300,7 +300,7 @@ template <
     uint32_t scale_fp32,
     bool write_result_inplace = true,
     bool do_reduce = true,
-    int vector_mode = (int)VectorMode::RC>
+    VectorMode vector_mode = VectorMode::RC>
 void sub_exp_block_bcast_cols_inplace(uint32_t in1_cb, uint32_t reduce_cb, uint32_t cols) {
     // Precondition: in0_cb has rows*cols produced
     // Precondition: in1_cb has rows produced
@@ -312,7 +312,7 @@ void sub_exp_block_bcast_cols_inplace(uint32_t in1_cb, uint32_t reduce_cb, uint3
     // produces incorrect outputs for inputs <~ -88, but those outputs are guaranteed to be negative.
     // Enable packer ReLU to zero any negative values produced by the exponential approximation.
     exp_tile_init<true /* approx */, scale_fp32, InputClamping::None>();
-    PACK((llk_pack_relu_config(ReluType::ZERO_RELU)));
+    PACK((llk_pack_relu_config(static_cast<std::uint32_t>(ReluType::ZERO_RELU))));
 
     cb_wait_front(in0_cb, rows * cols);
     cb_wait_front(in1_cb, rows);
@@ -333,10 +333,9 @@ void sub_exp_block_bcast_cols_inplace(uint32_t in1_cb, uint32_t reduce_cb, uint3
             tile_regs_acquire();
             for (uint32_t j = 0; j < dst_tiles; ++j) {
                 sub_tiles_bcast_cols(in0_cb, in1_cb, j, i, j);
-                constexpr int iterations = (vector_mode == static_cast<int>(VectorMode::RC)) ? 32 : 8;
-                constexpr int vector_mode_exp = (vector_mode == static_cast<int>(VectorMode::RC))
-                                                    ? static_cast<int>(VectorMode::None)
-                                                    : vector_mode;
+                constexpr int iterations = (vector_mode == VectorMode::RC) ? 32 : 8;
+                constexpr int vector_mode_exp = (vector_mode == VectorMode::RC) ? static_cast<int>(VectorMode::None)
+                                                                                : static_cast<int>(vector_mode);
                 exp_tile<true /* approx */, false /* scale_en */, InputClamping::None, iterations>(j, vector_mode_exp);
             }
             tile_regs_commit();
@@ -381,7 +380,7 @@ void sub_exp_block_bcast_cols_inplace(uint32_t in1_cb, uint32_t reduce_cb, uint3
         cb_push_back(reduce_cb, rows);
     }
 
-    PACK((llk_pack_relu_config(ReluType::NO_RELU)));
+    PACK((llk_pack_relu_config(static_cast<std::uint32_t>(ReluType::NO_RELU))));
 }
 
 /**
@@ -945,14 +944,14 @@ void calculate_fused_max_sub_exp_add_tile(int scale_bf16) {
     }
 }
 
-template <bool SDPA_EXP_APPROX_MODE, int vector_mode = (int)VectorMode::C>
+template <bool SDPA_EXP_APPROX_MODE, VectorMode vector_mode = VectorMode::C>
 void fused_max_sub_exp_add_tile(uint32_t idst, int scale_bf16) {
     _llk_math_eltwise_unary_sfpu_params_(
-        calculate_fused_max_sub_exp_add_tile<SDPA_EXP_APPROX_MODE>, idst, vector_mode, scale_bf16);
+        calculate_fused_max_sub_exp_add_tile<SDPA_EXP_APPROX_MODE>, idst, static_cast<int>(vector_mode), scale_bf16);
 }
 #endif
 
-template <uint32_t scale_fp32, int vector_mode = (int)VectorMode::C>
+template <uint32_t scale_fp32, VectorMode vector_mode = VectorMode::C>
 void correction_block(
     uint32_t cb_worker_max,
     uint32_t cb_worker_sum,

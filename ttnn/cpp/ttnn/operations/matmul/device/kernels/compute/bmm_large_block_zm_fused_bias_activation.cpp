@@ -249,7 +249,7 @@ void kernel_main() {
 #ifdef PACK_RELU
                 // for each batch we start with relu disabled so that intermediate results are not relu'd
                 if constexpr (batch > 1 || num_blocks_h_dim > 1 || num_blocks_w_dim > 1) {
-                    PACK((llk_pack_relu_config(ReluType::NO_RELU)));
+                    PACK((llk_pack_relu_config(static_cast<std::uint32_t>(ReluType::NO_RELU))));
                 }
 #endif
 
@@ -263,7 +263,7 @@ void kernel_main() {
 #if not defined FUSE_BIAS and defined PACK_RELU
                     if (last_out) {
                         // if last block we pack the final result with relu enabled
-                        PACK((llk_pack_relu_config(ReluType::ZERO_RELU)));
+                        PACK((llk_pack_relu_config(static_cast<std::uint32_t>(ReluType::ZERO_RELU))));
                     }
 #endif
 
@@ -442,7 +442,7 @@ void kernel_main() {
 #ifdef FUSE_BIAS
 #ifdef PACK_RELU
                 // if last block we pack the final result with relu enabled
-                PACK((llk_pack_relu_config(ReluType::ZERO_RELU)));
+                PACK((llk_pack_relu_config(static_cast<std::uint32_t>(ReluType::ZERO_RELU))));
 #endif
 #if defined FP32_DEST_ACC_EN or defined PACKER_L1_ACC
                 PACK((pack_reconfig_data_format(out_cb_id)));
@@ -518,7 +518,7 @@ void kernel_main() {
 #endif  // FUSE_BIAS
                 if constexpr (untilize_out) {
 #ifdef PACK_RELU
-                    PACK((llk_pack_relu_config(ReluType::NO_RELU)));
+                    PACK((llk_pack_relu_config(static_cast<std::uint32_t>(ReluType::NO_RELU))));
 #endif  // PACK_RELU
 #ifndef FUSE_BIAS
                     reconfig_data_format_srca(in1_cb_id, mm_partials_cb_id);
