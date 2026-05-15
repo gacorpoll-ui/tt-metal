@@ -38,8 +38,7 @@ namespace ckernel {
  * - full-sync mode (16-bit mode): 16 tiles
  * - full-sync mode (32-bit mode): 8 tiles
  *
- * Face geometry defaults to the output circular buffer metadata set on the host. Callers may pass explicit
- * `face_r_dim` and `num_faces` values when the untilize block geometry differs from the output CB metadata.
+ * Face geometry is derived from the output circular buffer metadata set on the host.
  *
  * Return value: None
  *
@@ -51,8 +50,6 @@ namespace ckernel {
  * | Template   | row_num_datums | Number of datums per row                         | uint32_t  | >= 1                      | False                 |
  * | Template   | dense          | Packs two 2 face tiles in a single 4 face region | bool      | true/false                | False (default false) |
  * | Function   | ocb            | Output circular buffer identifier                | uint32_t  | 0 to 31                   | True                  |
- * | Function   | face_r_dim     | Face height in rows                              | uint32_t  | 1, 8 or 16                | False (default from CB) |
- * | Function   | num_faces      | Number of faces                                  | uint32_t  | 1, 2 or 4                 | False (default from CB) |
  */
 // clang-format on
 template <
@@ -61,21 +58,14 @@ template <
     bool narrow_row = false,
     std::uint32_t row_num_datums = TILE_C_DIM,
     bool dense = false>
-ALWI void pack_untilize_dest_init(
-    uint32_t ocb, uint32_t face_r_dim = 0, uint32_t num_faces = 0, uint32_t call_line = __builtin_LINE()) {
+ALWI void pack_untilize_dest_init(uint32_t ocb, uint32_t call_line = __builtin_LINE()) {
 #ifndef ARCH_QUASAR
     state_configure<Operand::PACK>(ocb, call_line);
 #ifdef ARCH_BLACKHOLE
     MATH((llk_math_reconfig_remap(true)));
 #endif  // TODO NC: A workaround for tt-metal#17132. Should be addressed more systematically in tt-llk#989
-    if (face_r_dim == 0 || num_faces == 0) {
-        PACK((llk_pack_reconfig_data_format<DST_ACCUM_MODE>(ocb)));
-        PACK((llk_pack_untilize_init<block_ct_dim, full_ct_dim, false, narrow_row, row_num_datums, dense>(ocb)));
-    } else {
-        PACK((llk_pack_reconfig_data_format<DST_ACCUM_MODE>(ocb)));
-        PACK((llk_pack_untilize_init<block_ct_dim, full_ct_dim, false, narrow_row, row_num_datums, dense>(
-            ocb, face_r_dim, num_faces)));
-    }
+    PACK((llk_pack_reconfig_data_format<DST_ACCUM_MODE>(ocb)));
+    PACK((llk_pack_untilize_init<block_ct_dim, full_ct_dim, false, narrow_row, row_num_datums, dense>(ocb)));
     PACK((llk_init_packer_dest_offset_registers<PackMode::Untilize, false>()));
 #else
     LLK_ASSERT(narrow_row == false, "narrow_row not supported on Quasar");
@@ -166,7 +156,7 @@ ALWI void pack_untilize_block(uint32_t icb, uint32_t block_rt_dim, uint32_t ocb,
         MATH((llk_math_dest_section_done<DST_ACCUM_MODE>()));
 #ifndef ARCH_QUASAR
         PACK((llk_packer_wait_for_math_done()));
-        PACK((llk_pack_untilize<block_ct_dim, full_ct_dim>(1 /*num_blocks*/, ocb, 0, 0, block_c_index)));
+        PACK((llk_pack_untilize<block_ct_dim, full_ct_dim>(1 /*num_blocks*/, ocb, block_c_index)));
 #else
         PACK((llk_packer_wait_for_math_done()));
         PACK((llk_pack_untilize<block_ct_dim, full_ct_dim>(1 /*num_blocks*/, ocb, block_c_index)));
@@ -203,8 +193,6 @@ ALWI void pack_untilize_block(uint32_t icb, uint32_t block_rt_dim, uint32_t ocb,
  * | Function   | ocb                | Output circular buffer identifier                                            | uint32_t  | 0 to 31                                 | True                  |
  * | Function   | block_rt_dim       | Height of a single block in tiles                                            | uint32_t  | >= 1                                    | False (default=1)     |
  * | Function   | block_c_index      | Block column index (used when full_ct_dim > block_ct_dim)                    | uint32_t  | >= 0                                    | False (default=0)     |
- * | Function   | face_r_dim         | Face height in rows                                                          | uint32_t  | 1, 8 or 16                              | False (default from CB) |
- * | Function   | num_faces          | Number of faces                                                              | uint32_t  | 1, 2 or 4                               | False (default from CB) |
  * | Function   | tile_dst_offset    | Runtime offset for the index of the tile in the dest from which to pack      | uint32_t  | 0 to 7 (0 to 3 if fp32 dest is enabled) | False (default=0)     |
  */
 // clang-format on
@@ -220,12 +208,10 @@ ALWI void pack_untilize_dest(
     uint32_t ocb,
     uint32_t block_rt_dim = 1,
     uint32_t block_c_index = 0 /* used when full_ct_dim > block_ct_dim*/,
-    uint32_t face_r_dim = 0,
-    uint32_t num_faces = 0,
     uint32_t tile_dst_rt_offset = 0) {
 #ifndef ARCH_QUASAR
     PACK((llk_pack_untilize<block_ct_dim, full_ct_dim, diagonal, narrow_row, row_num_datums, tile_dst_ct_offset, dense>(
-        block_rt_dim, ocb, face_r_dim, num_faces, block_c_index, tile_dst_rt_offset)));
+        block_rt_dim, ocb, block_c_index, tile_dst_rt_offset)));
 #else
     PACK((llk_pack_untilize<block_ct_dim, full_ct_dim>(block_rt_dim, ocb, block_c_index, tile_dst_rt_offset)));
 #endif

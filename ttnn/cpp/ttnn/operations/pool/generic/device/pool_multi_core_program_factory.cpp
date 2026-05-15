@@ -627,7 +627,9 @@ static tt::tt_metal::ProgramDescriptor pool2d_multi_core_sharded_with_halo_v2_im
     uint32_t pre_tilize_cb_id = INVALID_CB_ID;
 
     constexpr uint32_t pack_untilize_face_r_dim = 1;
-    constexpr uint32_t pack_untilize_num_faces = 2;
+    const bool last_tile_is_partial = in_c % tt::constants::TILE_WIDTH != 0;
+    const bool single_partial_fits_in_face = last_tile_is_partial && in_c <= tt::constants::FACE_WIDTH;
+    const uint32_t pack_untilize_num_faces = single_partial_fits_in_face ? 1u : 2u;
 
     if (cb_sizes.has_pre_tilize) {
         pre_tilize_cb_id = next_cb_index++;
