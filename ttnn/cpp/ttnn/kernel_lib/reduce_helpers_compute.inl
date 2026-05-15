@@ -5,6 +5,11 @@
 // Implementation file for reduce_helpers_compute.hpp
 // Do not include directly - include reduce_helpers_compute.hpp instead
 
+#include "api/compute/binary_max_min.h"
+#include "api/compute/compute_kernel_api.h"
+#include "api/compute/eltwise_unary/binop_with_scalar.h"
+#include "api/compute/eltwise_unary/eltwise_unary.h"
+#include "api/compute/eltwise_unary/typecast.h"
 #include "api/compute/matmul.h"
 #include "api/compute/tile_move_copy.h"
 #include "api/compute/pack.h"
@@ -17,6 +22,57 @@
 
 
 namespace compute_kernel_lib {
+
+namespace detail {
+
+// SFPU MAX fold (also used by reduce_sfpu_{h,w}_neg for -MAX(-x) MIN).
+template <DataFormat format>
+ALWI void sfpu_reduce_max_fold_init() {
+    static_assert(
+        format == DataFormat::Int32 || format == DataFormat::Float32, "SFPU reduce MAX fold: Int32 or Float32 only");
+    if constexpr (format == DataFormat::Int32) {
+        binary_max_int32_tile_init();
+    } else {
+        binary_max_tile_init();
+    }
+}
+
+template <DataFormat format>
+ALWI void sfpu_reduce_max_fold_tile(uint32_t a, uint32_t b, uint32_t out) {
+    static_assert(
+        format == DataFormat::Int32 || format == DataFormat::Float32, "SFPU reduce MAX fold: Int32 or Float32 only");
+    if constexpr (format == DataFormat::Int32) {
+        binary_max_int32_tile(a, b, out);
+    } else {
+        binary_max_tile(a, b, out);
+    }
+}
+
+// Post-reduce scaling for the SFPU path. mul_unary_tile is fp32-only, so Int32 is bracketed with
+// typecasts (truncates toward zero on the way back).
+template <DataFormat format>
+ALWI void sfpu_post_mul_tile(uint32_t dst, uint32_t scaler_bits) {
+    static_assert(
+        format == DataFormat::Int32 || format == DataFormat::Float32, "sfpu_post_mul_tile: Int32 or Float32 only");
+    if constexpr (format == DataFormat::Int32) {
+        typecast_tile_init<(uint32_t)DataFormat::Int32, (uint32_t)DataFormat::Float32>();
+        typecast_tile<(uint32_t)DataFormat::Int32, (uint32_t)DataFormat::Float32>(dst);
+        binop_with_scalar_tile_init();
+        mul_unary_tile(dst, scaler_bits);
+        typecast_tile_init<(uint32_t)DataFormat::Float32, (uint32_t)DataFormat::Int32>();
+        typecast_tile<(uint32_t)DataFormat::Float32, (uint32_t)DataFormat::Int32>(dst);
+    } else {
+        binop_with_scalar_tile_init();
+        mul_unary_tile(dst, scaler_bits);
+    }
+}
+
+}  // namespace detail
+
+// True if `sfpu_format` requests the SFPU reduce path (Int32/Float32 MAX).
+constexpr bool is_sfpu_reduce_format(DataFormat f) {
+    return f == DataFormat::Int32 || f == DataFormat::Float32;
+}
 
 // HiFi4 fidelity for matmul-based reduce (higher precision than kernel default)
 constexpr ckernel::MathFidelity REDUCE_MATMUL_FIDELITY = ckernel::MathFidelity::HiFi4;
@@ -157,6 +213,7 @@ template <
     ReduceDim reduce_dim,
     ReduceInputPolicy input_policy,
     ReduceDataFormatReconfigMode reconfig_mode,
+    DataFormat sfpu_format,
     typename AccumulateT,
     typename PostReduceOp>
 ALWI void reduce(
@@ -220,6 +277,123 @@ ALWI void reduce(
         if constexpr (enable_accumulation) { return accumulate.config.cb_accumulator; }
         else { return 0; }
     }());
+
+    // =========================================================================
+    // SFPU path (Int32/Float32 MAX). MIN is dispatched via reduce_sfpu_{h,w}_neg.cpp.
+    // =========================================================================
+    if constexpr (is_sfpu_reduce_format(sfpu_format)) {
+        static_assert(
+            reduce_type == PoolType::MAX,
+            "SFPU reduce path: MAX only (MIN dispatches to reduce_sfpu_{h,w}_neg.cpp).");
+        static_assert(
+            reduce_dim == ReduceDim::REDUCE_ROW || reduce_dim == ReduceDim::REDUCE_COL,
+            "SFPU reduce path: REDUCE_ROW or REDUCE_COL only (full HW reduce uses two host passes).");
+        static_assert(
+            input_policy == ReduceInputPolicy::WaitAndPopPerTile,
+            "SFPU reduce path: only WaitAndPopPerTile is supported.");
+        static_assert(!enable_accumulation, "SFPU reduce path: accumulation is not supported.");
+
+        if constexpr (reconfig_input(reconfig_mode)) {
+            reconfig_data_format(input_cb_id, scaler_cb_id);
+        }
+        if constexpr (reconfig_output(reconfig_mode)) {
+            pack_reconfig_data_format(output_cb_id);
+        }
+
+        init_sfpu(input_cb_id, output_cb_id);
+        copy_tile_to_dst_init_short(input_cb_id);
+
+        constexpr uint32_t onetile = 1;
+        scaler_cb.wait_front(onetile);
+        PACK((llk_pack_reduce_mask_config<false /*untilize*/, reduce_dim>()));
+
+        if constexpr (reduce_dim == ReduceDim::REDUCE_COL) {
+            // H-reduce. Chunk Wt outputs across DEST. SFPU needs one extra DST register beyond
+            // the per-column accumulators for the binary_max_tile work tile, so chunk_size is
+            // DEST_AUTO_LIMIT - 1 (FPU folds in place and uses the full DEST_AUTO_LIMIT).
+            constexpr uint32_t chunk_size = DEST_AUTO_LIMIT - 1;
+            constexpr uint32_t col_work_dst = chunk_size;
+
+            for (uint32_t nc = 0; nc < num_batches; ++nc) {
+                for (uint32_t wt_base = 0; wt_base < Wt; wt_base += chunk_size) {
+                    const uint32_t chunk_end = (wt_base + chunk_size < Wt) ? (wt_base + chunk_size) : Wt;
+                    const uint32_t current_chunk = chunk_end - wt_base;
+
+                    tile_regs_acquire();
+                    if (Ht > 1) {
+                        detail::sfpu_reduce_max_fold_init<sfpu_format>();
+                    }
+
+                    for (uint32_t ht = 0; ht < Ht; ++ht) {
+                        for (uint32_t k = 0; k < current_chunk; ++k) {
+                            input_cb.wait_front(onetile);
+                            if (ht == 0) {
+                                copy_tile(input_cb_id, 0, k);
+                            } else {
+                                copy_tile(input_cb_id, 0, col_work_dst);
+                                detail::sfpu_reduce_max_fold_tile<sfpu_format>(k, col_work_dst, k);
+                            }
+                            input_cb.pop_front(onetile);
+                        }
+                    }
+
+                    sfpu_reduce_init<reduce_type, sfpu_format>();
+                    for (uint32_t k = 0; k < current_chunk; ++k) {
+                        sfpu_reduce<reduce_type, sfpu_format, reduce_dim>(k, /*ct_dim=*/1, /*rt_dim=*/1);
+                    }
+                    for (uint32_t k = 0; k < current_chunk; ++k) {
+                        post_reduce_op(k);
+                    }
+
+                    tile_regs_commit();
+                    tile_regs_wait();
+                    for (uint32_t k = 0; k < current_chunk; ++k) {
+                        output_cb.reserve_back(onetile);
+                        pack_tile(k, output_cb_id);
+                        output_cb.push_back(onetile);
+                    }
+                    tile_regs_release();
+                }
+            }
+        } else {  // REDUCE_ROW: W-reduce, one output per (batch, ht) row.
+            constexpr uint32_t dst_idx = 0;
+            constexpr uint32_t next_dst_idx = 1;
+
+            for (uint32_t nc = 0; nc < num_batches; ++nc) {
+                for (uint32_t ht = 0; ht < Ht; ++ht) {
+                    tile_regs_acquire();
+                    if (Wt > 1) {
+                        detail::sfpu_reduce_max_fold_init<sfpu_format>();
+                    }
+
+                    input_cb.wait_front(onetile);
+                    copy_tile(input_cb_id, 0, dst_idx);
+                    input_cb.pop_front(onetile);
+
+                    for (uint32_t wt = 1; wt < Wt; ++wt) {
+                        input_cb.wait_front(onetile);
+                        copy_tile(input_cb_id, 0, next_dst_idx);
+                        detail::sfpu_reduce_max_fold_tile<sfpu_format>(dst_idx, next_dst_idx, dst_idx);
+                        input_cb.pop_front(onetile);
+                    }
+
+                    sfpu_reduce_init<reduce_type, sfpu_format>();
+                    sfpu_reduce<reduce_type, sfpu_format, reduce_dim>(dst_idx, /*ct_dim=*/1, /*rt_dim=*/1);
+                    post_reduce_op(dst_idx);
+
+                    tile_regs_commit();
+                    output_cb.reserve_back(onetile);
+                    tile_regs_wait();
+                    pack_tile(dst_idx, output_cb_id);
+                    tile_regs_release();
+                    output_cb.push_back(onetile);
+                }
+            }
+        }
+
+        PACK((llk_pack_reduce_mask_clear()));
+        return;
+    }
 
     // Apply reconfig based on mode
     if constexpr (reconfig_input(reconfig_mode)) {

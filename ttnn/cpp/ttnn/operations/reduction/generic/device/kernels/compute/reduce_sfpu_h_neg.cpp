@@ -16,11 +16,7 @@
 #include "api/compute/reduce.h"
 #include "api/compute/tile_move_copy.h"
 #include "ttnn/cpp/ttnn/kernel_lib/dest_helpers.hpp"
-#include "ttnn/cpp/ttnn/kernel_lib/reduce_sfpu_helpers_compute.hpp"
-
-#ifdef TRISC_PACK
-#include "llk_pack_api.h"
-#endif
+#include "ttnn/cpp/ttnn/kernel_lib/reduce_helpers_compute.hpp"
 
 void kernel_main() {
     constexpr uint32_t Ht = get_compile_time_arg_val(0);
@@ -29,11 +25,11 @@ void kernel_main() {
 #ifdef REDUCE_POST_MUL
     constexpr uint32_t post_mul_scaler_bits = get_compile_time_arg_val(3);
 #endif
-    // Chunk one less than DEST_AUTO_LIMIT so the binary max fold has a spare DST register
-    // for its copy_tile destination (FPU folds in place and uses the full DEST_AUTO_LIMIT).
+    // SFPU needs one DST register beyond the per-column accumulators for the binary_max_tile
+    // work tile, so chunk Wt outputs by DEST_AUTO_LIMIT - 1 (FPU folds in place and can use
+    // the full DEST_AUTO_LIMIT).
     constexpr uint32_t row_chunk = compute_kernel_lib::DEST_AUTO_LIMIT - 1;
 
-    // Circular buffers:
     constexpr uint32_t cb_input = tt::CBIndex::c_0;
     constexpr uint32_t cb_scaler = tt::CBIndex::c_2;
     constexpr uint32_t cb_output = tt::CBIndex::c_3;

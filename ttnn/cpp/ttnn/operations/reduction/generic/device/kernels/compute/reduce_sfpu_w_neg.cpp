@@ -15,11 +15,7 @@
 #include "api/compute/pack.h"
 #include "api/compute/reduce.h"
 #include "api/compute/tile_move_copy.h"
-#include "ttnn/cpp/ttnn/kernel_lib/reduce_sfpu_helpers_compute.hpp"
-
-#ifdef TRISC_PACK
-#include "llk_pack_api.h"
-#endif
+#include "ttnn/cpp/ttnn/kernel_lib/reduce_helpers_compute.hpp"
 
 void kernel_main() {
     constexpr uint32_t Ht = get_compile_time_arg_val(0);
