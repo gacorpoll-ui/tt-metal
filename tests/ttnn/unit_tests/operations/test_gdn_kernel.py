@@ -21,7 +21,7 @@ from loguru import logger
 
 import ttnn
 
-from gated_delta import chunked_gdn_recurrence_fused_inplace, gdn_recurrence_fused_inplace
+from tests.ttnn.unit_tests.gated_delta import chunked_gdn_recurrence_fused_inplace, gdn_recurrence_fused_inplace
 from models.common.utility_functions import comp_pcc
 
 # Sequence length for this test (prefill-style recurrence along time).
@@ -166,27 +166,26 @@ def test_gdn_kernel_correctness(mesh_device, reset_seeds, num_heads):
         layout=ttnn.TILE_LAYOUT,
         device=device,
     )
+    q_tt = to_tt(q_f)
+    k_tt = to_tt(k_f)
+    v_tt = to_tt(v_f)
+    g_tt = to_tt(g_f)
+    beta_tt = to_tt(beta_f)
 
     step_outputs: list[torch.Tensor] = []
     for t in range(SEQ_LEN):
-        q_t = q_f[:, t].reshape(batch_size, num_heads, 1, Dk)
-        k_t = k_f[:, t].reshape(batch_size, num_heads, 1, Dk)
-        v_t = v_f[:, t].reshape(batch_size, num_heads, 1, Dv)
-        g_t = g_f[:, t].reshape(batch_size, num_heads, 1, 1)
-        beta_t = beta_f[:, t].reshape(batch_size, num_heads, 1, 1)
-
-        q_tt = to_tt(q_t)
-        k_tt = to_tt(k_t)
-        v_tt = to_tt(v_t)
-        g_tt = to_tt(g_t)
-        beta_tt = to_tt(beta_t)
+        q_t = q_tt[:, t].reshape(batch_size, num_heads, 1, Dk)
+        k_t = k_tt[:, t].reshape(batch_size, num_heads, 1, Dk)
+        v_t = v_tt[:, t].reshape(batch_size, num_heads, 1, Dv)
+        g_t = g_tt[:, t].reshape(batch_size, num_heads, 1, 1)
+        beta_t = beta_tt[:, t].reshape(batch_size, num_heads, 1, 1)
 
         output_tt = gdn_recurrence_fused_inplace(
-            q_tt,
-            k_tt,
-            v_tt,
-            g_tt,
-            beta_tt,
+            q_t,
+            k_t,
+            v_t,
+            g_t,
+            beta_t,
             state_tt,
             num_cores=num_cores,
             iter=t,
