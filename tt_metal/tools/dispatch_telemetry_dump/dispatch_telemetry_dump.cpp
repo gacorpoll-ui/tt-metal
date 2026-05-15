@@ -26,8 +26,14 @@
 
 #include <fmt/core.h>
 
+#include <atomic>
+
 #include <host_api.hpp>
 #include <tt-metalium/device.hpp>
+#include <tt-metalium/distributed.hpp>
+#include <tt-metalium/mesh_device.hpp>
+#include <tt-metalium/kernel_types.hpp>
+#include <tt-metalium/program.hpp>
 #include <tt-metalium/experimental/dispatch_telemetry.hpp>
 
 #include "impl/context/metal_context.hpp"
@@ -48,8 +54,8 @@ struct CoreEntry {
 // Walk dispatch_core_manager and collect every allocated dispatch/prefetch core for a device.
 std::vector<CoreEntry> collect_cores(IDevice* device) {
     std::vector<CoreEntry> entries;
-    auto& dcm = dispatch_core_manager::instance();
-    auto& cluster = MetalContext::instance().cluster();
+    auto& dcm = MetalContext::instance().get_dispatch_core_manager();
+    const auto& cluster = MetalContext::instance().get_cluster();
     ChipId chip = device->id();
     uint16_t channel = cluster.get_assigned_channel_for_device(chip);
     uint8_t num_cqs = device->num_hw_cqs();
@@ -77,7 +83,7 @@ std::vector<CoreEntry> collect_cores(IDevice* device) {
 bool is_prefetch_role(const std::string& role) { return role.rfind("PREFETCH", 0) == 0; }
 
 void print_snapshot(IDevice* device, const std::vector<CoreEntry>& entries) {
-    auto core_type = dispatch_core_manager::instance().get_dispatch_core_type();
+    auto core_type = MetalContext::instance().get_dispatch_core_manager().get_dispatch_core_type();
 
     fmt::print("\033[2J\033[H");  // clear + home
     fmt::print(
@@ -128,7 +134,7 @@ void print_snapshot(IDevice* device, const std::vector<CoreEntry>& entries) {
 
 int main(int argc, char** argv) {
     ChipId device_id = 0;
-    uint8_t num_hw_cqs = 1;
+    [[maybe_unused]] uint8_t num_hw_cqs = 1;
     int interval_ms = 5000;
     int duration_s = 30;
 
@@ -149,13 +155,40 @@ int main(int argc, char** argv) {
         }
     }
 
-    IDevice* device = CreateDevice(device_id, num_hw_cqs);
+    auto mesh_device = distributed::MeshDevice::create_unit_mesh(device_id);
+    IDevice* device = mesh_device->get_devices().front();
     auto entries = collect_cores(device);
     if (entries.empty()) {
         fmt::print(stderr, "No dispatch/prefetch cores found on chip {}\n", device_id);
-        CloseDevice(device);
+        mesh_device->close();
         return 1;
     }
+
+    // Build a trivial program (one no-op data-movement kernel on one core) and
+    // enqueue it repeatedly from a worker thread so the command queues actually
+    // move while we sample telemetry. Without this the counters all stay flat
+    // since the tool itself owns the device exclusively.
+    constexpr CoreCoord traffic_core{0, 0};
+    Program traffic_program = CreateProgram();
+    CreateKernel(
+        traffic_program,
+        "tt_metal/programming_examples/hello_world_datamovement_kernel/kernels/dataflow/void_dataflow_kernel.cpp",
+        traffic_core,
+        DataMovementConfig{.processor = DataMovementProcessor::RISCV_0, .noc = NOC::RISCV_0_default});
+    SetRuntimeArgs(traffic_program, 0, traffic_core, {});
+
+    distributed::MeshWorkload traffic_workload;
+    distributed::MeshCoordinateRange traffic_range(mesh_device->shape());
+    traffic_workload.add_program(traffic_range, std::move(traffic_program));
+
+    std::atomic<bool> stop_traffic{false};
+    std::thread traffic_thread([&] {
+        auto& cq = mesh_device->mesh_command_queue();
+        while (!stop_traffic.load(std::memory_order_relaxed)) {
+            distributed::EnqueueMeshWorkload(cq, traffic_workload, false);
+            distributed::Finish(cq);
+        }
+    });
 
     fmt::print("Polling {} cores every {}ms for {}s.\n", entries.size(), interval_ms, duration_s);
     const auto start = std::chrono::steady_clock::now();
@@ -165,6 +198,15 @@ int main(int argc, char** argv) {
         std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
     }
 
-    CloseDevice(device);
+    stop_traffic.store(true, std::memory_order_relaxed);
+    traffic_thread.join();
+
+    // Final snapshot after traffic has drained, so the host-read cmds can be
+    // directly compared to the last device-side DPRINT'd value.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    fmt::print("Final snapshot (post-drain):\n");
+    print_snapshot(device, entries);
+
+    mesh_device->close();
     return 0;
 }

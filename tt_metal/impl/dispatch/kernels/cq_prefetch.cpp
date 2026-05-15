@@ -22,6 +22,7 @@
 #include "tt_metal/impl/dispatch/kernels/cq_common.hpp"
 #include "tt_metal/impl/dispatch/kernels/cq_prefetch.hpp"
 #include "tt_metal/impl/dispatch/kernels/cq_relay.hpp"
+#include "tt_metal/impl/dispatch/kernels/telemetry.hpp"
 #include "tt_metal/api/tt-metalium/experimental/dispatch_telemetry.hpp"
 #include "api/debug/dprint.h"
 #include "noc/noc_parameters.h"  // PCIE_ALIGNMENT
@@ -254,6 +255,7 @@ CQRelayClient<fabric_mux_num_buffers_per_channel, fabric_mux_channel_buffer_size
     relay_client;
 
 constexpr uint32_t prefetch_telemetry_base = DISPATCH_TELEMETRY_ADDR;
+constexpr bool telemetry_enabled = true;  // TODO: make this a compile-time option
 
 using PrefetchTelemetry = tt::tt_metal::PrefetchTelemetry;
 using PrefetchTelemetryBlockGuard = TelemetryBlockGuard<PrefetchTelemetry, prefetch_telemetry_base, telemetry_enabled>;
@@ -2757,7 +2759,7 @@ void kernel_main() {
     my_dev_id = get_arg_val<uint32_t>(OFFSETOF_MY_DEV_ID);
     to_dev_id = get_arg_val<uint32_t>(OFFSETOF_TO_DEV_ID);
     router_direction = get_arg_val<uint32_t>(OFFSETOF_ROUTER_DIRECTION);
-    [[maybe_unused]] auto* prefetch_telemetry = init_prefetch_telemetry();
+    init_prefetch_telemetry();
 
     if (is_h_variant and is_d_variant) {
         kernel_main_hd();

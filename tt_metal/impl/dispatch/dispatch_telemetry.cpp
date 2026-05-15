@@ -29,10 +29,11 @@ std::optional<T> read_telemetry_impl(
     CoreCoord virtual_core = device->virtual_core_from_logical_core(logical_core, core_type);
 
     // Make sure any in-flight kernel writes to L1 are visible before we sample.
-    tt::Cluster::instance().l1_barrier(device->id());
+    const auto& cluster = MetalContext::instance().get_cluster();
+    cluster.l1_barrier(device->id());
 
     T telemetry{};
-    tt::Cluster::instance().read_core(&telemetry, sizeof(telemetry), tt_cxy_pair(device->id(), virtual_core), addr);
+    cluster.read_core(&telemetry, sizeof(telemetry), tt_cxy_pair(device->id(), virtual_core), addr);
 
     // Sanity-check the buffer actually contains a current-version telemetry block.
     if (telemetry.signature != DISPATCH_TELEMETRY_SIGNATURE) {

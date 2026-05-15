@@ -8,6 +8,7 @@ target_link_libraries(
         Metalium::Metal::Impl
         Metalium::Metal::LLRT
         TT::STL
+        numa
 )
 target_include_directories(
     dispatch_telemetry_dump

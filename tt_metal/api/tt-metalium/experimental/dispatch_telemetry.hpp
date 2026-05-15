@@ -7,13 +7,19 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+
+// TODO: Split api between types and functions to support kernel and firmware builds.
+#if !defined(KERNEL_BUILD) && !defined(FW_BUILD)
 #include <optional>
 
 #include "core_coord.hpp"
+#endif
 
 namespace tt::tt_metal {
 
+#if !defined(KERNEL_BUILD) && !defined(FW_BUILD)
 class IDevice;
+#endif
 
 /**
  * @brief Expected signature for validating that a telemetry buffer contains dispatch telemetry data.
@@ -48,6 +54,7 @@ constexpr size_t DISPATCH_TELEMETRY_SIZE = std::max(
     sizeof(DispatchTelemetry),
     sizeof(PrefetchTelemetry));
 
+#if !defined(KERNEL_BUILD) && !defined(FW_BUILD)
 /**
  * @brief Read the DispatchTelemetry block from a dispatch core's L1.
  *
@@ -73,5 +80,6 @@ std::optional<DispatchTelemetry> read_dispatch_telemetry(
  */
 std::optional<PrefetchTelemetry> read_prefetch_telemetry(
     IDevice* device, const CoreCoord& prefetch_logical_core, CoreType core_type = CoreType::WORKER);
+#endif  // !KERNEL_BUILD && !FW_BUILD
 
 }  // namespace tt::tt_metal

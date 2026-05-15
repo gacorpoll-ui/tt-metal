@@ -203,10 +203,7 @@ using CBReaderType = CBReaderWithReleasePolicy<
     upstream_dispatch_cb_sem_id,
     dispatch_cb_pages_per_block,
     dispatch_cb_base,
-    DispatchReleasePolicy,
-    DispatchTelemetry,
-    dispatch_telemetry_base,
-    telemetry_enabled>;
+    DispatchReleasePolicy>;
 
 static CBReaderType dispatch_cb_reader;
 
@@ -429,7 +426,7 @@ void process_exec_buf_end_h() {
     cmd_ptr += sizeof(CQDispatchCmd);
 }
 
-CBWriter<my_downstream_cb_sem_id, 0, 0, 0, 0, 0, 0, DispatchTelemetry, dispatch_telemetry_base, telemetry_enabled>dispatch_h_cb_writer{};
+CBWriter<my_downstream_cb_sem_id, 0, 0, 0, 0, 0, 0> dispatch_h_cb_writer{};
 
 
 // Relay, potentially through the mux/dmux/tunneller path

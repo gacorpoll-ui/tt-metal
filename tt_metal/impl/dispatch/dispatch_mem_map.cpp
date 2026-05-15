@@ -4,6 +4,7 @@
 
 #include <enchantum/enchantum.hpp>
 #include <tt-metalium/tt_align.hpp>
+#include <tt-metalium/experimental/dispatch_telemetry.hpp>
 
 #include "dispatch_mem_map.hpp"
 #include <tt_stl/assert.hpp>
