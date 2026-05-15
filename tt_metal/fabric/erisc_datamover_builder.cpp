@@ -42,11 +42,51 @@
 #include "tt_metal/llrt/rtoptions.hpp"
 #include "tt_metal/impl/dispatch/dispatch_core_common.hpp"
 
+#include <atomic>
+#include <chrono>
+
 namespace tt::tt_metal {
 class Program;
 }  // namespace tt::tt_metal
 
 namespace tt::tt_fabric {
+
+// FIX CT (#42429): Global session counter for generating per-session handshake nonces.
+// Combines with a time-based seed on first use to produce unique nonces across process
+// runs (time seed) and across configure cycles within a single process (counter).
+static std::atomic<uint32_t> g_handshake_session_counter{0};
+
+void advance_handshake_session_counter() {
+    g_handshake_session_counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+// FIX CT (#42429): Compute a per-link handshake nonce that is identical on both sides
+// of the link.  The nonce is derived from a session counter, a time seed, and the
+// sorted chip identities of the two endpoints.  OR with 1 ensures the nonce is never
+// zero (zero is the reset value of handshake_info_t.local_value).
+static uint32_t compute_link_handshake_nonce(
+    const FabricNodeId& local_node, const FabricNodeId& peer_node) {
+    // Sort node identities so both sides of the link produce the same hash.
+    uint32_t id_a = (static_cast<uint32_t>(*(local_node.mesh_id)) << 16) | static_cast<uint32_t>(local_node.chip_id);
+    uint32_t id_b = (static_cast<uint32_t>(*(peer_node.mesh_id)) << 16) | static_cast<uint32_t>(peer_node.chip_id);
+    if (id_a > id_b) {
+        std::swap(id_a, id_b);
+    }
+
+    // Time-based seed (computed once per process).
+    static const uint32_t time_seed = static_cast<uint32_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count() & 0xFFFFFFFF);
+
+    uint32_t session = g_handshake_session_counter.load(std::memory_order_relaxed);
+
+    // Simple mixing: xor-shift combine of session, time, and sorted node IDs.
+    uint32_t nonce = time_seed;
+    nonce ^= session * 2654435761u;  // Knuth multiplicative hash
+    nonce ^= id_a * 2246822519u;
+    nonce ^= id_b * 3266489917u;
+    nonce |= 1u;  // Ensure non-zero (0 is the local_value reset sentinel)
+    return nonce;
+}
 
 size_t FabricEriscDatamoverBuilder::get_max_packet_payload_size_for_arch(tt::ARCH arch) {
     switch (arch) {
@@ -1173,6 +1213,10 @@ FabricEriscDatamoverBuilder::CompileTimeArgs FabricEriscDatamoverBuilder::get_co
     named_args["IS_INTERMESH_ROUTER"] = this->is_inter_mesh;
     named_args["IS_HANDSHAKE_SENDER"] = is_handshake_master;
     named_args["HANDSHAKE_ADDR"] = static_cast<uint32_t>(this->handshake_address);
+    // FIX CT (#42429): Per-session nonce replaces MAGIC_HANDSHAKE_VALUE (0xAA) to prevent
+    // stale in-flight ETH RX DMA from a crashed prior session causing false handshake completion.
+    // Both sides of a link get the same nonce (deterministic from sorted node IDs + session).
+    named_args["HANDSHAKE_NONCE"] = compute_link_handshake_nonce(this->local_fabric_node_id, this->peer_fabric_node_id);
     named_args["CHANNEL_BUFFER_SIZE"] = static_cast<uint32_t>(this->channel_buffer_size);
     named_args["FABRIC_TENSIX_EXTENSION_MUX_MODE"] = this->has_tensix_extension;
     named_args["ENABLE_FIRST_LEVEL_ACK_VC0"] = final_enable_first_level_ack_vc0 ? 1 : 0;

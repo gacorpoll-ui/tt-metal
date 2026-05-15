@@ -3664,6 +3664,7 @@ void kernel_main() {
                 routing_table_l1->my_mesh_id,
                 routing_table_l1->my_device_id,
                 termination_signal_ptr,
+                handshake_nonce,
                 DEFAULT_HANDSHAKE_CONTEXT_SWITCH_TIMEOUT);
         } else {
             erisc::datamover::handshake::fabric_receiver_side_handshake<ENABLE_RISC_CPU_DATA_CACHE>(
@@ -3671,6 +3672,7 @@ void kernel_main() {
                 routing_table_l1->my_mesh_id,
                 routing_table_l1->my_device_id,
                 termination_signal_ptr,
+                handshake_nonce,
                 DEFAULT_HANDSHAKE_CONTEXT_SWITCH_TIMEOUT);
         }
 

@@ -55,8 +55,14 @@ struct handshake_info_t {
     uint32_t scratch[4];         // Bytes 16-31: TODO: Can be removed if we use a stream register for handshaking.
 };
 
+// FIX CT (#42429): session_nonce replaces MAGIC_HANDSHAKE_VALUE to prevent stale-L1 false
+// completions.  Default = MAGIC_HANDSHAKE_VALUE for backward compatibility with callers
+// that do not provide a nonce (e.g. legacy CCL handshake paths).
 FORCE_INLINE volatile tt_l1_ptr handshake_info_t* init_handshake_info(
-    uint32_t handshake_register_address, uint16_t my_mesh_id, uint8_t my_device_id) {
+    uint32_t handshake_register_address,
+    uint16_t my_mesh_id,
+    uint8_t my_device_id,
+    uint32_t session_nonce = MAGIC_HANDSHAKE_VALUE) {
     // FIX AH: Flush stale ETH TX queue state, but only when the queue is actually busy.
     // ERISC soft-reset halts the RISCV core but does NOT reset ETH MAC/DMA hardware.
     // If the prior firmware was terminated while an ETH TX was in-flight, ETH_TXQ_CMD
@@ -77,7 +83,7 @@ FORCE_INLINE volatile tt_l1_ptr handshake_info_t* init_handshake_info(
     volatile tt_l1_ptr handshake_info_t* handshake_info =
         reinterpret_cast<volatile tt_l1_ptr handshake_info_t*>(handshake_register_address);
     handshake_info->local_value = 0;
-    handshake_info->scratch[0] = MAGIC_HANDSHAKE_VALUE;
+    handshake_info->scratch[0] = session_nonce;
     // Sender exposes itself as the neighbor to its peer. On little-endian:
     // - my_mesh_id in lower 16 bits maps to bytes 4-5 (neighbor_mesh_id)
     // - my_device_id shifted by 16 maps to byte 6 (neighbor_device_id)

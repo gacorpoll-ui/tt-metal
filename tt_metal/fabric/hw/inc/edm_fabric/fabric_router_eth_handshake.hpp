@@ -18,15 +18,18 @@ namespace handshake {
  * recovery during fabric init/teardown.
  */
 
+// FIX CT (#42429): session_nonce replaces MAGIC_HANDSHAKE_VALUE to prevent stale-L1
+// false completions.  Default = MAGIC_HANDSHAKE_VALUE for backward compatibility.
 template <bool RISC_CPU_DATA_CACHE_ENABLED>
 FORCE_INLINE void fabric_sender_side_handshake(
     uint32_t handshake_register_address,
     uint16_t my_mesh_id,
     uint8_t my_device_id,
     volatile tt::tt_fabric::TerminationSignal* termination_signal_ptr,
+    uint32_t session_nonce = MAGIC_HANDSHAKE_VALUE,
     size_t HS_CONTEXT_SWITCH_TIMEOUT = A_LONG_TIMEOUT_BEFORE_CONTEXT_SWITCH) {
     volatile tt_l1_ptr handshake_info_t* handshake_info =
-        init_handshake_info(handshake_register_address, my_mesh_id, my_device_id);
+        init_handshake_info(handshake_register_address, my_mesh_id, my_device_id, session_nonce);
     uint32_t local_val_addr = ((uint32_t)(&handshake_info->local_value)) / tt::tt_fabric::PACKET_WORD_SIZE_BYTES;
     uint32_t scratch_addr = ((uint32_t)(&handshake_info->scratch)) / tt::tt_fabric::PACKET_WORD_SIZE_BYTES;
     uint32_t count = 0;
@@ -35,7 +38,7 @@ FORCE_INLINE void fabric_sender_side_handshake(
     // See: https://github.com/tenstorrent/tt-metal/issues/42429
     constexpr uint32_t kWatchdogIter = 100'000'000;
     uint32_t watchdog_count = 0;
-    while (handshake_info->local_value != MAGIC_HANDSHAKE_VALUE
+    while (handshake_info->local_value != session_nonce
 #ifndef ARCH_WORMHOLE
            && !tt::tt_fabric::got_immediate_termination_signal<RISC_CPU_DATA_CACHE_ENABLED>(termination_signal_ptr)
 #else
@@ -74,15 +77,18 @@ FORCE_INLINE void fabric_sender_side_handshake(
 #endif
 }
 
+// FIX CT (#42429): session_nonce replaces MAGIC_HANDSHAKE_VALUE to prevent stale-L1
+// false completions.  Default = MAGIC_HANDSHAKE_VALUE for backward compatibility.
 template <bool RISC_CPU_DATA_CACHE_ENABLED>
 FORCE_INLINE void fabric_receiver_side_handshake(
     uint32_t handshake_register_address,
     uint16_t my_mesh_id,
     uint8_t my_device_id,
     volatile tt::tt_fabric::TerminationSignal* termination_signal_ptr,
+    uint32_t session_nonce = MAGIC_HANDSHAKE_VALUE,
     size_t HS_CONTEXT_SWITCH_TIMEOUT = A_LONG_TIMEOUT_BEFORE_CONTEXT_SWITCH) {
     volatile tt_l1_ptr handshake_info_t* handshake_info =
-        init_handshake_info(handshake_register_address, my_mesh_id, my_device_id);
+        init_handshake_info(handshake_register_address, my_mesh_id, my_device_id, session_nonce);
     uint32_t local_val_addr = ((uint32_t)(&handshake_info->local_value)) / tt::tt_fabric::PACKET_WORD_SIZE_BYTES;
     uint32_t scratch_addr = ((uint32_t)(&handshake_info->scratch)) / tt::tt_fabric::PACKET_WORD_SIZE_BYTES;
     uint32_t count = 0;
@@ -91,7 +97,7 @@ FORCE_INLINE void fabric_receiver_side_handshake(
     // See: https://github.com/tenstorrent/tt-metal/issues/42429
     constexpr uint32_t kWatchdogIter = 100'000'000;
     uint32_t watchdog_count = 0;
-    while (handshake_info->local_value != MAGIC_HANDSHAKE_VALUE
+    while (handshake_info->local_value != session_nonce
 #ifndef ARCH_WORMHOLE
            && !tt::tt_fabric::got_immediate_termination_signal<RISC_CPU_DATA_CACHE_ENABLED>(termination_signal_ptr)
 #else

@@ -18,6 +18,7 @@
 #include <tt_metal.hpp>
 #include "device/device_impl.hpp"
 #include "device/device_manager.hpp"
+#include "tt_metal/fabric/erisc_datamover_builder.hpp"
 #include "common/executor.hpp"
 #include "impl/context/context_descriptor.hpp"
 
@@ -2520,6 +2521,11 @@ FabricFirmwareInitializer::TerminateStaleResult FabricFirmwareInitializer::termi
 //   FIX AP/AO: skip relay-dependent teardown writes for fabric_relay_path_broken_ devices.
 //   FIX F2.5: force-reset unresponsive ERISC before overwriting its L1 region.
 void FabricFirmwareInitializer::compile_and_configure_fabric() {
+    // FIX CT (#42429): Advance the session counter so this configure cycle generates fresh
+    // handshake nonces, preventing stale in-flight ETH packets from a prior session from
+    // causing false handshake completions.
+    tt::tt_fabric::advance_handshake_session_counter();
+
     // Snapshot the compile seam once at function entry.  In production (no test override),
     // s_compile_fn_for_testing_ is an empty std::function and we fall back to
     // dev->compile_fabric().  In test code, set_compile_fn_for_testing() installs a stub

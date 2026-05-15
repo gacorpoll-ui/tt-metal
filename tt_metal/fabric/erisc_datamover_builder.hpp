@@ -40,6 +40,10 @@ class FabricRemoteChannelsAllocator;
 class FabricEriscDatamoverBuilder;
 class FabricTensixDatamoverBuilder;
 
+// FIX CT (#42429): Bump the global session counter so that the next configure cycle
+// generates fresh handshake nonces, preventing stale-L1 false completions.
+void advance_handshake_session_counter();
+
 enum class FabricEriscDatamoverContextSwitchType : uint8_t {
     // Context switch at the interval only if idle for a certain number of cycles
     WAIT_FOR_IDLE = 0,
