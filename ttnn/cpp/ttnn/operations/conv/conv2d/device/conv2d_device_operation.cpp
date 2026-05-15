@@ -274,11 +274,6 @@ Tensor conv2d(
         .bias = bias,
     };
 
-    auto* device = a.device();
-
-    operation_attributes.pre_op_l1_allocation_size_bytes =
-        device->allocator()->get_statistics(tt::tt_metal::BufferType::L1).total_allocated_bytes;
-
     return ttnn::device_operation::launch<OperationType>(operation_attributes, tensor_args);
 }
 

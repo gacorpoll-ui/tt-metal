@@ -12,9 +12,9 @@ namespace ttnn::prim {
 
 // ProgramDescriptor-based factory for the width-sharded Conv2d variant.
 //
-// Lives in the multi-variant `Conv2dDeviceOperation::program_factory_t` next to the legacy
-// Conv2dShardedProgramFactory. The framework's adapter dispatches to the descriptor or legacy
-// path per alternative, so this factory only needs to satisfy ProgramDescriptorFactoryConcept
+// Lives in the multi-variant `Conv2dDeviceOperation::program_factory_t` next to the descriptor
+// based Conv2dShardedProgramFactory. The framework's adapter dispatches to the descriptor
+// path for both factories, so this factory only needs to satisfy ProgramDescriptorFactoryConcept
 // (i.e. expose `create_descriptor` and no `create` / `override_runtime_arguments`).
 //
 // The sliding-window indices config tensor must outlive create_descriptor() (it backs either a
