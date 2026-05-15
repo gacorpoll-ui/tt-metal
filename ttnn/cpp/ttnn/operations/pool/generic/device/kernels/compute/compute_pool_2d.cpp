@@ -54,7 +54,6 @@ void kernel_main() {
 
     constexpr bool use_split_reader = split_reader;
 
-    constexpr uint32_t face_r_dim = window_size_hw < FACE_HEIGHT ? window_size_hw : FACE_HEIGHT;
     constexpr bool last_tile_is_partial = in_c % TILE_WIDTH != 0;
     constexpr uint32_t num_faces_in_input_tile =
         (max_sticks_for_reduction < TILE_HEIGHT || window_size_hw <= FACE_HEIGHT) ? 2 : 4;
@@ -102,7 +101,7 @@ void kernel_main() {
     experimental::CB pre_tilize_cb(pre_tilize_cb_id);
 
     tilizeA_B_reduce_init<neginf_srca_maxpool, zero_srca_avgpool>(
-        in_cb_id_0, in_scalar_cb_id_0, max_tiles_per_iter, tilize_untilize_cb, num_faces_in_input_tile, face_r_dim);
+        in_cb_id_0, in_scalar_cb_id_0, max_tiles_per_iter, tilize_untilize_cb);
 
     pack_untilize_dest_init<max_tiles_per_iter>(tilize_untilize_cb);
 
@@ -154,7 +153,7 @@ void kernel_main() {
             if constexpr (tilize_reconfig) {
                 if (first_c_block || last_c_block) {
                     UNPACK((llk_unpack_tilizeA_B_init<neginf_srca_maxpool, true, false, zero_srca_avgpool>(
-                        in_cb_id_0, in_scalar_cb_id_0, tiles_to_reduce, num_faces_in_input_tile, face_r_dim, 1)));
+                        in_cb_id_0, in_scalar_cb_id_0, tiles_to_reduce)));
                 }
             }
             tile_regs_acquire();
@@ -216,7 +215,7 @@ void kernel_main() {
                     tilize_stick_counter = 0;
 
                     UNPACK((llk_unpack_tilizeA_B_init<neginf_srca_maxpool, true, false, zero_srca_avgpool>(
-                        in_cb_id_0, in_scalar_cb_id_0, tiles_to_reduce, num_faces_in_input_tile, face_r_dim, 1)));
+                        in_cb_id_0, in_scalar_cb_id_0, tiles_to_reduce)));
                     // init math for reduction again since FPU gets reprogrammed by tilize
                     MATH((llk_math_reduce_init<REDUCE_OP, REDUCE_DIM, DST_ACCUM_MODE, MATH_FIDELITY>()));
 #ifdef ARCH_BLACKHOLE
