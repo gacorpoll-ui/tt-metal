@@ -36,7 +36,7 @@ def gdn_recurrence_fused_inplace(
     g: ttnn.Tensor,
     beta: ttnn.Tensor,
     state: ttnn.Tensor,
-    output: ttnn.Tensor | None = None,
+    full_output: ttnn.Tensor | None = None,
     num_cores: int | None = None,
     iter: int = 0,
 ) -> None:
@@ -76,6 +76,10 @@ def gdn_recurrence_fused_inplace(
         eye_host = torch.eye(Dk, dtype=torch.float32).unsqueeze(0).expand(batch, num_heads, Dk, Dk).contiguous()
 
     assert seq == 1
+    if len(g.shape) == 3:
+        g = ttnn.unsqueeze(g, -1)
+    if len(beta.shape) == 3:
+        beta = ttnn.unsqueeze(beta, -1)
     g_exp = ttnn.exp(g)
     decayed = ttnn.multiply(state, g_exp)
     # new_state = (I - delta) @ decayed + beta * (k_t @ v),  delta = beta * (k_t @ k)
@@ -92,17 +96,16 @@ def gdn_recurrence_fused_inplace(
     bktv = ttnn.multiply(beta, ttnn.matmul(k_t, v))
     new_state = ttnn.add(projected, bktv)
 
-    compare_or_save(f"new_state_{iter}", new_state)
-    compare_or_save(f"projected_{iter}", projected)
-    compare_or_save(f"bktv_{iter}", bktv)
-    compare_or_save(f"factor_{iter}", factor)
-    compare_or_save(f"decayed_{iter}", decayed)
-    compare_or_save(f"delta_{iter}", delta)
-    compare_or_save(f"kk_{iter}", kk)
-    compare_or_save(f"g_exp_{iter}", g_exp)
+    # compare_or_save(f"new_state_{iter}", new_state)
+    # compare_or_save(f"projected_{iter}", projected)
+    # compare_or_save(f"bktv_{iter}", bktv)
+    # compare_or_save(f"factor_{iter}", factor)
+    # compare_or_save(f"decayed_{iter}", decayed)
+    # compare_or_save(f"delta_{iter}", delta)
+    # compare_or_save(f"kk_{iter}", kk)
+    # compare_or_save(f"g_exp_{iter}", g_exp)
     ttnn.assign(new_state, state)
     output = ttnn.matmul(q, new_state)
-    compare_or_save(f"output_{iter}", output)
     return output
 
 
@@ -113,7 +116,7 @@ def chunked_gdn_recurrence_fused_inplace(
     g: ttnn.Tensor,
     beta: ttnn.Tensor,
     state: ttnn.Tensor,
-    output: ttnn.Tensor,
+    output: ttnn.Tensor | None = None,
     num_cores: int | None = None,
 ) -> None:
     """Run ``gdn_recurrence_fused_inplace`` for each time index along ``seq``.
@@ -127,16 +130,46 @@ def chunked_gdn_recurrence_fused_inplace(
 
     ``num_cores`` is forwarded for API compatibility; the naive op ignores it.
     """
-    batch, seq, _, dk = k.shape
-    dv = v.shape[-1]
-    outputs_list = []
-    q_ts = [ttnn.squeeze(x, 1) for x in ttnn.split(q, 1, dim=1)]
-    k_ts = [ttnn.squeeze(x, 1) for x in ttnn.split(k, 1, dim=1)]
-    v_ts = [ttnn.squeeze(x, 1) for x in ttnn.split(v, 1, dim=1)]
-    g_ts = [ttnn.squeeze(x, 1) for x in ttnn.split(g, 1, dim=1)]
-    beta_ts = [ttnn.squeeze(x, 1) for x in ttnn.split(beta, 1, dim=1)]
-    for t in range(seq):
-        this_output = gdn_recurrence_fused_inplace(q_ts[t], k_ts[t], v_ts[t], g_ts[t], beta_ts[t], state)
-        outputs_list.append(ttnn.to_torch(this_output))
-    final_output = torch.stack(outputs_list, dim=1).squeeze(2).unsqueeze(0)
-    return final_output
+
+    B, nh, seqlen, Dk = q.shape
+    Dv = v.shape[-1]
+    total_num_heads = B * nh
+    q = ttnn.reshape(q, (total_num_heads, seqlen, 1, Dk))
+    k = ttnn.reshape(k, (total_num_heads, seqlen, 1, Dk))
+    v = ttnn.reshape(v, (total_num_heads, seqlen, 1, Dv))
+    g = ttnn.reshape(g, (total_num_heads, seqlen, 1, 1))
+    beta = ttnn.reshape(beta, (total_num_heads, seqlen, 1, 1))
+    state = ttnn.reshape(state, (total_num_heads, 1, Dk, Dv))
+
+    eye_host = torch.eye(Dk, dtype=torch.float32).unsqueeze(0).expand(total_num_heads, seqlen, Dk, Dk).contiguous()
+
+    g_exp = ttnn.exp(g)
+    k_t = ttnn.permute(k, (0, 1, 3, 2))
+    kk = ttnn.matmul(k_t, k)
+    delta = ttnn.multiply(beta, kk)
+    identity = ttnn.from_torch(
+        eye_host,
+        dtype=delta.dtype,
+        layout=delta.layout,
+        device=delta.device(),
+    )
+    factor = ttnn.subtract(identity, delta)
+    bktv = ttnn.multiply(beta, ttnn.matmul(k_t, v))
+
+    step_outputs: list[torch.Tensor] = []
+    for t in range(seqlen):
+        this_g_exp = g_exp[:, t : t + 1]
+        this_factor = factor[:, t : t + 1]
+        this_bktv = bktv[:, t : t + 1]
+        this_q = q[:, t : t + 1]
+        decayed = ttnn.multiply(state, this_g_exp)
+        projected = ttnn.matmul(this_factor, decayed)
+        new_state = ttnn.add(projected, this_bktv)
+
+        ttnn.assign(new_state, state)
+        output = ttnn.matmul(this_q, new_state)
+        step_outputs.append(ttnn.to_torch(output).float().squeeze(1).clone())
+
+    out_tt_stacked = torch.stack(step_outputs, dim=2)  # [BH, S, Dv]
+
+    return out_tt_stacked
