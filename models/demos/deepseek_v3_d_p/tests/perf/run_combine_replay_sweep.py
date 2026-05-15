@@ -73,40 +73,35 @@ def run_one(
         "TT_DS_REPLAY_TIMED": str(timed),
     }
 
-    # 1. Run pytest under tracy (no `-r` to avoid shell-quoting bug; we'll
-    #    invoke process_ops_logs.py manually below).
+    # 1. Run pytest under tracy with -r so the capture subprocess writes the
+    #    host trace AND generate_report() post-processes to ops_perf_results_*.csv.
+    #    The `-k` filter is single-quoted because tracy's -r path reassembles its
+    #    child command via `" ".join(args)` and runs it with shell=True, which
+    #    would otherwise split "L05_col0 and linear-8-2link" into three args.
     cmd_pytest = [
         "python",
         "-m",
         "tracy",
         "-p",
         "-v",
+        "-r",
+        "-n",
+        name,
         "--disable-device-data-push-to-tracy",
         "-m",
         "pytest",
         "-v",
         "models/demos/deepseek_v3_d_p/tests/perf/test_combine_replay.py",
         "-k",
-        f"L{layer:02d}_col{col} and {links_id}",
+        f"'L{layer:02d}_col{col} and {links_id}'",
     ]
     r = subprocess.run(cmd_pytest, env=env)
     if r.returncode != 0:
-        print(f"  ! pytest exit {r.returncode}; continuing", file=sys.stderr)
-        # still try to post-process — sometimes pytest exits nonzero but the CSV is there
+        print(f"  ! tracy/pytest exit {r.returncode}; continuing", file=sys.stderr)
 
-    # 2. Post-process device log into ops_perf_results_*_<name>.csv
-    cmd_post = [
-        "python",
-        str(TT_METAL_HOME / "tools" / "tracy" / "process_ops_logs.py"),
-        "-n",
-        name,
-    ]
-    rr = subprocess.run(cmd_post, env=env)
-    if rr.returncode != 0:
-        print(f"  ! process_ops_logs exit {rr.returncode}", file=sys.stderr)
-
-    # 3. Find the newest reports/<ts>/ dir that contains the matching CSV
-    pattern = str(REPORTS_ROOT / "*" / f"ops_perf_results_*_{name}.csv")
+    # 2. tracy's generate_report() places output at
+    #    <reports>/<NAME>/<DATE>/ops_perf_results_<NAME>_<DATE>.csv
+    pattern = str(REPORTS_ROOT / name / "*" / f"ops_perf_results_{name}_*.csv")
     matches = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
     if not matches:
         print(f"  ! no CSV matched {pattern}", file=sys.stderr)
@@ -116,11 +111,11 @@ def run_one(
     shutil.copy2(produced, out_csv)
     print(f"  saved → {out_csv}  ({out_csv.stat().st_size / 1024:.1f} KB)")
 
-    # 4. Cleanup
-    ts_dir = produced.parent
+    # 4. Cleanup — produced lives in <reports>/<NAME>/<DATE>/; remove the whole <NAME>/ tree.
+    name_dir = produced.parent.parent
     if not keep_reports_dir:
-        shutil.rmtree(ts_dir, ignore_errors=True)
-        print(f"  removed reports dir: {ts_dir}")
+        shutil.rmtree(name_dir, ignore_errors=True)
+        print(f"  removed reports dir: {name_dir}")
     for fname in TRACY_BIG_FILES:
         p = LOGS_DIR / fname
         if p.exists():
@@ -198,8 +193,16 @@ def summarize(out_dir: Path, layers: list[int], cols: list[int], links_id: str, 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--layers", required=True, help="Comma-separated MoE layer indices, e.g., 5,20,40,55")
-    ap.add_argument("--cols", default="0,1,2,3", help="Comma-separated dispatch group columns (default: 0,1,2,3)")
+    ap.add_argument(
+        "--layers",
+        required=True,
+        help="Comma-separated MoE layer indices (e.g., 5,20,40,55), or 'all' to discover every L<NN>/ dir under --capture-dir.",
+    )
+    ap.add_argument(
+        "--cols",
+        default="0,1,2,3",
+        help="Comma-separated dispatch group columns (default: 0,1,2,3), or 'all' (same as default).",
+    )
     ap.add_argument("--num-links-id", default="linear-8-2link", help="Mesh config id (default: linear-8-2link)")
     ap.add_argument("--capture-dir", required=True, help="Path with L<NN>/col<K>.pt files")
     ap.add_argument("--out-dir", required=True, help="Where to save per-combo CSVs")
@@ -218,8 +221,20 @@ def main():
     )
     args = ap.parse_args()
 
-    layers = [int(x) for x in args.layers.split(",") if x.strip()]
-    cols = [int(x) for x in args.cols.split(",") if x.strip()]
+    if args.layers.strip().lower() == "all":
+        layers = sorted(
+            int(p.name[1:]) for p in Path(args.capture_dir).glob("L*") if p.is_dir() and p.name[1:].isdigit()
+        )
+        if not layers:
+            raise SystemExit(f"--layers all: no L<NN>/ dirs found under {args.capture_dir}")
+    else:
+        layers = [int(x) for x in args.layers.split(",") if x.strip()]
+
+    if args.cols.strip().lower() == "all":
+        cols = [0, 1, 2, 3]
+    else:
+        cols = [int(x) for x in args.cols.split(",") if x.strip()]
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
