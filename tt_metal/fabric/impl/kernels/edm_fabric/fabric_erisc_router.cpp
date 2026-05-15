@@ -3657,6 +3657,15 @@ void kernel_main() {
         // time.
         wait_for_other_local_erisc();
     }
+    // FIX CZ (#42429): Zero the pre-ping slot BEFORE writing HANDSHAKE_READY so there is
+    // no window in which the non-MMIO peer's pre-ping could arrive and be cleared by a
+    // late zero.  The non-MMIO ERISC sends the pre-ping only after writing its own
+    // HANDSHAKE_READY, so zeroing here (before our HANDSHAKE_READY) is a strict
+    // happens-before guarantee.
+    if constexpr (is_handshake_sender && enable_ethernet_handshake) {
+        *reinterpret_cast<volatile tt_l1_ptr uint32_t*>(preping_addr) = 0;
+    }
+
     // FIX CU (#42429): Signal HANDSHAKE_READY before entering the ETH handshake
     // loop so the host can stage peer launches (MMIO-first) knowing this core's
     // channel/object setup is complete and it is ready to receive handshake packets.
@@ -3697,10 +3706,8 @@ void kernel_main() {
     // the sender does not enter fabric_sender_side_handshake until the receiver is at
     // HANDSHAKE_READY and ready to receive the nonce. Replaces host polling + host gate.
     if constexpr (is_handshake_sender && enable_ethernet_handshake) {
-        // Zero the pre-ping slot so we don't accidentally see stale data from a prior run.
         volatile tt_l1_ptr uint32_t* preping_dst =
             reinterpret_cast<volatile tt_l1_ptr uint32_t*>(preping_addr);
-        *preping_dst = 0;
         uint32_t watchdog_count = 0;
         constexpr uint32_t kPrepingWatchdogIter = 100'000'000;
         WAYPOINT("PPWT");
