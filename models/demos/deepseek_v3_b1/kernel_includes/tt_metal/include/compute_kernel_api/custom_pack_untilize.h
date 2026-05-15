@@ -34,8 +34,8 @@ namespace ckernel {
  * - full-sync mode (16-bit mode): 16 tiles
  * - full-sync mode (32-bit mode): 8 tiles
  *
- * Face geometry (face_r_dim, num_faces) is derived from the output circular buffer metadata set on the host
- * via set_unpack_face_geometry / CBFormatDescriptor.face_geometry.
+ * Face geometry defaults to the output circular buffer metadata set on the host. Callers may pass explicit
+ * `face_r_dim` and `num_faces` values when the untilize block geometry differs from the output CB metadata.
  *
  * Return value: None
  *
@@ -47,6 +47,8 @@ namespace ckernel {
  * | Template   | row_num_datums | Number of datums per row                         | uint32_t  | >= 1                      | False                 |
  * | Template   | dense          | Packs two 2 face tiles in a single 4 face region | bool      | true/false                | False (default false) |
  * | Function   | ocb            | Output circular buffer identifier                | uint32_t  | 0 to 31                   | True                  |
+ * | Function   | face_r_dim     | Face height in rows                              | uint32_t  | 1, 8 or 16                | False (default from CB) |
+ * | Function   | num_faces      | Number of faces                                  | uint32_t  | 1, 2 or 4                 | False (default from CB) |
  */
 // clang-format on
 template <
@@ -55,11 +57,20 @@ template <
     bool narrow_row = false,
     std::uint32_t row_num_datums = TILE_C_DIM,
     bool dense = false>
-ALWI void custom_pack_untilize_dest_init(uint32_t ocb, uint32_t call_line = __builtin_LINE()) {
+ALWI void custom_pack_untilize_dest_init(
+    uint32_t ocb, uint32_t face_r_dim = 0, uint32_t num_faces = 0, uint32_t call_line = __builtin_LINE()) {
     state_configure<Operand::PACK>(ocb, call_line);
-    PACK((llk_pack_reconfig_data_format<DST_ACCUM_MODE>(ocb)));
-    PACK((llk_pack_untilize_init<block_ct_dim, full_ct_dim, false, narrow_row, row_num_datums, dense>(ocb)));
-    PACK((llk_init_packer_dest_offset_registers<true, false>()));
+    // TODO NC: A workaround for tt-metal#17132. Should be addressed more systematically in tt-llk#989
+    if (face_r_dim == 0 || num_faces == 0) {
+        PACK((llk_pack_reconfig_data_format<DST_ACCUM_MODE>(ocb)));
+        PACK((llk_pack_untilize_init<block_ct_dim, full_ct_dim, false, narrow_row, row_num_datums, dense>(ocb)));
+    } else {
+        PACK((llk_pack_untilize_hw_configure_disaggregated<DST_ACCUM_MODE, PackMode::Default>(
+            ocb, face_r_dim, num_faces)));
+        PACK((llk_pack_untilize_init<block_ct_dim, full_ct_dim, false, narrow_row, row_num_datums, dense>(
+            ocb, face_r_dim, num_faces)));
+    }
+    PACK((llk_init_packer_dest_offset_registers<PackMode::Untilize, false>()));
 }
 
 }  // namespace ckernel
