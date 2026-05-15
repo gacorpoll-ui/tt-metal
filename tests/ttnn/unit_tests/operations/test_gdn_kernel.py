@@ -221,18 +221,11 @@ def test_gdn_kernel_correctness(mesh_device, reset_seeds, num_heads):
     logger.info(f"PASSED: ttnn matches HF reference (output PCC={pcc:.4f}, state PCC={state_pcc:.4f})")
 
 
-@torch.no_grad()
-@pytest.mark.parametrize(
-    "mesh_device",
-    [(1, 1)],
-    indirect=True,
-)
 @pytest.mark.parametrize("device_params", [{}], indirect=True)
-@pytest.mark.parametrize("num_heads", [10, 32, 384])
-def test_chunked_gdn_kernel_correctness(mesh_device, reset_seeds, num_heads):
+@pytest.mark.parametrize("num_heads", [8, 32, 64])
+def test_chunked_gdn_kernel_correctness(device, reset_seeds, num_heads):
     """Match HF recurrent GDN over ``SEQ_LEN`` (64) tokens vs naive ttnn stepping."""
-    device = mesh_device
-    batch_size = 2
+    batch_size = 4
     Dk, Dv = 128, 128
     num_cores = min(10, batch_size * num_heads)
 

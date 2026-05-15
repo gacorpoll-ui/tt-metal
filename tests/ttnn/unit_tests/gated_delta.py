@@ -156,20 +156,18 @@ def chunked_gdn_recurrence_fused_inplace(
     factor = ttnn.subtract(identity, delta)
     bktv = ttnn.multiply(beta, ttnn.matmul(k_t, v))
 
-    step_outputs: list[torch.Tensor] = []
+    all_states: list[torch.Tensor] = []
     for t in range(seqlen):
         this_g_exp = g_exp[:, t : t + 1]
         this_factor = factor[:, t : t + 1]
         this_bktv = bktv[:, t : t + 1]
-        this_q = q[:, t : t + 1]
         decayed = ttnn.multiply(state, this_g_exp)
         projected = ttnn.matmul(this_factor, decayed)
         new_state = ttnn.add(projected, this_bktv)
-
+        all_states.append(new_state)
         ttnn.assign(new_state, state)
-        output = ttnn.matmul(this_q, new_state)
-        step_outputs.append(ttnn.to_torch(output).float().squeeze(1).clone())
 
-    out_tt_stacked = torch.stack(step_outputs, dim=2)  # [BH, S, Dv]
-
-    return out_tt_stacked
+    all_states_tt = ttnn.stack(all_states, dim=1)
+    all_states_tt = ttnn.reshape(all_states_tt, (total_num_heads, seqlen, Dk, Dv))
+    output = ttnn.matmul(q, all_states_tt)
+    return ttnn.to_torch(output)
