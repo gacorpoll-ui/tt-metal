@@ -1269,7 +1269,11 @@ def run_moe_compute_test(
     num_replicated_devices = num_devices // num_dispatch_devices
     total_tokens = tokens_per_device * num_dispatch_devices
     experts_per_cluster = experts // num_replicated_devices
-    experts_per_device = experts // num_devices
+    # Cluster-axis-aware: experts are partitioned along the cluster axis, not the full mesh.
+    # For 1xN topologies this equals experts // num_devices (legacy behavior).
+    # For multi-axis meshes (e.g. 2x4 BH single LB with cluster_axis=1) it correctly
+    # divides experts among the 4 dispatch devices instead of all 8.
+    experts_per_device = experts // num_dispatch_devices
 
     logger.info(f"Test configuration:")
     logger.info(f"  mesh_shape: {mesh_shape}")
@@ -1849,37 +1853,53 @@ def test_moe_compute_bh_lb(
     """Headline gate for #43444: fused MoE on BH single Loudbox.
 
     Uses canonical `p150_x8_mesh_graph_descriptor.textproto`. POR cabling is a 2x4
-    LINE/LINE mesh with no physical ring closure.
-
-    Known POR single-LB blockers (op-side follow-up required before this gate passes;
-    audited against new moe_compute rebased on #43932):
-
-    1. Writer indexes absent neighbor on LINE endpoints (highest priority).
-       `fabric_multicast_bidirectional_atomic_inc_ring_1d` in
-       ttnn/cpp/ttnn/operations/ccl/common/kernels/moe_utils.hpp unconditionally
-       indexes fabric_connections[positive_direction] AND fabric_connections[negative_direction];
-       LINE endpoints have only one neighbor, so the other slot is uninitialized.
-
-    2. Op forwards Topology::Ring verbatim on Linear fabric.
-       moe_compute_device_operation.cpp passes `topology.value_or(Topology::Ring)`
-       through without calling `ttnn::ccl::get_usable_topology()` (which exists in
-       ccl_common.cpp but is unused by this op). Writer therefore runs ring-shaped
-       code paths on a line, compounding (1).
-
-    3. experts_per_device computed from full-mesh num_devices, not cluster axis.
-       Three sites: moe_compute_device_operation.cpp, moe_compute_program_factory.cpp,
-       selective_reduce_combine_program_factory.cpp. On (2,4) with cluster_axis=1,
-       num_devices=8 but the cluster line has 4 — DP-replicated dim should not divide
-       expert work. Test's experts=16 coincidentally yields ceil(16/8)=2; correct
-       cax-aware value is ceil(16/4)=4. Silently wrong whenever off-axis dim > 1.
-
-    Cluster_axis=[1] only; cax=0 has a separate `get_linearized_mesh_coord` issue.
-
-    Intra-chip dm1 matmul-core ring is fabric-topology-independent and not a blocker.
-
-    Until blockers (1)-(3) are fixed, this test serves as the target configuration
-    and skipif-gated documentation. Activate with
+    LINE/LINE mesh with no physical ring closure. Activate this test with
     `TT_MESH_GRAPH_DESC_PATH=tt_metal/fabric/mesh_graph_descriptors/p150_x8_mesh_graph_descriptor.textproto`.
+
+    Fixed in this branch (was blocking on BH single LB):
+
+    1. Kernel UB on LINE endpoints (fixed).
+       `fabric_multicast_bidirectional_atomic_inc_ring_1d` in
+       ttnn/cpp/ttnn/operations/ccl/common/kernels/moe_utils.hpp now takes
+       `tt::tt_fabric::Topology` as a template parameter. On Linear, range math is
+       CT-derived from `LinearizedSrcMeshCoord`, so endpoints elide the absent-direction
+       send entirely via `if constexpr` — never indexes an unopened fabric slot.
+       Caller at selective_reduce_combine writer.cpp:338 passes the resolved topology;
+       wait count at writer.cpp:362 adjusts to N-1 on Linear vs N on Ring (no antipodal
+       doubling on a line).
+
+    2. Op auto-downgrades Topology::Ring → Linear (fixed).
+       moe_compute_device_operation.cpp:442 calls `ttnn::ccl::get_usable_topology(...)`
+       before forwarding the topology into SelectiveReduceCombineParams. On p150_x8
+       (LINE/LINE) the downgrade fires and downstream kernels run the Linear code path.
+
+    3. experts_per_device is cluster-axis-aware (fixed).
+       Four sites now compute `cluster_devices = mesh_view.shape()[cluster_axis]`
+       (defaulting to full mesh when cluster_axis is nullopt for the ComputeOnly path).
+       Test helper `run_moe_compute_test` mirrors this with
+       `experts_per_device = experts // num_dispatch_devices`.
+
+    Tunable knobs:
+    - `TT_MOE_BH_N` — environment variable; selects the BH ring size used by the host
+      Python utility (default 16 on BH; valid: 8, 12, 16). For DeepSeek-7168 N=8 gives
+      a clean 1:1 with the 8 BH DRAM banks. See moe_compute_utils.py:790-849.
+
+    Known remaining limitations (deferred follow-up):
+    - `cluster_axis=0` exercises a `get_linearized_mesh_coord` row-major-only code path
+      in selective_reduce_combine_program_factory.cpp:430 — this test pins cax=1 only.
+    - `kBhMatmulExtras` grid-size filter in moe_compute_program_factory.cpp:200-211 may
+      need relaxing for some shard configs.
+    - `HIDDEN_TO_SHARD_INFO[2880]` may not fit BH's 11×10 harvested grid on every chip;
+      mirror the BH-aware shard logic from test_moe_compute_single_card.py if a shard-fit
+      assertion fires.
+    - The all_to_all_dispatch_metadata writer has its own local copy of
+      `fabric_multicast_bidirectional_atomic_inc_ring_1d` with the same Linear-endpoint
+      bug shape (writer_all_to_all_dispatch_metadata.cpp:57). NOT in the moe_compute Full
+      path so it does not block this test, but the same fix shape will be needed when the
+      standalone a2a op is run on BH LB.
+
+    See `.link_to_claude/plans/moe-fused-bh-lb-test-recipe.md` for the full run recipe
+    on a real BH Loudbox.
     """
     experts_per_device = 2
     tokens_per_device = 32
