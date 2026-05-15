@@ -118,9 +118,9 @@ tt::tt_metal::ProgramDescriptor MatmulMultiCoreReuseOptimizedProgramFactory::cre
     uint32_t output_single_tile_size = output_tile.get_tile_size(output_data_format);
     uint32_t interm0_single_tile_size = output_tile.get_tile_size(interm0_data_format);
 
-    tt_metal::Buffer* in0_buffer = a.buffer();
-    tt_metal::Buffer* in1_buffer = b.buffer();
-    tt_metal::Buffer* out_buffer = output.buffer();
+    const tt::tt_metal::MeshTensor& in0_tensor = a.mesh_tensor();
+    const tt::tt_metal::MeshTensor& in1_tensor = b.mesh_tensor();
+    const tt::tt_metal::MeshTensor& out_tensor = output.mesh_tensor();
     bool in0_is_sharded = a.is_sharded();
     bool in1_is_sharded = b.is_sharded();
     bool output_is_sharded = output.is_sharded();
@@ -224,7 +224,7 @@ tt::tt_metal::ProgramDescriptor MatmulMultiCoreReuseOptimizedProgramFactory::cre
         (std::uint32_t)bcast_batch,
         (std::uint32_t)M * K,
     };
-    tt::tt_metal::TensorAccessorArgs(*in0_buffer).append_to(reader_compile_time_args);
+    tt::tt_metal::TensorAccessorArgs(in0_tensor).append_to(reader_compile_time_args);
 
     // Compile time args for reader/writer
     std::vector<uint32_t> reader_writer_compile_time_args = {
@@ -248,8 +248,8 @@ tt::tt_metal::ProgramDescriptor MatmulMultiCoreReuseOptimizedProgramFactory::cre
         (std::uint32_t)out_num_subblocks_h,
         (std::uint32_t)M * N,
     };
-    tt::tt_metal::TensorAccessorArgs(*in1_buffer).append_to(reader_writer_compile_time_args);
-    tt::tt_metal::TensorAccessorArgs(*out_buffer).append_to(reader_writer_compile_time_args);
+    tt::tt_metal::TensorAccessorArgs(in1_tensor).append_to(reader_writer_compile_time_args);
+    tt::tt_metal::TensorAccessorArgs(out_tensor).append_to(reader_writer_compile_time_args);
 
     // Reader defines
     KernelDescriptor::Defines reader_defines;
@@ -384,15 +384,23 @@ tt::tt_metal::ProgramDescriptor MatmulMultiCoreReuseOptimizedProgramFactory::cre
         uint32_t in1_start_tile_id =
             (bcast_batch ? 0 : (start_batch * in1_batch_stride)) + (start_n_block * in1_n_block_stride);
 
-        reader_kernel_desc.emplace_runtime_args(core, {in0_buffer, in0_start_tile_id, num_output_blocks_per_core});
+        {
+            KernelDescriptor::RTArgList reader_ra;
+            reader_ra.push_back(in0_tensor);
+            reader_ra.push_back(in0_start_tile_id);
+            reader_ra.push_back(num_output_blocks_per_core);
+            reader_kernel_desc.emplace_runtime_args(core, reader_ra);
+        }
 
-        reader_writer_kernel_desc.emplace_runtime_args(
-            core,
-            {in1_buffer,
-             in1_start_tile_id,
-             num_output_blocks_per_core,
-             out_buffer,
-             num_blocks_written * num_tiles_per_block_out});
+        {
+            KernelDescriptor::RTArgList reader_writer_ra;
+            reader_writer_ra.push_back(in1_tensor);
+            reader_writer_ra.push_back(in1_start_tile_id);
+            reader_writer_ra.push_back(num_output_blocks_per_core);
+            reader_writer_ra.push_back(out_tensor);
+            reader_writer_ra.push_back(num_blocks_written * num_tiles_per_block_out);
+            reader_writer_kernel_desc.emplace_runtime_args(core, reader_writer_ra);
+        }
 
         // Compute kernels have no per-core runtime args
         if (i < g1_numcores) {
@@ -468,14 +476,14 @@ tt::tt_metal::ProgramDescriptor MatmulMultiCoreReuseOptimizedProgramFactory::cre
                                   tt::DataFormat data_format,
                                   uint32_t page_size,
                                   const tt::tt_metal::Tile& tile,
-                                  Buffer* buffer = nullptr) {
+                                  ttsl::optional_reference<const tt::tt_metal::MeshTensor> tensor_binding = {}) {
         CBDescriptor cb_desc;
         cb_desc.total_size = total_size;
         cb_desc.core_ranges = all_cores;
         tt::tt_metal::TileDescriptor tile_desc{tile};
         cb_desc.format_descriptors.push_back(CBFormatDescriptor{
             .buffer_index = buffer_index, .data_format = data_format, .page_size = page_size, .tile = tile_desc});
-        cb_desc.buffer = buffer;
+        cb_desc.tensor = tensor_binding.has_value() ? std::addressof(tensor_binding.value()) : nullptr;
         return cb_desc;
     };
 
@@ -486,7 +494,8 @@ tt::tt_metal::ProgramDescriptor MatmulMultiCoreReuseOptimizedProgramFactory::cre
         in0_data_format,
         in0_single_tile_size,
         in0_tile,
-        in0_is_sharded ? in0_buffer : nullptr));
+        in0_is_sharded ? ttsl::optional_reference<const tt::tt_metal::MeshTensor>(in0_tensor)
+                       : ttsl::optional_reference<const tt::tt_metal::MeshTensor>()));
 
     // CB 1: Input B
     program_descriptor.cbs.push_back(make_cb_descriptor(
@@ -495,7 +504,8 @@ tt::tt_metal::ProgramDescriptor MatmulMultiCoreReuseOptimizedProgramFactory::cre
         in1_data_format,
         in1_single_tile_size,
         in1_tile,
-        in1_is_sharded ? in1_buffer : nullptr));
+        in1_is_sharded ? ttsl::optional_reference<const tt::tt_metal::MeshTensor>(in1_tensor)
+                       : ttsl::optional_reference<const tt::tt_metal::MeshTensor>()));
 
     // CB 4 and CB 5: Output and intermediate accumulator
     if ((interm0_data_format != output_data_format) || (untilize_out && (in1_num_subblocks > 1))) {
@@ -507,7 +517,8 @@ tt::tt_metal::ProgramDescriptor MatmulMultiCoreReuseOptimizedProgramFactory::cre
             output_data_format,
             output_single_tile_size,
             output_tile,
-            output_is_sharded ? out_buffer : nullptr));
+            output_is_sharded ? ttsl::optional_reference<const tt::tt_metal::MeshTensor>(out_tensor)
+                              : ttsl::optional_reference<const tt::tt_metal::MeshTensor>()));
         program_descriptor.cbs.push_back(make_cb_descriptor(
             interm0_CB_size, tt::CBIndex::c_5, interm0_data_format, interm0_single_tile_size, output_tile));
     } else {
@@ -526,7 +537,9 @@ tt::tt_metal::ProgramDescriptor MatmulMultiCoreReuseOptimizedProgramFactory::cre
             .data_format = interm0_data_format,
             .page_size = interm0_single_tile_size,
             .tile = output_tile_desc});
-        output_cb_desc.buffer = output_is_sharded ? out_buffer : nullptr;
+        if (output_is_sharded) {
+            output_cb_desc.tensor = std::addressof(out_tensor);
+        }
         program_descriptor.cbs.push_back(std::move(output_cb_desc));
     }
 

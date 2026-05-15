@@ -32,9 +32,9 @@ static MatmulMultiCoreReuseProgramFactory::cached_program_t create_program(
     uint32_t out_subblock_w,
     uint32_t per_core_M,
     uint32_t per_core_N,
-    tt_metal::Buffer* in0_buffer,
-    tt_metal::Buffer* in1_buffer,
-    tt_metal::Buffer* out_buffer) {
+    const tt::tt_metal::MeshTensor& in0_tensor,
+    const tt::tt_metal::MeshTensor& in1_tensor,
+    const tt::tt_metal::MeshTensor& out_tensor) {
     tt_metal::Program program{};
 
     uint32_t in0_single_tile_size = tt::tile_size(in0_cb_data_format);
@@ -113,11 +113,11 @@ static MatmulMultiCoreReuseProgramFactory::cached_program_t create_program(
     tt_metal::CreateCircularBuffer(program, all_cores, output_cb_config);
 
     std::vector<uint32_t> reader_compile_time_args = {};
-    tt::tt_metal::TensorAccessorArgs(*in0_buffer).append_to(reader_compile_time_args);
-    tt::tt_metal::TensorAccessorArgs(*in1_buffer).append_to(reader_compile_time_args);
+    tt::tt_metal::TensorAccessorArgs(in0_tensor).append_to(reader_compile_time_args);
+    tt::tt_metal::TensorAccessorArgs(in1_tensor).append_to(reader_compile_time_args);
 
     std::vector<uint32_t> writer_compile_time_args = {};
-    tt::tt_metal::TensorAccessorArgs(*out_buffer).append_to(writer_compile_time_args);
+    tt::tt_metal::TensorAccessorArgs(out_tensor).append_to(writer_compile_time_args);
 
     // Create reader and writer kernels per core
     auto mm_reader_kernel_id = tt_metal::CreateKernel(
@@ -155,7 +155,7 @@ static MatmulMultiCoreReuseProgramFactory::cached_program_t create_program(
 
             // Write runtime args to device
             std::vector<uint32_t> mm_reader_args = {
-                (std::uint32_t)in0_buffer->address(),          // in0_tensor_addr
+                (std::uint32_t)in0_tensor.address(),           // in0_tensor_addr
                 (std::uint32_t)K * per_core_M * output_idx_y,  // in0_tensor_start_tile_id
                 (std::uint32_t)1,                              // in0_tensor_stride_w
                 (std::uint32_t)K,                              // in0_tensor_stride_h
@@ -165,7 +165,7 @@ static MatmulMultiCoreReuseProgramFactory::cached_program_t create_program(
                 (std::uint32_t)per_core_M,                // in0_block_h
                 (std::uint32_t)in0_block_w * per_core_M,  // in0_block_num_tiles
 
-                (std::uint32_t)in1_buffer->address(),      // in1_tensor_addr
+                (std::uint32_t)in1_tensor.address(),       // in1_tensor_addr
                 (std::uint32_t)per_core_N * output_idx_x,  // in1_tensor_start_tile_id
                 (std::uint32_t)1,                          // in1_tensor_stride_w
                 (std::uint32_t)N,                          // in1_tensor_stride_h
@@ -184,7 +184,7 @@ static MatmulMultiCoreReuseProgramFactory::cached_program_t create_program(
             };
 
             std::vector<uint32_t> writer_args = {
-                (std::uint32_t)out_buffer->address(),  // out_tensor_addr
+                (std::uint32_t)out_tensor.address(),  // out_tensor_addr
                 ((std::uint32_t)output_idx_x * per_core_N) +
                     (output_idx_y * per_core_M * N),  // out_tensor_start_tile_id
                 (std::uint32_t)1,                     // out_tensor_stride_w
@@ -233,10 +233,10 @@ void MatmulMultiCoreReuseProgramFactory::override_runtime_arguments(
     uint32_t num_blocks_y = M / per_core_M;
     uint32_t num_blocks_x = N / per_core_N;
 
-    auto* src_dram_buffer_a = input_tensors.at(0).buffer();
-    auto* src_dram_buffer_b = input_tensors.at(1).buffer();
+    const tt::tt_metal::MeshTensor& src_tensor_a = input_tensors.at(0).mesh_tensor();
+    const tt::tt_metal::MeshTensor& src_tensor_b = input_tensors.at(1).mesh_tensor();
 
-    auto* dst_dram_buffer = output_tensors.at(0).buffer();
+    const tt::tt_metal::MeshTensor& dst_tensor = output_tensors.at(0).mesh_tensor();
 
     auto& program = cached_program.program;
     auto& reader_kernel_id = cached_program.shared_variables.reader_kernel_id;
@@ -251,13 +251,13 @@ void MatmulMultiCoreReuseProgramFactory::override_runtime_arguments(
 
             {
                 auto& runtime_args = GetRuntimeArgs(program, reader_kernel_id, core);
-                runtime_args[0] = src_dram_buffer_a->address();
-                runtime_args[8] = src_dram_buffer_b->address();
+                runtime_args[0] = src_tensor_a.address();
+                runtime_args[8] = src_tensor_b.address();
             }
 
             {
                 auto& runtime_args = GetRuntimeArgs(program, writer_kernel_id, core);
-                runtime_args[0] = dst_dram_buffer->address();
+                runtime_args[0] = dst_tensor.address();
             }
             num_blocks_read++;
         }
@@ -282,8 +282,8 @@ MatmulMultiCoreReuseProgramFactory::cached_program_t MatmulMultiCoreReuseProgram
     tt::DataFormat out_cb_data_format = tt_metal::datatype_to_dataformat_converter(output.dtype());
     MathFidelity math_fidelity = MathFidelity::HiFi4;
 
-    tt_metal::Buffer* in0_buffer = a.buffer();
-    tt_metal::Buffer* in1_buffer = b.buffer();
+    const tt::tt_metal::MeshTensor& in0_tensor = a.mesh_tensor();
+    const tt::tt_metal::MeshTensor& in1_tensor = b.mesh_tensor();
 
     ////////////////////////////////////////////////////////////////////////////
     //                      Matmul Parameters Setup
@@ -320,8 +320,8 @@ MatmulMultiCoreReuseProgramFactory::cached_program_t MatmulMultiCoreReuseProgram
     ////////////////////////////////////////////////////////////////////////////
     //                      Grayskull Device Setup
     ////////////////////////////////////////////////////////////////////////////
-    tt_metal::Buffer* out_buffer = output.buffer();
-    TT_FATAL(out_buffer != nullptr, "Output buffer should be allocated on device!");
+    const tt::tt_metal::MeshTensor& out_tensor = output.mesh_tensor();
+    TT_FATAL(out_tensor.is_initialized(), "Output buffer should be allocated on device!");
 
     ////////////////////////////////////////////////////////////////////////////
     //                      Application Setup
@@ -344,9 +344,9 @@ MatmulMultiCoreReuseProgramFactory::cached_program_t MatmulMultiCoreReuseProgram
         out_subblock_w,
         per_core_M,
         per_core_N,
-        in0_buffer,
-        in1_buffer,
-        out_buffer);
+        in0_tensor,
+        in1_tensor,
+        out_tensor);
 }
 
 ////////////////////////////////////////////////////////////////////////////

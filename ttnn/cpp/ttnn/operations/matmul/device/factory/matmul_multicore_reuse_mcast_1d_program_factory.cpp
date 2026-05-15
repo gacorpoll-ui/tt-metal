@@ -3710,7 +3710,7 @@ static ProgramDescriptor create_program_mcast_in0_descriptor(
             .page_size = bias_single_tile_size,
             .tile = bias_tile_desc});
         if (bias_is_sharded) {
-            cb_desc.tensor = &bias_tensor;
+            cb_desc.tensor = &bias_tensor.value();
         }
         desc.cbs.push_back(std::move(cb_desc));
     }

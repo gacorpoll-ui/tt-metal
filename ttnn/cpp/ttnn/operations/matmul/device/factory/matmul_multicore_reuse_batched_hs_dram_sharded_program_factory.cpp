@@ -11,6 +11,8 @@
 #include <set>
 #include <utility>
 
+#include <tt_stl/optional_reference.hpp>
+
 #include "hostdevcommon/common_values.hpp"
 #include <tt-metalium/tt_metal.hpp>
 #include <tt-metalium/host_api.hpp>
@@ -58,10 +60,10 @@ static ProgramDescriptor create_program_batch_sharded_descriptor(
     uint32_t per_core_M,
     uint32_t per_core_N,
     std::optional<UnaryWithParam> fused_activation,
-    tt_metal::Buffer* in0_buffer,
-    tt_metal::Buffer* in1_buffer,
-    tt_metal::Buffer* bias_buffer,
-    tt_metal::Buffer* out_buffer,
+    const tt::tt_metal::MeshTensor& in0_tensor,
+    const tt::tt_metal::MeshTensor& in1_tensor,
+    ttsl::optional_reference<const tt::tt_metal::MeshTensor> bias_tensor,
+    const tt::tt_metal::MeshTensor& out_tensor,
     const tt::tt_metal::Tile& in0_tile,
     const tt::tt_metal::Tile& in1_tile,
     const tt::tt_metal::Tile& bias_tile,
@@ -178,15 +180,15 @@ static ProgramDescriptor create_program_batch_sharded_descriptor(
     uint32_t out_block_tiles = per_core_M * per_core_N;
     uint32_t interm0_CB_size = out_block_tiles * interm0_single_tile_size;
 
-    uint32_t in0_shard_tiles = in0_buffer->shard_spec().shape()[0] / in0_tile.get_tile_shape()[0] *
-                               in0_buffer->shard_spec().shape()[1] / in0_tile.get_tile_shape()[1];
+    uint32_t in0_shard_tiles = in0_tensor.legacy_shard_spec()->shape[0] / in0_tile.get_tile_shape()[0] *
+                               in0_tensor.legacy_shard_spec()->shape[1] / in0_tile.get_tile_shape()[1];
     uint32_t in2_CB_size = in0_shard_tiles * in0_single_tile_size;
 
     uint32_t in3_block_tiles = per_core_N;
     uint32_t in3_CB_size = in3_block_tiles * bias_single_tile_size;
 
-    uint32_t out_shard_tiles = out_buffer->shard_spec().shape()[0] / output_tile.get_tile_shape()[0] *
-                               out_buffer->shard_spec().shape()[1] / output_tile.get_tile_shape()[1];
+    uint32_t out_shard_tiles = out_tensor.legacy_shard_spec()->shape[0] / output_tile.get_tile_shape()[0] *
+                               out_tensor.legacy_shard_spec()->shape[1] / output_tile.get_tile_shape()[1];
     uint32_t out_reshard_CB_size = out_shard_tiles * output_single_tile_size;
 
     // Page sizes for DRAM reads
@@ -249,12 +251,12 @@ static ProgramDescriptor create_program_batch_sharded_descriptor(
             .data_format = in0_data_format,
             .page_size = in0_single_tile_size,
             .tile = in0_tile_desc});
-        cb_desc.buffer = in0_buffer;
+        cb_desc.tensor = &in0_tensor;
         desc.cbs.push_back(std::move(cb_desc));
     }
 
     // CB 3: bias (if fused) - on all cores in bounding box
-    if (bias_buffer != nullptr) {
+    if (bias_tensor.has_value()) {
         CBDescriptor cb_desc;
         cb_desc.total_size = in3_CB_size;
         cb_desc.core_ranges = all_cores_in_rect_grid;
@@ -321,7 +323,7 @@ static ProgramDescriptor create_program_batch_sharded_descriptor(
             .data_format = output_data_format,
             .page_size = output_single_tile_size,
             .tile = output_tile_desc});
-        cb_desc.buffer = out_buffer;
+        cb_desc.tensor = &out_tensor;
         desc.cbs.push_back(std::move(cb_desc));
     }
 
@@ -332,7 +334,7 @@ static ProgramDescriptor create_program_batch_sharded_descriptor(
     std::map<std::string, std::string> reader_defines;
     std::map<std::string, std::string> writer_defines;
 
-    if (bias_buffer != nullptr) {
+    if (bias_tensor.has_value()) {
         mm_kernel_defines["FUSE_BIAS"] = "1";
         writer_defines["FUSE_BIAS"] = "1";
     }
@@ -391,7 +393,7 @@ static ProgramDescriptor create_program_batch_sharded_descriptor(
         (uint32_t)out_batch_stride_bytes,
         (uint32_t)out_reshard_CB_size,
     };
-    if (bias_buffer != nullptr) {
+    if (bias_tensor.has_value()) {
         in1_writer_compile_args.push_back(bias_buffer_page_size);
         in1_writer_compile_args.push_back(bias_buffer_num_pages);
         in1_writer_compile_args.push_back(in3_block_tiles);
@@ -422,7 +424,7 @@ static ProgramDescriptor create_program_batch_sharded_descriptor(
         0u,
         0u,
     };
-    if (bias_buffer != nullptr) {
+    if (bias_tensor.has_value()) {
         compute_kernel_args.push_back(1u);  // row_broadcast_bias: DRAM sharded always uses row broadcast
     }
 
@@ -542,15 +544,15 @@ static ProgramDescriptor create_program_batch_sharded_descriptor(
         in0_reader_args.push_back(uint32_t{1u});
         in0_reader_args.push_back(uint32_t{input_storage_noc_x[worker_idx]});
         in0_reader_args.push_back(uint32_t{input_storage_noc_y[worker_idx]});
-        in0_reader_args.push_back(in0_buffer);
+        in0_reader_args.push_back(in0_tensor);
         in0_reader_kernel_desc.emplace_runtime_args(core, in0_reader_args);
 
         // in1 writer runtime args
         KernelDescriptor::RTArgList in1_writer_args;
         in1_writer_args.push_back(uint32_t{1u});
-        in1_writer_args.push_back(in1_buffer);
-        if (bias_buffer != nullptr) {
-            in1_writer_args.push_back(bias_buffer);
+        in1_writer_args.push_back(in1_tensor);
+        if (bias_tensor.has_value()) {
+            in1_writer_args.push_back(bias_tensor.value());
         } else {
             in1_writer_args.push_back(uint32_t{0u});
         }
@@ -558,7 +560,7 @@ static ProgramDescriptor create_program_batch_sharded_descriptor(
         in1_writer_args.push_back(uint32_t{vc});
         in1_writer_args.push_back(uint32_t{output_storage_noc_x[worker_idx]});
         in1_writer_args.push_back(uint32_t{output_storage_noc_y[worker_idx]});
-        in1_writer_args.push_back(out_buffer);
+        in1_writer_args.push_back(out_tensor);
         in1_writer_kernel_desc.emplace_runtime_args(core, in1_writer_args);
 
         // Compute runtime args
@@ -604,42 +606,41 @@ ProgramDescriptor MatmulMultiCoreReuseBatchedHSDRAMShardedProgramFactory::create
     tt::DataFormat in1_data_format = tt_metal::datatype_to_dataformat_converter(b.dtype());
     tt::DataFormat output_data_format = tt_metal::datatype_to_dataformat_converter(output.dtype());
 
-    tt_metal::Buffer* bias_buffer = nullptr;
+    ttsl::optional_reference<const tt::tt_metal::MeshTensor> bias_tensor;
     tt::DataFormat bias_data_format = tt::DataFormat::Bfp8_b;
     if (bias.has_value()) {
         const auto& c = bias.value();
         TT_FATAL(c.storage_type() == StorageType::DEVICE, "Bias tensor must be on device");
         TT_FATAL(a.device() == c.device(), "Operands to matmul need to be on the same device!");
-        TT_FATAL(c.buffer() != nullptr, "Operands to matmul need to be allocated in buffers on device!");
-        bias_buffer = c.buffer();
+        bias_tensor = c.mesh_tensor();
         bias_data_format = tt_metal::datatype_to_dataformat_converter(c.dtype());
     }
 
-    tt::tt_metal::IDevice* device = a.buffer()->device();
+    const tt::tt_metal::MeshTensor& in0_tensor = a.mesh_tensor();
+    const tt::tt_metal::MeshTensor& in1_tensor = b.mesh_tensor();
+    const tt::tt_metal::MeshTensor& out_tensor = output.mesh_tensor();
+    tt::tt_metal::IDevice* device = &in0_tensor.device();
 
     TT_FATAL(
         a.shard_spec().has_value() && output.shard_spec().has_value(), "Both input A and output must have shard specs");
     CoreRangeSet input_all_cores_storage = a.shard_spec().value().grid;
     CoreRangeSet output_all_cores_storage = output.shard_spec().value().grid;
 
-    tt_metal::Buffer* in0_buffer = a.buffer();
-    tt_metal::Buffer* in1_buffer = b.buffer();
-    tt_metal::Buffer* out_buffer = output.buffer();
-
     uint32_t in0_single_tile_size = in0_tile.get_tile_size(tt_metal::datatype_to_dataformat_converter(a.dtype()));
     uint32_t in1_single_tile_size = in1_tile.get_tile_size(tt_metal::datatype_to_dataformat_converter(b.dtype()));
 
+    auto in0_buffer_size = in0_tensor.mesh_buffer().device_local_size();
+    auto in1_buffer_size = in1_tensor.mesh_buffer().device_local_size();
     TT_FATAL(
-        in0_buffer->size() % in0_single_tile_size == 0,
+        in0_buffer_size % in0_single_tile_size == 0,
         "Input A buffer size ({}) must be divisible by single tile size ({})",
-        in0_buffer->size(),
+        in0_buffer_size,
         in0_single_tile_size);
     TT_FATAL(
-        in1_buffer->size() % in1_single_tile_size == 0,
+        in1_buffer_size % in1_single_tile_size == 0,
         "Input B buffer size ({}) must be divisible by single tile size ({})",
-        in1_buffer->size(),
+        in1_buffer_size,
         in1_single_tile_size);
-    TT_FATAL(out_buffer != nullptr, "Output buffer should be allocated on device!");
 
     TT_FATAL(
         ashape[-1] == bshape[-2],
@@ -689,10 +690,10 @@ ProgramDescriptor MatmulMultiCoreReuseBatchedHSDRAMShardedProgramFactory::create
         per_core_M,
         per_core_N,
         fused_activation,
-        in0_buffer,
-        in1_buffer,
-        bias_buffer,
-        out_buffer,
+        in0_tensor,
+        in1_tensor,
+        bias_tensor,
+        out_tensor,
         in0_tile,
         in1_tile,
         bias.has_value() ? bias->tensor_spec().tile() : output_tile,

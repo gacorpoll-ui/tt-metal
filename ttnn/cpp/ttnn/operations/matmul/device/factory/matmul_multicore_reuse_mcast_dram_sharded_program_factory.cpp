@@ -3,10 +3,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttnn/operations/matmul/device/factory/matmul_multicore_reuse_mcast_dram_sharded_program_factory.hpp"
+#include "tt_stl/optional_reference.hpp"
 #include "ttnn/operations/matmul/device/utilities/matmul_utilities.hpp"
 #include "ttnn/operations/matmul/device/config/matmul_program_config.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <utility>
 
 #include "hostdevcommon/common_values.hpp"
@@ -53,10 +55,10 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
     uint32_t per_core_M,
     uint32_t per_core_N_storage,
     std::optional<UnaryWithParam> fused_activation,
-    tt_metal::Buffer* in0_buffer,
-    tt_metal::Buffer* in1_buffer,
-    tt_metal::Buffer* bias_buffer,
-    tt_metal::Buffer* out_buffer,
+    const tt::tt_metal::MeshTensor& in0_tensor,
+    const tt::tt_metal::MeshTensor& in1_tensor,
+    ttsl::optional_reference<const tt::tt_metal::MeshTensor> bias_tensor,
+    const tt::tt_metal::MeshTensor& out_tensor,
     const tt::tt_metal::Tile& in0_tile,
     const tt::tt_metal::Tile& in1_tile,
     const tt::tt_metal::Tile& bias_tile,
@@ -75,7 +77,8 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
     // currently only support transpose of the full tile
     bool in1_transpose_tile = in1_tile.get_transpose_of_faces() && in1_tile.get_transpose_within_face();
     TT_FATAL(
-        in1_buffer->shard_spec().orientation() == ShardOrientation::ROW_MAJOR, "Only ROW_MAJOR sharding is supported");
+        in1_tensor.legacy_shard_spec()->orientation == ShardOrientation::ROW_MAJOR,
+        "Only ROW_MAJOR sharding is supported");
 
     uint32_t start_core_x = 0;
     uint32_t start_core_y = 0;
@@ -108,7 +111,7 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
     uint32_t num_dram_banks = all_worker_cores_ordered.size();
 
     // Remove cores assigned to padding-only DRAM banks from the workers category
-    uint32_t in1_shard_width_tiles = in1_buffer->shard_spec().shape()[1] / in1_tile.get_tile_shape()[1];
+    uint32_t in1_shard_width_tiles = in1_tensor.legacy_shard_spec()->shape[1] / in1_tile.get_tile_shape()[1];
     uint32_t in1_tensor_padded_width_tiles = in1_shard_width_tiles * num_dram_banks;
 
     if (in1_tensor_padded_width_tiles > N) {
@@ -193,7 +196,7 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
     uint32_t out_reshard_CB_tiles = out_reshard_block_tiles;
     uint32_t out_reshard_CB_size = out_reshard_CB_tiles * output_single_tile_size;
 
-    uint32_t in0_shard_width_in_tiles = in0_buffer->shard_spec().shape()[1] / in0_tile.get_tile_shape()[1];
+    uint32_t in0_shard_width_in_tiles = in0_tensor.legacy_shard_spec()->shape[1] / in0_tile.get_tile_shape()[1];
     uint32_t in2_block_tiles = per_core_M * in0_shard_width_in_tiles;
     uint32_t in2_CB_tiles = in2_block_tiles;
     uint32_t in2_CB_size = in2_CB_tiles * in0_single_tile_size;
@@ -306,7 +309,7 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
         (std::uint32_t)per_core_N_compute * output_single_tile_size,  // out_tensor_stride_w_bytes
         (std::uint32_t)per_core_N_storage * output_single_tile_size,  // out_reshard_tensor_stride_w_bytes
         (std::uint32_t)per_core_M};
-    if (bias_buffer != nullptr) {
+    if (bias_tensor.has_value()) {
         in1_sender_writer_compile_time_args.push_back(bias_buffer_page_size);
         in1_sender_writer_compile_time_args.push_back(bias_buffer_num_pages);
         in1_sender_writer_compile_time_args.push_back((std::uint32_t)1);
@@ -315,7 +318,7 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
     std::map<std::string, std::string> mm_kernel_defines;
     std::map<std::string, std::string> mm_kernel_in0_sender_define;
     std::map<std::string, std::string> mm_kernel_in1_sender_writer_defines;
-    if (bias_buffer != nullptr) {
+    if (bias_tensor.has_value()) {
         mm_kernel_defines["FUSE_BIAS"] = "1";
         mm_kernel_in1_sender_writer_defines["FUSE_BIAS"] = "1";
     }
@@ -426,7 +429,7 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
         false,         // get_batch_from_reader
         false,         // in0_transpose_tile
     };
-    if (bias_buffer != nullptr) {
+    if (bias_tensor.has_value()) {
         compute_kernel_args.push_back(row_broadcast_bias ? 1u : 0u);
     }
 
@@ -511,7 +514,7 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
             .data_format = in0_data_format,
             .page_size = in0_single_tile_size,
             .tile = in0_tile_desc});
-        cb_desc.buffer = in0_buffer;
+        cb_desc.tensor = &in0_tensor;
         desc.cbs.push_back(std::move(cb_desc));
     }
 
@@ -568,12 +571,12 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
             .data_format = output_data_format,
             .page_size = output_single_tile_size,
             .tile = output_tile_desc});
-        cb_desc.buffer = out_buffer;
+        cb_desc.tensor = &out_tensor;
         desc.cbs.push_back(std::move(cb_desc));
     }
 
     // CB 3: bias
-    if (bias_buffer != nullptr) {
+    if (bias_tensor.has_value()) {
         CBDescriptor cb_desc;
         cb_desc.total_size = in3_CB_size;
         cb_desc.core_ranges = all_cores_in_rect_grid;
@@ -725,8 +728,9 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
         bool is_worker_core = true;
         std::vector<uint32_t> mm_in1_sender_writer_args;
         mm_in1_sender_writer_args.push_back((std::uint32_t)is_worker_core);
-        mm_in1_sender_writer_args.push_back(in1_buffer->address());  // [1]: will be replaced by Buffer*
-        mm_in1_sender_writer_args.push_back(bias_buffer ? bias_buffer->address() : 0u);  // [2]: may be replaced
+        mm_in1_sender_writer_args.push_back((std::uint32_t)in1_tensor.address());  // [1]: will be replaced by Buffer*
+        mm_in1_sender_writer_args.push_back(
+            bias_tensor.has_value() ? (std::uint32_t)bias_tensor.value().address() : 0u);  // [2]: may be replaced
 
         uint32_t vc = bank_id & 0x3;
         bank_ids.push_back(bank_id);
@@ -832,11 +836,11 @@ static ProgramDescriptor create_program_dram_sharded_descriptor(
         }
 
         // Build variant args: positions [1] and [2] are buffer addresses
-        std::vector<std::variant<uint32_t, Buffer*>> in1_writer_args(
+        std::vector<std::variant<uint32_t, std::reference_wrapper<const tt::tt_metal::MeshTensor>>> in1_writer_args(
             mm_in1_sender_writer_args.begin(), mm_in1_sender_writer_args.end());
-        in1_writer_args[1] = in1_buffer;
-        if (bias_buffer != nullptr) {
-            in1_writer_args[2] = bias_buffer;
+        in1_writer_args[1] = in1_tensor;
+        if (bias_tensor.has_value()) {
+            in1_writer_args[2] = bias_tensor.value();
         }
         in1_sender_writer_kernel_desc.emplace_runtime_args(core, in1_writer_args);
         TT_FATAL(
@@ -889,7 +893,7 @@ ProgramDescriptor MatmulMultiCoreReuseMultiCastDRAMShardedProgramFactory::create
     tt::DataFormat in1_data_format = tt::tt_metal::datatype_to_dataformat_converter(b.dtype());
     tt::DataFormat output_data_format = tt::tt_metal::datatype_to_dataformat_converter(output.dtype());
 
-    tt::tt_metal::Buffer* bias_buffer = nullptr;
+    ttsl::optional_reference<const tt::tt_metal::MeshTensor> bias_tensor;
     tt::DataFormat bias_data_format = tt::DataFormat::Bfp8_b;
     if (bias.has_value()) {
         const auto& c = bias.value();
@@ -898,13 +902,17 @@ ProgramDescriptor MatmulMultiCoreReuseMultiCastDRAMShardedProgramFactory::create
             "Bias tensor must be on device, got storage type: {}",
             c.storage_type());
         TT_FATAL(a.device() == c.device(), "Operands to matmul need to be on the same device!");
-        TT_FATAL(c.buffer() != nullptr, "Operands to matmul need to be allocated in buffers on device!");
+        TT_FATAL(c.mesh_tensor().is_initialized(), "Operands to matmul need to be allocated in buffers on device!");
 
-        bias_buffer = c.buffer();
+        bias_tensor = c.mesh_tensor();
         bias_data_format = tt::tt_metal::datatype_to_dataformat_converter(c.dtype());
     }
 
     const bool row_broadcast_bias = operations::matmul::utilities::fused_matmul_bias_row_broadcastable(bias);
+
+    const tt::tt_metal::MeshTensor& in0_tensor = a.mesh_tensor();
+    const tt::tt_metal::MeshTensor& in1_tensor = b.mesh_tensor();
+    const tt::tt_metal::MeshTensor& out_tensor = output.mesh_tensor();
 
     tt::tt_metal::IDevice* device = a.device();
 
@@ -915,17 +923,18 @@ ProgramDescriptor MatmulMultiCoreReuseMultiCastDRAMShardedProgramFactory::create
 
     uint32_t in0_single_tile_size = in0_tile.get_tile_size(in0_data_format);
     uint32_t in1_single_tile_size = in1_tile.get_tile_size(in1_data_format);
-    tt::tt_metal::Buffer* in0_buffer = a.buffer();
-    tt::tt_metal::Buffer* in1_buffer = b.buffer();
+
+    auto in0_buffer_size = in0_tensor.mesh_buffer().device_local_size();
+    auto in1_buffer_size = in1_tensor.mesh_buffer().device_local_size();
     TT_FATAL(
-        in0_buffer->size() % in0_single_tile_size == 0,
+        in0_buffer_size % in0_single_tile_size == 0,
         "Input A buffer size ({}) must be divisible by single tile size ({})",
-        in0_buffer->size(),
+        in0_buffer_size,
         in0_single_tile_size);
     TT_FATAL(
-        in1_buffer->size() % in1_single_tile_size == 0,
+        in1_buffer_size % in1_single_tile_size == 0,
         "Input B buffer size ({}) must be divisible by single tile size ({})",
-        in1_buffer->size(),
+        in1_buffer_size,
         in1_single_tile_size);
 
     TT_FATAL(
@@ -978,8 +987,7 @@ ProgramDescriptor MatmulMultiCoreReuseMultiCastDRAMShardedProgramFactory::create
 
     TT_FATAL(Kt % in0_block_w == 0, "Kt ({}) must be divisible by in0_block_w ({})", Kt, in0_block_w);
 
-    tt::tt_metal::Buffer* out_buffer = output.buffer();
-    TT_FATAL(out_buffer != nullptr, "Output buffer should be allocated on device!");
+    TT_FATAL(out_tensor.is_initialized(), "Output buffer should be allocated on device!");
 
     return reuse_dram_sharded_optimized_helpers::create_program_dram_sharded_descriptor(
         device,
@@ -998,10 +1006,10 @@ ProgramDescriptor MatmulMultiCoreReuseMultiCastDRAMShardedProgramFactory::create
         per_core_M,
         per_core_N,
         fused_activation,
-        in0_buffer,
-        in1_buffer,
-        bias_buffer,
-        out_buffer,
+        in0_tensor,
+        in1_tensor,
+        bias_tensor,
+        out_tensor,
         in0_tile,
         in1_tile,
         bias.has_value() ? bias->tensor_spec().tile() : output_tile,
