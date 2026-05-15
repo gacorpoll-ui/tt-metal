@@ -70,9 +70,19 @@ FORCE_INLINE void check_worker_connections(
 }
 
 // !!!FORCE_INLINE could potentially cause stack corruption as seen in the past
+//
+// FIX CW (#42429): Added max_iterations parameter to bound the spin count.
+// Default 0 = unbounded (backward compatible).  When the limit is reached the
+// function returns false (timed out) instead of spinning forever.  This prevents
+// cross-device circular waits in the local handshake barrier where the master
+// ERISC waits for ALL subordinates — if any subordinate's ETH peer is on a
+// device whose ERISCs haven't been launched yet, the master blocks forever.
 template <bool RISC_CPU_DATA_CACHE_ENABLED>
-inline void wait_for_notification(
-    uint32_t address, uint32_t value, volatile tt::tt_fabric::TerminationSignal* termination_signal_ptr) {
+inline bool wait_for_notification(
+    uint32_t address,
+    uint32_t value,
+    volatile tt::tt_fabric::TerminationSignal* termination_signal_ptr,
+    uint32_t max_iterations = 0) {
     volatile tt_l1_ptr uint32_t* poll_addr = (volatile tt_l1_ptr uint32_t*)address;
     // On Wormhole, got_immediate_termination_signal is not checked (compiled out),
     // so there is no escape if the expected value never arrives.  A watchdog counter
@@ -80,6 +90,7 @@ inline void wait_for_notification(
     // See: https://github.com/tenstorrent/tt-metal/issues/42429
     constexpr uint32_t kWatchdogIter = 100'000'000;
     uint32_t watchdog_count = 0;
+    uint32_t iteration_count = 0;
     while (*poll_addr != value
 #ifndef ARCH_WORMHOLE
            && !got_immediate_termination_signal<RISC_CPU_DATA_CACHE_ENABLED>(termination_signal_ptr)
@@ -97,7 +108,11 @@ inline void wait_for_notification(
             WAYPOINT("WNTO");  // Wait-for-Notification TimeOut — still spinning
             watchdog_count = 0;
         }
+        if (max_iterations > 0 && ++iteration_count >= max_iterations) {
+            return false;  // Timed out
+        }
     }
+    return true;  // Completed (or terminated)
 }
 
 // !!!FORCE_INLINE could potentially cause stack corruption as seen in the past

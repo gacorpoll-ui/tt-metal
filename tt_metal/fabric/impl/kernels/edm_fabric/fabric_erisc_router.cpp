@@ -3697,9 +3697,18 @@ void kernel_main() {
         asm volatile("nop");
 
         if constexpr (wait_for_host_signal) {
+            // FIX CW (#42429): Bounded timeout for the local handshake barrier.
+            // The master ERISC waits for ALL subordinates on this device to complete their
+            // ETH handshake.  If any subordinate's ETH peer is on a device whose ERISCs
+            // haven't been launched yet, the master blocks forever — creating a cross-device
+            // circular wait.  A bounded iteration limit (500M iterations ~ several seconds)
+            // allows the master to proceed even when a subordinate is stuck, avoiding the
+            // circular dependency.  The host-side READY_FOR_TRAFFIC signal (below) provides
+            // the authoritative gate — the local barrier is a best-effort optimization.
+            constexpr uint32_t kLocalBarrierMaxIter = 500'000'000;
             if constexpr (is_local_handshake_master) {
                 wait_for_notification<ENABLE_RISC_CPU_DATA_CACHE>(
-                    (uint32_t)edm_local_sync_ptr, num_local_edms - 1, termination_signal_ptr);
+                    (uint32_t)edm_local_sync_ptr, num_local_edms - 1, termination_signal_ptr, kLocalBarrierMaxIter);
                 // This master sends notification to self for multi risc in single eth core case,
                 // This still send to self even though with single risc core case, but no side effects
                 constexpr uint32_t exclude_eth_chan = std::numeric_limits<uint32_t>::max();
@@ -3708,7 +3717,7 @@ void kernel_main() {
             } else {
                 notify_master_router(local_handshake_master_eth_chan, (uint32_t)edm_local_sync_ptr);
                 wait_for_notification<ENABLE_RISC_CPU_DATA_CACHE>(
-                    (uint32_t)edm_local_sync_ptr, num_local_edms, termination_signal_ptr);
+                    (uint32_t)edm_local_sync_ptr, num_local_edms, termination_signal_ptr, kLocalBarrierMaxIter);
             }
 
             *edm_status_ptr = tt::tt_fabric::EDMStatus::LOCAL_HANDSHAKE_COMPLETE;
