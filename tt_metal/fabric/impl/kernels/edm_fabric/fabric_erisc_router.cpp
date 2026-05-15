@@ -3699,6 +3699,34 @@ void kernel_main() {
         const uint32_t dst_word = preping_addr / 16;  // same offset in peer's L1
         WAYPOINT("PPSD");
         internal_::eth_send_packet(0, src_word, dst_word, 1);
+        // FIX DA: eth_send_packet is non-blocking — it starts the DMA and returns while the TXQ
+        // is still busy.  fabric_receiver_side_handshake (called below) invokes init_handshake_info
+        // which contains a defensive TXQ flush: if eth_txq_is_busy() it writes ETH_TXQ_CMD_FLUSH,
+        // which aborts the in-flight pre-ping DMA before it reaches the MMIO peer.  Spin here until
+        // the hardware DMA completes so the flush guard is a no-op by the time we enter handshake.
+        // Watchdog + termination-signal check mirrors PPWT for consistent behaviour.
+        {
+            uint32_t ppdn_watchdog = 0;
+            constexpr uint32_t kPrepingDmaWatchdogIter = 100'000'000;
+            WAYPOINT("PPDN");
+            while (eth_txq_is_busy()) {
+#ifndef ARCH_WORMHOLE
+                if (tt::tt_fabric::got_immediate_termination_signal<ENABLE_RISC_CPU_DATA_CACHE>(
+                        termination_signal_ptr)) {
+#else
+                if (*reinterpret_cast<volatile tt_l1_ptr uint32_t*>(termination_signal_ptr) ==
+                    static_cast<uint32_t>(tt::tt_fabric::TerminationSignal::IMMEDIATELY_TERMINATE)) {
+#endif
+                    WAYPOINT("PPXT");
+                    *edm_status_ptr = tt::tt_fabric::EDMStatus::TERMINATED;
+                    return;
+                }
+                if (++ppdn_watchdog >= kPrepingDmaWatchdogIter) {
+                    WAYPOINT("PPDT");  // Pre-Ping DMA Timeout — ETH TXQ still busy
+                    ppdn_watchdog = 0;
+                }
+            }
+        }
     }
 
     // FIX CZ (#42429): MMIO ERISC (sender) spins here until its non-MMIO peer writes the
