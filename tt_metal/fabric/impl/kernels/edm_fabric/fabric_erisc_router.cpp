@@ -3657,6 +3657,12 @@ void kernel_main() {
         // time.
         wait_for_other_local_erisc();
     }
+    // FIX CU (#42429): Signal HANDSHAKE_READY before entering the ETH handshake
+    // loop so the host can stage peer launches (MMIO-first) knowing this core's
+    // channel/object setup is complete and it is ready to receive handshake packets.
+    *edm_status_ptr = tt::tt_fabric::EDMStatus::HANDSHAKE_READY;
+    asm volatile("nop");
+
     if constexpr (enable_ethernet_handshake) {
         if constexpr (is_handshake_sender) {
             erisc::datamover::handshake::fabric_sender_side_handshake<ENABLE_RISC_CPU_DATA_CACHE>(

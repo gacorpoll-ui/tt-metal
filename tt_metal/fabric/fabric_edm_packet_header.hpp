@@ -49,6 +49,11 @@ enum EDMStatus : uint32_t {
     // EDM kernel has started running
     STARTED = 0xA0B0C0D0,
 
+    // FIX CU (#42429): EDM has finished channel/object setup and is about to
+    // enter the ETH handshake loop.  Host may now safely launch peer ERISCs
+    // that depend on this core being ready to receive handshake packets.
+    HANDSHAKE_READY = 0xA0B0C0D1,
+
     // Handshake complete with remote
     REMOTE_HANDSHAKE_COMPLETE = 0xA1B1C1D1,
 

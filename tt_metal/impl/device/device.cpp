@@ -2662,7 +2662,7 @@ void Device::wait_for_eth_cores_launched(uint32_t timeout_ms) {
 
     log_info(
         tt::LogMetal,
-        "wait_for_eth_cores_launched: Device {} — polling {} ETH channel(s) for STARTED "
+        "wait_for_eth_cores_launched: Device {} — polling {} ETH channel(s) for HANDSHAKE_READY "
         "(timeout={}ms, edm_status_addr=0x{:08x}).",
         this->id(),
         eth_cores.size(),
@@ -2699,7 +2699,7 @@ void Device::wait_for_eth_cores_launched(uint32_t timeout_ms) {
             log_warning(
                 tt::LogMetal,
                 "wait_for_eth_cores_launched: Device {} — timeout ({}ms) reached with {} "
-                "channel(s) still at 0x0 (not yet STARTED). Proceeding anyway.",
+                "channel(s) not yet HANDSHAKE_READY. Proceeding anyway.",
                 this->id(),
                 elapsed_ms,
                 pending.size());
@@ -2723,9 +2723,13 @@ void Device::wait_for_eth_cores_launched(uint32_t timeout_ms) {
                 still_pending.push_back(idx);
                 continue;
             }
-            if (buf[0] != 0U) {
-                // FIX BI (#42429): Distinguish STARTED from already-past-STARTED states.
-                // STARTED = 0xa0b0c0d0: channel booted normally, sequencing is intact.
+            // FIX CU (#42429): Poll for HANDSHAKE_READY (0xa0b0c0d1) instead of
+            // just non-zero (STARTED).  HANDSHAKE_READY means the ERISC has
+            // finished all channel/object setup and is about to enter the ETH
+            // handshake loop — safe for the host to launch peer ERISCs.
+            if (buf[0] >= static_cast<uint32_t>(tt::tt_fabric::EDMStatus::HANDSHAKE_READY) &&
+                buf[0] <= static_cast<uint32_t>(tt::tt_fabric::EDMStatus::TERMINATED)) {
+                // FIX BI (#42429): Distinguish HANDSHAKE_READY from already-past states.
                 // REMOTE_HANDSHAKE_COMPLETE (0xa1b1c1d1) or beyond: the ERISC already began
                 // handshaking before the host polled — simultaneous-launch race in progress.
                 // Count these for the post-loop early-detection check.
@@ -2733,7 +2737,7 @@ void Device::wait_for_eth_cores_launched(uint32_t timeout_ms) {
                     buf[0] >= static_cast<uint32_t>(tt::tt_fabric::EDMStatus::REMOTE_HANDSHAKE_COMPLETE) &&
                     buf[0] <= static_cast<uint32_t>(tt::tt_fabric::EDMStatus::TERMINATED);
                 // elapsed_ms < 10 means first poll before the first 100ms log interval.
-                // The ERISC advanced to handshake before the host even finished polling for STARTED.
+                // The ERISC advanced to handshake before the host even finished polling.
                 if (is_past_started && elapsed_ms < 10) {
                     // Near-zero elapsed time + already at handshake state = simultaneous launch.
                     rhs_early_count++;
@@ -2775,7 +2779,7 @@ void Device::wait_for_eth_cores_launched(uint32_t timeout_ms) {
                 log_info(
                     tt::LogMetal,
                     "wait_for_eth_cores_launched: Device {} — {}ms elapsed, "
-                    "{}/{} channel(s) still at 0x0 (not yet STARTED).",
+                    "{}/{} channel(s) not yet HANDSHAKE_READY.",
                     this->id(),
                     now_ms,
                     pending.size(),

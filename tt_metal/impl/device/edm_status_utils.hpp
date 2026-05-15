@@ -57,6 +57,7 @@ enum class EthDiagSentinel : uint32_t {
 inline const char* edm_status_name(tt::tt_fabric::EDMStatus s) {
     switch (s) {
         case tt::tt_fabric::EDMStatus::STARTED:                      return "STARTED";
+        case tt::tt_fabric::EDMStatus::HANDSHAKE_READY:              return "HANDSHAKE_READY";
         case tt::tt_fabric::EDMStatus::REMOTE_HANDSHAKE_COMPLETE:    return "REMOTE_HANDSHAKE_COMPLETE";
         case tt::tt_fabric::EDMStatus::LOCAL_HANDSHAKE_COMPLETE:     return "LOCAL_HANDSHAKE_COMPLETE";
         case tt::tt_fabric::EDMStatus::READY_FOR_TRAFFIC:            return "READY_FOR_TRAFFIC";
@@ -81,6 +82,7 @@ inline const char* edm_status_str(uint32_t v) {
     switch (static_cast<tt::tt_fabric::EDMStatus>(v)) {
         case tt::tt_fabric::EDMStatus::INITIALIZATION_STARTED:        return "INITIALIZATION_STARTED";
         case tt::tt_fabric::EDMStatus::STARTED:                       return "STARTED";
+        case tt::tt_fabric::EDMStatus::HANDSHAKE_READY:               return "HANDSHAKE_READY";
         case tt::tt_fabric::EDMStatus::LOCAL_HANDSHAKE_COMPLETE:      return "LOCAL_HANDSHAKE_COMPLETE";
         case tt::tt_fabric::EDMStatus::REMOTE_HANDSHAKE_COMPLETE:     return "REMOTE_HANDSHAKE_COMPLETE";
         case tt::tt_fabric::EDMStatus::READY_FOR_TRAFFIC:             return "READY_FOR_TRAFFIC";
