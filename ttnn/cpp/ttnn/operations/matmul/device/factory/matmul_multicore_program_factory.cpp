@@ -33,9 +33,9 @@ ProgramDescriptor MatmulMultiCoreProgramFactory::create_descriptor(
         TT_FATAL(!tensor_args.optional_input_tensors[0].has_value(), "Bias is not supported for matmul multi core");
     }
 
-    const auto& a = tensor_args.input_tensors.at(0).mesh_tensor();
-    const auto& b = tensor_args.input_tensors.at(1).mesh_tensor();
-    const auto& output = tensor_return_value.at(0).mesh_tensor();
+    const auto& a = tensor_args.input_tensors.at(0);
+    const auto& b = tensor_args.input_tensors.at(1);
+    auto& output = tensor_return_value.at(0);
 
     TT_FATAL(operation_attributes.bcast_batch.has_value(), "Error: bcast_batch field should have been populated");
     bool bcast_batch = operation_attributes.bcast_batch.value();
@@ -43,19 +43,25 @@ ProgramDescriptor MatmulMultiCoreProgramFactory::create_descriptor(
     const auto& ashape = a.padded_shape();
     const auto& bshape = b.padded_shape();
 
-    uint32_t in0_single_tile_size = tt::tt_metal::tile_size(a.dtype());
-    uint32_t in1_single_tile_size = tt::tt_metal::tile_size(b.dtype());
-    uint32_t output_single_tile_size = tt::tt_metal::tile_size(output.dtype());
+    tt::DataFormat in0_data_format = tt_metal::datatype_to_dataformat_converter(a.dtype());
+    tt::DataFormat in1_data_format = tt_metal::datatype_to_dataformat_converter(b.dtype());
+    tt::DataFormat output_data_format = tt_metal::datatype_to_dataformat_converter(output.dtype());
+    uint32_t in0_single_tile_size = tt::tile_size(in0_data_format);
+    uint32_t in1_single_tile_size = tt::tile_size(in1_data_format);
+    uint32_t output_single_tile_size = tt::tile_size(output_data_format);
 
-    distributed::MeshDevice& device = a.device();
+    tt::tt_metal::IDevice* device = a.device();
     TT_FATAL(operation_attributes.compute_kernel_config.has_value(), "Compute kernel config should have been provided");
     auto [math_fidelity, math_approx_mode, fp32_dest_acc_en, packer_l1_acc, dst_full_sync_en] =
-        get_compute_kernel_config_args(device.arch(), operation_attributes.compute_kernel_config.value());
+        get_compute_kernel_config_args(device->arch(), operation_attributes.compute_kernel_config.value());
     (void)packer_l1_acc;
+
+    const tt::tt_metal::MeshTensor& in0_tensor = a.mesh_tensor();
+    const tt::tt_metal::MeshTensor& in1_tensor = b.mesh_tensor();
 
     const auto& cshape = output.padded_shape();  // C=A*B, N1MK*11KN->N1MN
 
-    auto compute_with_storage_grid_size = device.compute_with_storage_grid_size();
+    auto compute_with_storage_grid_size = device->compute_with_storage_grid_size();
     uint32_t num_cores_y = compute_with_storage_grid_size.y;
     uint32_t c_batch_size = get_batch_size(cshape);
     auto num_output_tiles_total = c_batch_size * cshape[-2] * cshape[-1] / TILE_HW;
@@ -67,6 +73,8 @@ ProgramDescriptor MatmulMultiCoreProgramFactory::create_descriptor(
          num_output_tiles_per_core_group_1,
          num_output_tiles_per_core_group_2] =
             tt::tt_metal::split_work_to_cores(compute_with_storage_grid_size, num_output_tiles_total);
+
+    const tt::tt_metal::MeshTensor& out_tensor = output.mesh_tensor();
 
     // C = A*B*...
     // MN = MK*KN
@@ -87,7 +95,7 @@ ProgramDescriptor MatmulMultiCoreProgramFactory::create_descriptor(
         .core_ranges = all_cores,
         .format_descriptors = {{CBFormatDescriptor{
             .buffer_index = 0,
-            .data_format = a.dtype(),
+            .data_format = in0_data_format,
             .page_size = in0_single_tile_size,
         }}},
     });
@@ -96,7 +104,7 @@ ProgramDescriptor MatmulMultiCoreProgramFactory::create_descriptor(
         .core_ranges = all_cores,
         .format_descriptors = {{CBFormatDescriptor{
             .buffer_index = 1,
-            .data_format = b.dtype(),
+            .data_format = in1_data_format,
             .page_size = in1_single_tile_size,
         }}},
     });
@@ -107,7 +115,7 @@ ProgramDescriptor MatmulMultiCoreProgramFactory::create_descriptor(
         .core_ranges = all_cores,
         .format_descriptors = {{CBFormatDescriptor{
             .buffer_index = output_cb_index,
-            .data_format = output.dtype(),
+            .data_format = output_data_format,
             .page_size = output_single_tile_size,
         }}},
     });
@@ -116,8 +124,8 @@ ProgramDescriptor MatmulMultiCoreProgramFactory::create_descriptor(
     uint32_t last_ktile_w = a.logical_shape()[-1] % TILE_WIDTH;
     uint32_t last_ktile_h = 0;
     std::vector<uint32_t> reader_compile_time_args = {(uint32_t)last_ktile_w, (uint32_t)last_ktile_h};
-    tt::tt_metal::TensorAccessorArgs(a).append_to(reader_compile_time_args);
-    tt::tt_metal::TensorAccessorArgs(b).append_to(reader_compile_time_args);
+    tt::tt_metal::TensorAccessorArgs(in0_tensor).append_to(reader_compile_time_args);
+    tt::tt_metal::TensorAccessorArgs(in1_tensor).append_to(reader_compile_time_args);
 
     KernelDescriptor reader_desc;
     reader_desc.kernel_source =
@@ -130,7 +138,7 @@ ProgramDescriptor MatmulMultiCoreProgramFactory::create_descriptor(
 
     // Writer kernel
     std::vector<uint32_t> writer_compile_time_args = {};
-    tt::tt_metal::TensorAccessorArgs(output).append_to(writer_compile_time_args);
+    tt::tt_metal::TensorAccessorArgs(out_tensor).append_to(writer_compile_time_args);
 
     KernelDescriptor writer_desc;
     writer_desc.kernel_source =
@@ -155,8 +163,8 @@ ProgramDescriptor MatmulMultiCoreProgramFactory::create_descriptor(
         }
         reader_desc.emplace_runtime_args(
             core,
-            {a,
-             b,
+            {in0_tensor,
+             in1_tensor,
              Mt,
              Kt,
              Nt,
@@ -167,7 +175,7 @@ ProgramDescriptor MatmulMultiCoreProgramFactory::create_descriptor(
              num_tiles_written,
              num_output_tiles_per_core,
              MtNt});
-        writer_desc.emplace_runtime_args(core, {std::cref(output), num_output_tiles_per_core, num_tiles_written});
+        writer_desc.emplace_runtime_args(core, {out_tensor, num_output_tiles_per_core, num_tiles_written});
         num_tiles_written += num_output_tiles_per_core;
     }
 
@@ -177,9 +185,9 @@ ProgramDescriptor MatmulMultiCoreProgramFactory::create_descriptor(
     const auto throttle_level = ttnn::get_throttle_level(operation_attributes.compute_kernel_config);
     std::map<std::string, std::string> mm_kernel_defines;
     ttnn::operations::compute_throttle_utils::add_stagger_defines_if_needed(
-        device.arch(), num_cores, mm_kernel_defines);
+        device->arch(), num_cores, mm_kernel_defines);
     ttnn::operations::compute_throttle_utils::throttle_mm_perf(
-        device.arch(), num_cores, mm_kernel_defines, throttle_level);
+        device->arch(), num_cores, mm_kernel_defines, throttle_level);
 
     // Compute kernel(s) — one per core group with different tile counts
     // bmm compute kernel: B, Mt, Nt are just 3 for loops that act as 1 large loop,

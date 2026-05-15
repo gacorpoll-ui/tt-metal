@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttnn/operations/matmul/device/factory/matmul_multicore_reuse_batched_hs_dram_sharded_program_factory.hpp"
+#include "tt_stl/optional_reference.hpp"
 #include "ttnn/operations/matmul/device/utilities/matmul_utilities.hpp"
 #include "ttnn/operations/matmul/device/config/matmul_program_config.hpp"
 
@@ -10,8 +11,6 @@
 #include <map>
 #include <set>
 #include <utility>
-
-#include <tt_stl/optional_reference.hpp>
 
 #include "hostdevcommon/common_values.hpp"
 #include <tt-metalium/tt_metal.hpp>
@@ -619,7 +618,8 @@ ProgramDescriptor MatmulMultiCoreReuseBatchedHSDRAMShardedProgramFactory::create
     const tt::tt_metal::MeshTensor& in0_tensor = a.mesh_tensor();
     const tt::tt_metal::MeshTensor& in1_tensor = b.mesh_tensor();
     const tt::tt_metal::MeshTensor& out_tensor = output.mesh_tensor();
-    tt::tt_metal::IDevice* device = &in0_tensor.device();
+
+    tt::tt_metal::IDevice* device = a.device();
 
     TT_FATAL(
         a.shard_spec().has_value() && output.shard_spec().has_value(), "Both input A and output must have shard specs");
