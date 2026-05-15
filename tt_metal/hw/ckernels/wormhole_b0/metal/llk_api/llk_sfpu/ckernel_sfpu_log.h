@@ -39,7 +39,7 @@ sfpi_inline sfpi::vFloat calculate_log_body(sfpi::vFloat in, const uint log_base
     v_if(exp < 0) { exp = sfpi::setsgn(~exp + 1, 1); }
     v_endif;
 
-    sfpi::vFloat expf = sfpi::sfpi::int32_to_float(exp, sfpi::RoundMode::NearestEven);
+    sfpi::vFloat expf = sfpi::int32_to_float(exp, sfpi::RoundMode::NearestEven);
     sfpi::vFloat vConstLn2 = sfpi::vConstFloatPrgm0;
     sfpi::vFloat result = expf * vConstLn2 + series_result;  // exp correction: ln(1+x) + exp*ln(2)
 
@@ -163,7 +163,7 @@ sfpi_inline sfpi::vFloat calculate_log_f32_body(sfpi::vFloat val, const uint log
         v_endif;
 
         // Convert to float - sfpi::int32_to_float handles sign-magnitude format correctly
-        sfpi::vFloat expf = sfpi::sfpi::int32_to_float(exp, sfpi::RoundMode::NearestEven);
+        sfpi::vFloat expf = sfpi::int32_to_float(exp, sfpi::RoundMode::NearestEven);
 
         // Step 5: Combine: ln(x) = exp×ln(2) + ln(m)
         constexpr float LN2 = 0.69314718246459961f;  // log(2)
