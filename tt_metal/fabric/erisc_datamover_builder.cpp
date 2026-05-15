@@ -314,7 +314,11 @@ FabricEriscDatamoverConfig::FabricEriscDatamoverConfig(Topology topology) : topo
     }
 
     this->handshake_addr = next_l1_addr;
-    next_l1_addr += eth_channel_sync_size;
+    // Reserve the full handshake_info_t footprint (32B) before placing preping_addr.
+    // handshake_info_t is 32 bytes; the first eth_channel_sync_size (16B) holds local_value +
+    // neighbor IDs + padding, and the second 16B is scratch[0..3].  preping_addr previously
+    // aliased scratch[0] (H+16) because only eth_channel_sync_size was reserved here.
+    next_l1_addr += handshake_info_size;
 
     // FIX CZ (#42429): 16B pre-ping rendezvous slot, 16-byte aligned (same as handshake).
     // Both MMIO and non-MMIO ERISCs need the same address so the ETH DMA lands correctly.
@@ -720,7 +724,7 @@ FabricEriscDatamoverBuilder::FabricEriscDatamoverBuilder(
     is_inter_mesh(local_fabric_node_id.mesh_id != peer_fabric_node_id.mesh_id),
     handshake_address(tt::round_up(
         tt::tt_metal::hal::get_erisc_l1_unreserved_base(), FabricEriscDatamoverConfig::eth_channel_sync_size)),
-    preping_address(handshake_address + FabricEriscDatamoverConfig::eth_channel_sync_size),
+    preping_address(handshake_address + FabricEriscDatamoverConfig::handshake_info_size),
     channel_buffer_size(config.channel_buffer_size_bytes),
     local_sender_channels_connection_info_addr(config.sender_channels_worker_conn_info_base_address),
     termination_signal_ptr(config.termination_signal_address),

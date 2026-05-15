@@ -267,6 +267,10 @@ struct FabricEriscDatamoverConfig {
 
     // Global
     static constexpr std::size_t eth_channel_sync_size = 16;
+    // handshake_info_t (edm_handshake.hpp) is 32 bytes: local_value(4) + neighbor_mesh_id(2) +
+    // neighbor_device_id(1) + padding0(1) + padding[2](8) + scratch[4](16).  preping_addr must be
+    // allocated AFTER the full struct, not after the first 16 bytes, to avoid aliasing scratch[0].
+    static constexpr std::size_t handshake_info_size = 32;
     std::size_t handshake_addr = 0;
     std::size_t preping_addr = 0;  // FIX CZ (#42429): 16B pre-ping rendezvous slot
     std::size_t edm_channel_ack_addr = 0;

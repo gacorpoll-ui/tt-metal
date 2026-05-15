@@ -3692,7 +3692,12 @@ void kernel_main() {
         // The nonce is unique per session so it won't collide with stale L1 state.
         volatile tt_l1_ptr uint32_t* preping_src =
             reinterpret_cast<volatile tt_l1_ptr uint32_t*>(preping_addr);
-        *preping_src = handshake_nonce;
+        // Initialize all 16 bytes before DMA to prevent stale L1 from reaching the peer.
+        // eth_send_packet transfers a full 16-byte word; only preping_src[0] carries the nonce.
+        preping_src[0] = handshake_nonce;
+        preping_src[1] = 0;
+        preping_src[2] = 0;
+        preping_src[3] = 0;
         // Send 16 bytes (1 word) from local preping_addr to peer's preping_addr.
         // eth_send_packet word addresses = byte addr / 16.
         const uint32_t src_word = preping_addr / 16;
