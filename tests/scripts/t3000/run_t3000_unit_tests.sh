@@ -138,10 +138,11 @@ except Exception as e:
   #   "Timeout after.*ms.*master chan" — the actual timeout log from ring-sync poller
   # FIX DT-1: also detect dispatch-ERISC teardown timeout markers:
   #   "Timeout (N ms) waiting for physical cores" — dispatch ERISC teardown exceeded 1s
-  #   "rescue of stuck dispatch cores" — Metal hard-reset ERISCs, leaving go_msg=0x02 stale
+  #   "rescue_stuck_dispatch_cores" — Metal hard-reset ERISCs, leaving go_msg=0x02 stale
+  #   "FIX DT-1.*dispatch ERISC teardown timeout" — belt-and-suspenders: catches DT-1 marker directly
   # When detected, flag that the hardware is NOT ready for traffic.
   WARM_RING_TIMEOUT=0
-  if echo "$WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue of stuck dispatch cores)"; then
+  if echo "$WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue_stuck_dispatch_cores|FIX DT-1.*dispatch ERISC teardown timeout)"; then
     echo "LOG_METAL: [FIX UP] ring-sync timeout marker detected in warm-up output — hardware not ready for traffic despite open/close exit 0." >&2
     WARM_RING_TIMEOUT=1
   fi
@@ -203,7 +204,7 @@ except Exception as e:
 " 2>&1 || true)
     echo "$TM_WARM_OUTPUT"
     TM_RING_TIMEOUT=0
-    if echo "$TM_WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue of stuck dispatch cores)"; then
+    if echo "$TM_WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue_stuck_dispatch_cores|FIX DT-1.*dispatch ERISC teardown timeout)"; then
       echo "LOG_METAL: [FIX TM2] ring-sync timeout detected in post-TL warm-up — hardware may not be ready for traffic." >&2
       TM_RING_TIMEOUT=1
     fi
@@ -241,7 +242,7 @@ except Exception as e:
 " 2>&1 || true)
     echo "$UP2_WARM_OUTPUT"
     UP2_RING_TIMEOUT=0
-    if echo "$UP2_WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue of stuck dispatch cores)"; then
+    if echo "$UP2_WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue_stuck_dispatch_cores|FIX DT-1.*dispatch ERISC teardown timeout)"; then
       UP2_RING_TIMEOUT=1
     fi
     if [[ $UP2_RING_TIMEOUT -eq 1 ]]; then
@@ -312,7 +313,7 @@ except Exception as e:
       # Increment consecutive_ring_timeout; after 3 in a row abort with INFRA_ERROR
       # so CI marks the job failed rather than looping indefinitely.
       post_ring_timeout=0
-      if echo "$post_warm_output" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue of stuck dispatch cores)"; then
+      if echo "$post_warm_output" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue_stuck_dispatch_cores|FIX DT-1.*dispatch ERISC teardown timeout)"; then
         post_ring_timeout=1
       fi
       if [[ $post_ring_timeout -eq 1 ]]; then
@@ -627,7 +628,7 @@ except Exception as e:
   WARM_END=$(date +%s)
   WARM_DURATION=$((WARM_END - WARM_START))
   WARM_RING_TIMEOUT=0
-  if echo "$WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue of stuck dispatch cores)"; then
+  if echo "$WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue_stuck_dispatch_cores|FIX DT-1.*dispatch ERISC teardown timeout)"; then
     echo "LOG_METAL: [FIX UP] ring-sync timeout marker detected in warm-up output — hardware not ready for traffic despite open/close exit 0." >&2
     WARM_RING_TIMEOUT=1
   fi
@@ -660,7 +661,7 @@ except Exception as e:
 " 2>&1 || true)
     echo "$TM_WARM_OUTPUT"
     TM_RING_TIMEOUT=0
-    if echo "$TM_WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue of stuck dispatch cores)"; then
+    if echo "$TM_WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue_stuck_dispatch_cores|FIX DT-1.*dispatch ERISC teardown timeout)"; then
       echo "LOG_METAL: [FIX TM2] ring-sync timeout detected in post-TL warm-up — hardware may not be ready for traffic." >&2
       TM_RING_TIMEOUT=1
     fi
@@ -692,7 +693,7 @@ except Exception as e:
 " 2>&1 || true)
     echo "$UP2_WARM_OUTPUT"
     UP2_RING_TIMEOUT=0
-    if echo "$UP2_WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue of stuck dispatch cores)"; then
+    if echo "$UP2_WARM_OUTPUT" | grep -qE "(FIX TK|ring_sync_already_timed_out|Timeout after [0-9]+ ms.*master chan|fabric_ring_sync_timed_out|Timeout \([0-9]+ ms\) waiting for physical cores|rescue_stuck_dispatch_cores|FIX DT-1.*dispatch ERISC teardown timeout)"; then
       UP2_RING_TIMEOUT=1
     fi
     if [[ $UP2_RING_TIMEOUT -eq 1 ]]; then
