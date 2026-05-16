@@ -369,7 +369,14 @@ FabricCoresHealth configure_fabric_cores(
                 if (st.done) continue;
                 all_done = false;
                 std::vector<uint32_t> status_buf(1, 0);
-                cluster.read_core(status_buf, sizeof(uint32_t), st.core_loc, edm_addr_bh);
+                try {
+                    cluster.read_core(status_buf, sizeof(uint32_t), st.core_loc, edm_addr_bh);
+                } catch (...) {
+                    // FIX DD (#42429): Transient PCIe read error during parallel poll.
+                    // Keep polling — channel may recover on next iteration.  If all iterations
+                    // fail, the channel stays in dead_channels (degraded mode).
+                    continue;
+                }
                 if (status_buf[0] != kRomPostcode_BH) {
                     st.booted = true;
                     st.done = true;
