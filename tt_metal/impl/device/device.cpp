@@ -2897,12 +2897,13 @@ void Device::open_erisc_handshake_gate() {
     const auto [erisc_sync_addr, unused_expected] = builder_ctx.get_fabric_router_sync_address_and_status();
     std::vector<uint32_t> gate_open_val = {static_cast<uint32_t>(tt::tt_fabric::EDMStatus::HOST_GATE_OPEN)};
 
-    // FIX CZ Strategy 2 (#42429): Write 1u to preping_addr to unblock MMIO ERISC PPWT spin.
-    // The MMIO ERISC zeroes preping_addr before HANDSHAKE_READY, then spins while *preping_addr == 0.
+    // FIX CZ Option 5 (#42429): Write preping_gate_val to MMIO preping_addr to unblock PPWT spin.
+    // The MMIO ERISC zeroes preping_addr before HANDSHAKE_READY, then spins until it sees
+    // preping_gate_val (session-unique nonzero, same for all links in this session).
     // Pass B has confirmed all non-MMIO ERISCs are at HANDSHAKE_READY before this is called.
     const auto& router_config = builder_ctx.get_fabric_router_config();
     const uint32_t preping_addr = static_cast<uint32_t>(router_config.preping_addr);
-    std::vector<uint32_t> preping_ready_val = {1u};
+    std::vector<uint32_t> preping_ready_val = {router_config.preping_gate_val};
 
     std::vector<std::vector<CoreCoord>> logical_cores_used = fabric_program_->impl().logical_cores();
     for (uint32_t pct_idx = 0; pct_idx < logical_cores_used.size(); pct_idx++) {
@@ -2916,10 +2917,11 @@ void Device::open_erisc_handshake_gate() {
                 detail::WriteToDeviceL1(this, lc, erisc_sync_addr, gate_open_val, CoreType::ETH);
                 log_info(
                     tt::LogMetal,
-                    "open_erisc_handshake_gate: Device {} ETH logical ({},{}) — wrote preping=1 + HOST_GATE_OPEN.",
+                    "open_erisc_handshake_gate: Device {} ETH logical ({},{}) — wrote preping=0x{:08x} + HOST_GATE_OPEN.",
                     this->id(),
                     lc.x,
-                    lc.y);
+                    lc.y,
+                    router_config.preping_gate_val);
             } catch (const std::exception& e) {
                 log_warning(
                     tt::LogMetal,

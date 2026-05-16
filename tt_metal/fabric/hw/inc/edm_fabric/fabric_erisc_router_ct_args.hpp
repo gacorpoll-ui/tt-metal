@@ -132,6 +132,9 @@ constexpr size_t handshake_addr = NAMED_CT_ARG("HANDSHAKE_ADDR");
 constexpr size_t preping_addr = NAMED_CT_ARG("PRE_PING_ADDR");
 // FIX CT (#42429): Per-session nonce prevents stale-L1 false handshake completions.
 constexpr uint32_t handshake_nonce = NAMED_CT_ARG("HANDSHAKE_NONCE");
+// FIX CZ Option 5 (#42429): Session-unique gate value for the PPWT pre-ping rendezvous.
+// Same for all links; written by host to MMIO preping_addr and by non-MMIO as local scratchpad.
+constexpr uint32_t preping_gate_val = NAMED_CT_ARG("PREPING_GATE_VAL");
 
 static_assert(fuse_receiver_flush_and_completion_ptr == 1, "fuse_receiver_flush_and_completion_ptr must be 0");
 

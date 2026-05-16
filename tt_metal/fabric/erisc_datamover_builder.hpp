@@ -272,7 +272,8 @@ struct FabricEriscDatamoverConfig {
     // allocated AFTER the full struct, not after the first 16 bytes, to avoid aliasing scratch[0].
     static constexpr std::size_t handshake_info_size = 32;
     std::size_t handshake_addr = 0;
-    std::size_t preping_addr = 0;  // FIX CZ (#42429): 16B pre-ping rendezvous slot
+    std::size_t preping_addr = 0;   // FIX CZ (#42429): 16B pre-ping rendezvous slot
+    uint32_t preping_gate_val = 0;  // FIX CZ Option 5 (#42429): session-unique gate value for PPWT
     std::size_t edm_channel_ack_addr = 0;
     std::size_t termination_signal_address = 0;  // pad extra bytes to match old EDM so handshake logic will still work
     std::size_t edm_local_sync_address = 0;

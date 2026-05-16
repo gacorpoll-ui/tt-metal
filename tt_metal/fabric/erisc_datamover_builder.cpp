@@ -325,6 +325,15 @@ FabricEriscDatamoverConfig::FabricEriscDatamoverConfig(Topology topology) : topo
     this->preping_addr = next_l1_addr;
     next_l1_addr += eth_channel_sync_size;
 
+    // FIX CZ Option 5 (#42429): Session-unique gate value for the PPWT spin.
+    // Same for all links in a session — the host writes this to MMIO preping_addr,
+    // and non-MMIO writes it locally as a scratchpad marker.  The MMIO ERISC zeroes
+    // preping_addr before HANDSHAKE_READY, so a session-unique nonzero value is
+    // sufficient to prevent stale-L1 false unblocks.
+    static const uint32_t kSessionPrepingGate = static_cast<uint32_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count() & 0xFFFFFFFF) | 1u;
+    this->preping_gate_val = kSessionPrepingGate;
+
     // issue: https://github.com/tenstorrent/tt-metal/issues/29073. TODO: Re-enable after hang is resolved.
     // Ethernet txq IDs on WH are 0,1 and on BH are 0,1,2.
     if (is_fabric_two_erisc_enabled()) {
@@ -1230,6 +1239,10 @@ FabricEriscDatamoverBuilder::CompileTimeArgs FabricEriscDatamoverBuilder::get_co
     // stale in-flight ETH RX DMA from a crashed prior session causing false handshake completion.
     // Both sides of a link get the same nonce (deterministic from sorted node IDs + session).
     named_args["HANDSHAKE_NONCE"] = compute_link_handshake_nonce(this->local_fabric_node_id, this->peer_fabric_node_id);
+    // FIX CZ Option 5 (#42429): Session-unique gate value for the PPWT pre-ping rendezvous.
+    // Separate from HANDSHAKE_NONCE (which is per-link) so the host can write a single known
+    // value to all MMIO preping_addr slots without needing per-link nonce lookup.
+    named_args["PREPING_GATE_VAL"] = this->config.preping_gate_val;
     // FIX CY (#42429): Gate MMIO ERISCs before handshake until host confirms non-MMIO peers ready.
     // Non-MMIO ERISCs get 0 — host cannot write their L1 after fabric launch on the MMIO device.
     {

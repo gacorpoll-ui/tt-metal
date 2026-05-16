@@ -3672,23 +3672,28 @@ void kernel_main() {
     *edm_status_ptr = tt::tt_fabric::EDMStatus::HANDSHAKE_READY;
     asm volatile("nop");
 
-    // FIX CZ Strategy 2 (#42429): Non-MMIO ERISC does NOT send the pre-ping via ETH DMA.
-    // The host writes 1u to the MMIO peer's preping_addr after Pass B confirms all non-MMIO
-    // ERISCs are at HANDSHAKE_READY.  This eliminates all TXQ usage from the pre-ping path,
-    // removing the race between eth_send_packet and init_handshake_info's TXQ flush.
-    // (Prior strategies: Strategy 1 = flip DMA direction; Strategy 2 = host-mediated relay)
+    // FIX CZ Option 5 (#42429): Non-MMIO ERISC writes the session gate value to its OWN
+    // preping_addr as a local scratchpad marker (pure L1 store — no ETH DMA, no TXQ).
+    // This records that the non-MMIO ERISC reached this point in the startup sequence.
+    // The host (in open_erisc_handshake_gate) writes the same value to the MMIO peer's
+    // preping_addr after Pass B confirms all non-MMIO ERISCs are at HANDSHAKE_READY.
+    if constexpr (!is_handshake_sender && enable_ethernet_handshake) {
+        volatile tt_l1_ptr uint32_t* preping_src =
+            reinterpret_cast<volatile tt_l1_ptr uint32_t*>(preping_addr);
+        preping_src[0] = preping_gate_val;
+        WAYPOINT("PPLS");  // Pre-Ping Local Store
+    }
 
-    // FIX CZ Strategy 2 (#42429): MMIO ERISC spins until the host writes 1u here via PCIe.
-    // The host does this in open_erisc_handshake_gate() after Pass B confirms all non-MMIO
-    // ERISCs are at HANDSHAKE_READY.  preping_addr is zeroed by the MMIO ERISC itself above
-    // (before writing HANDSHAKE_READY), so any non-zero value is the host-written signal.
+    // FIX CZ Option 5 (#42429): MMIO ERISC spins until the host writes preping_gate_val here
+    // via PCIe (open_erisc_handshake_gate, after Pass B).  preping_addr is zeroed by the MMIO
+    // ERISC itself above (before HANDSHAKE_READY) so only the host-written value unblocks.
     if constexpr (is_handshake_sender && enable_ethernet_handshake) {
         volatile tt_l1_ptr uint32_t* preping_dst =
             reinterpret_cast<volatile tt_l1_ptr uint32_t*>(preping_addr);
         uint32_t watchdog_count = 0;
         constexpr uint32_t kPrepingWatchdogIter = 100'000'000;
         WAYPOINT("PPWT");
-        while (*preping_dst == 0) {
+        while (*preping_dst != preping_gate_val) {
             router_invalidate_l1_cache<ENABLE_RISC_CPU_DATA_CACHE>();
             // Termination check — WH two-path pattern (same as FIX CY and handshake loops)
 #ifndef ARCH_WORMHOLE
