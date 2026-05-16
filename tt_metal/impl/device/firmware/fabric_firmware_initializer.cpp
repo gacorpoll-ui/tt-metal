@@ -1326,23 +1326,27 @@ void FabricFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& ini
                     try {
                         const auto aeth_idx_ce =
                             hal_.get_programmable_core_type_index(HalProgrammableCoreType::ACTIVE_ETH);
-                        const uint32_t fw_addr_ce =
-                            hal_.get_jit_build_config(aeth_idx_ce, 0, 0).fw_launch_addr;
-                        const uint32_t fw_val_ce =
-                            hal_.get_jit_build_config(aeth_idx_ce, 0, 0).fw_launch_addr_value;
-                        if (fw_val_ce != 0) {
-                            cluster_.write_core_immediate(
-                                ch.dev->id(),
-                                virtual_eth_coord,
-                                std::vector<uint32_t>{fw_val_ce},
-                                fw_addr_ce);
-                            log_debug(
-                                tt::LogMetal,
-                                "FIX CE (#42429): Device {} chan={} — wrote fw_launch_addr_value "
-                                "0x{:08x} before deassert so ERISC boots to base firmware.",
-                                ch.dev->id(),
-                                ch.eth_chan_id,
-                                fw_val_ce);
+                        // FIX CF (#42429): guard get_jit_build_config — same fix as FIX BR.
+                        // On QA/Quasar, processor_classes_ is empty; accessing [0][0] is UB in Release.
+                        if (hal_.get_processor_classes_count(HalProgrammableCoreType::ACTIVE_ETH) > 0) {
+                            const uint32_t fw_addr_ce =
+                                hal_.get_jit_build_config(aeth_idx_ce, 0, 0).fw_launch_addr;
+                            const uint32_t fw_val_ce =
+                                hal_.get_jit_build_config(aeth_idx_ce, 0, 0).fw_launch_addr_value;
+                            if (fw_val_ce != 0) {
+                                cluster_.write_core_immediate(
+                                    ch.dev->id(),
+                                    virtual_eth_coord,
+                                    std::vector<uint32_t>{fw_val_ce},
+                                    fw_addr_ce);
+                                log_debug(
+                                    tt::LogMetal,
+                                    "FIX CE (#42429): Device {} chan={} — wrote fw_launch_addr_value "
+                                    "0x{:08x} before deassert so ERISC boots to base firmware.",
+                                    ch.dev->id(),
+                                    ch.eth_chan_id,
+                                    fw_val_ce);
+                            }
                         }
                     } catch (const std::exception& ex_ce) {
                         // Best-effort: write failure on a relay-dead non-MMIO channel is
@@ -2926,9 +2930,13 @@ void FabricFirmwareInitializer::compile_and_configure_fabric() {
             try {
                 const auto aeth_idx_cs = hal_.get_programmable_core_type_index(
                     HalProgrammableCoreType::ACTIVE_ETH);
-                const auto& jit_cfg_cs = hal_.get_jit_build_config(aeth_idx_cs, 0, 0);
-                fw_launch_addr_cs = jit_cfg_cs.fw_launch_addr;
-                fw_launch_addr_value_cs = jit_cfg_cs.fw_launch_addr_value;
+                // FIX CF (#42429): guard get_jit_build_config — same fix as FIX BR.
+                // On QA/Quasar, processor_classes_ is empty; accessing [0][0] is UB in Release.
+                if (hal_.get_processor_classes_count(HalProgrammableCoreType::ACTIVE_ETH) > 0) {
+                    const auto& jit_cfg_cs = hal_.get_jit_build_config(aeth_idx_cs, 0, 0);
+                    fw_launch_addr_cs = jit_cfg_cs.fw_launch_addr;
+                    fw_launch_addr_value_cs = jit_cfg_cs.fw_launch_addr_value;
+                }
             } catch (...) {
                 // Non-fatal: proceed without fw_launch_addr write; ERISC may still boot
                 // if fw_launch_addr was not previously zeroed by FIX BN.

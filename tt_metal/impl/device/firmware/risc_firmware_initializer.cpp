@@ -735,12 +735,15 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                             try {
                                 const auto aeth_idx_cc = hal_.get_programmable_core_type_index(
                                     HalProgrammableCoreType::ACTIVE_ETH);
-                                const auto& jit_cfg_cc = hal_.get_jit_build_config(aeth_idx_cc, 0, 0);
-                                if (jit_cfg_cc.fw_launch_addr_value != 0) {
-                                    cluster_.write_core_immediate(
-                                        non_mmio_id, eth_virt,
-                                        std::vector<uint32_t>{jit_cfg_cc.fw_launch_addr_value},
-                                        jit_cfg_cc.fw_launch_addr);
+                                // FIX CF (#42429): guard get_jit_build_config — same fix as FIX BR.
+                                if (hal_.get_processor_classes_count(HalProgrammableCoreType::ACTIVE_ETH) > 0) {
+                                    const auto& jit_cfg_cc = hal_.get_jit_build_config(aeth_idx_cc, 0, 0);
+                                    if (jit_cfg_cc.fw_launch_addr_value != 0) {
+                                        cluster_.write_core_immediate(
+                                            non_mmio_id, eth_virt,
+                                            std::vector<uint32_t>{jit_cfg_cc.fw_launch_addr_value},
+                                            jit_cfg_cc.fw_launch_addr);
+                                    }
                                 }
                             } catch (const std::exception& ex_cc) {
                                 // Non-fatal — relay write may fail transiently; deassert proceeds.
@@ -943,15 +946,23 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                         // FIX BN clears fw_launch_addr=0 after heartbeat confirmation; FIX PE clears it for cleanly
                         // terminated channels. Without this write, ERISC ROM reads fw_launch_addr=0 and enters the
                         // indefinite wait loop at 0x49705180, causing FIX AC heartbeat poll to time out and FIX PG.
+                        //
+                        // FIX CF (#42429): Guard get_jit_build_config with get_processor_classes_count() > 0.
+                        // On arches with no active-ETH JIT configs (e.g. QA/Quasar), processor_classes_ is empty;
+                        // calling get_jit_build_config(0,0) on an empty vector is UB in Release (TT_ASSERT no-ops).
+                        // Check count first so we never crash and never write a stale 0 value.
                         try {
                             const auto aeth_idx_br = hal_.get_programmable_core_type_index(
                                 HalProgrammableCoreType::ACTIVE_ETH);
-                            const auto& jit_cfg_br = hal_.get_jit_build_config(aeth_idx_br, 0, 0);
-                            if (jit_cfg_br.fw_launch_addr_value != 0) {
-                                cluster_.write_core_immediate(
-                                    mmio_id, virtual_core,
-                                    std::vector<uint32_t>{jit_cfg_br.fw_launch_addr_value},
-                                    jit_cfg_br.fw_launch_addr);
+                            // FIX CF: only proceed if this arch has active-ETH JIT configs.
+                            if (hal_.get_processor_classes_count(HalProgrammableCoreType::ACTIVE_ETH) > 0) {
+                                const auto& jit_cfg_br = hal_.get_jit_build_config(aeth_idx_br, 0, 0);
+                                if (jit_cfg_br.fw_launch_addr_value != 0) {
+                                    cluster_.write_core_immediate(
+                                        mmio_id, virtual_core,
+                                        std::vector<uint32_t>{jit_cfg_br.fw_launch_addr_value},
+                                        jit_cfg_br.fw_launch_addr);
+                                }
                             }
                         } catch (...) {
                             // Non-fatal — deassert proceeds
@@ -1380,24 +1391,31 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                             // so non-MMIO ERISC ROM reads a valid entry point.  Without this,
                             // fw_launch_addr may be 0 (cleared by FIX BN) → ROM hangs at
                             // 0x49705180.  Same pattern as FIX CE/CC/BR/BO.
+                            // FIX CF v2 (#42429): Guard get_jit_build_config with
+                            // get_processor_classes_count() > 0 (same fix applied to FIX BR above).
+                            // On QA/Quasar, processor_classes_ is empty and calling get_jit_build_config
+                            // is UB in Release. Check count before accessing.
                             try {
                                 const auto aeth_idx_cf2 =
                                     hal_.get_programmable_core_type_index(HalProgrammableCoreType::ACTIVE_ETH);
-                                const auto& jit_cfg_cf2 = hal_.get_jit_build_config(aeth_idx_cf2, 0, 0);
-                                if (jit_cfg_cf2.fw_launch_addr_value != 0) {
-                                    cluster_.write_core_immediate(
-                                        non_mmio_id,
-                                        eth_virt,
-                                        std::vector<uint32_t>{jit_cfg_cf2.fw_launch_addr_value},
-                                        jit_cfg_cf2.fw_launch_addr);
-                                    log_debug(
-                                        tt::LogAlways,
-                                        "teardown: FIX CF (#42429) — FIX AY path: wrote "
-                                        "fw_launch_addr_value 0x{:08x} to non-MMIO dev={} ETH {} "
-                                        "before deassert.",
-                                        jit_cfg_cf2.fw_launch_addr_value,
-                                        non_mmio_id,
-                                        eth_virt.str());
+                                // FIX CF: only proceed if this arch has active-ETH JIT configs.
+                                if (hal_.get_processor_classes_count(HalProgrammableCoreType::ACTIVE_ETH) > 0) {
+                                    const auto& jit_cfg_cf2 = hal_.get_jit_build_config(aeth_idx_cf2, 0, 0);
+                                    if (jit_cfg_cf2.fw_launch_addr_value != 0) {
+                                        cluster_.write_core_immediate(
+                                            non_mmio_id,
+                                            eth_virt,
+                                            std::vector<uint32_t>{jit_cfg_cf2.fw_launch_addr_value},
+                                            jit_cfg_cf2.fw_launch_addr);
+                                        log_debug(
+                                            tt::LogAlways,
+                                            "teardown: FIX CF (#42429) — FIX AY path: wrote "
+                                            "fw_launch_addr_value 0x{:08x} to non-MMIO dev={} ETH {} "
+                                            "before deassert.",
+                                            jit_cfg_cf2.fw_launch_addr_value,
+                                            non_mmio_id,
+                                            eth_virt.str());
+                                    }
                                 }
                             } catch (const std::exception& ex_cf2) {
                                 log_warning(
@@ -1658,15 +1676,23 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                         // FIX BN clears fw_launch_addr=0 after heartbeat confirmation; FIX PE clears it for cleanly
                         // terminated channels. Without this write, ERISC ROM reads fw_launch_addr=0 and enters the
                         // indefinite wait loop at 0x49705180, causing FIX AC heartbeat poll to time out and FIX PG.
+                        //
+                        // FIX CF (#42429): Guard get_jit_build_config with get_processor_classes_count() > 0.
+                        // On arches with no active-ETH JIT configs (e.g. QA/Quasar), processor_classes_ is empty;
+                        // calling get_jit_build_config(0,0) on an empty vector is UB in Release (TT_ASSERT no-ops).
+                        // Check count first so we never crash and never write a stale 0 value.
                         try {
                             const auto aeth_idx_br = hal_.get_programmable_core_type_index(
                                 HalProgrammableCoreType::ACTIVE_ETH);
-                            const auto& jit_cfg_br = hal_.get_jit_build_config(aeth_idx_br, 0, 0);
-                            if (jit_cfg_br.fw_launch_addr_value != 0) {
-                                cluster_.write_core_immediate(
-                                    mmio_id, virtual_core,
-                                    std::vector<uint32_t>{jit_cfg_br.fw_launch_addr_value},
-                                    jit_cfg_br.fw_launch_addr);
+                            // FIX CF: only proceed if this arch has active-ETH JIT configs.
+                            if (hal_.get_processor_classes_count(HalProgrammableCoreType::ACTIVE_ETH) > 0) {
+                                const auto& jit_cfg_br = hal_.get_jit_build_config(aeth_idx_br, 0, 0);
+                                if (jit_cfg_br.fw_launch_addr_value != 0) {
+                                    cluster_.write_core_immediate(
+                                        mmio_id, virtual_core,
+                                        std::vector<uint32_t>{jit_cfg_br.fw_launch_addr_value},
+                                        jit_cfg_br.fw_launch_addr);
+                                }
                             }
                         } catch (...) {
                             // Non-fatal — deassert proceeds
