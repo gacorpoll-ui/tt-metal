@@ -661,6 +661,36 @@ void RiscFirmwareInitializer::teardown(std::unordered_set<InitializerKey>& /*ini
                     "teardown: FIX CA (#42429) — write-only reset of {} non-MMIO ETH ERISC device(s) "
                     "via MMIO relay (BEFORE FIX AC MMIO reset) to break ETH link-training deadlock.",
                     relay_broken_non_mmio.size());
+                // FIX CD (#42429): Pre-mark relay broken for all relay_broken_non_mmio chips BEFORE
+                // the write-only reset loop to avoid the 5-second flush timeout per chip.
+                //
+                // Root cause of 20s FIX CA delay (run #25951284356, SHA 6246f45f):
+                //   assert_risc_reset_at_core_write_only → write_to_non_mmio (fast, enqueues command)
+                //   → wait_for_non_mmio_flush (polls for up to 5s for MMIO ERISC to ACK relay).
+                //   For FIX WL-RS chips (all ETH channels in BASE-UMD), the relay ERISC cannot
+                //   forward commands to the non-MMIO chip → flush ACK never arrives → 5s timeout.
+                //   UMD catches the timeout internally (FIX AE), marks relay_broken_, returns
+                //   normally — so FIX CA sees ca_failed=0 but still spends 5s × N chips = 20s.
+                //   Combined with FIX DT-1 (~8s) and FIX AC heartbeat poll (~5s), warm-up teardown
+                //   exceeds 41s → FIX TO fires tt-smi -r → ERISCs left at 0x49705180 next session.
+                //
+                // Fix: mark_relay_broken() before the loop so wait_for_non_mmio_flush immediately
+                //   returns (relay_broken_=true path, line 576 of remote_communication_legacy_firmware.cpp).
+                //   write_to_non_mmio has NO relay_broken_ guard — it still enqueues the SOFT_RESET
+                //   write commands fire-and-forget. Only the flush ACK wait is bypassed, saving 20s.
+                for (const tt::ChipId relay_chip_id : relay_broken_non_mmio) {
+                    try {
+                        cluster_.mark_relay_broken(relay_chip_id);
+                        log_info(
+                            tt::LogAlways,
+                            "teardown: FIX CD (#42429) — pre-marked relay broken for chip {} "
+                            "(eliminates 5s flush timeout in FIX CA write-only reset). (#42429)",
+                            relay_chip_id);
+                    } catch (...) {
+                        // Non-fatal: if pre-marking fails, FIX AE will still mark it during the
+                        // first assert_risc_reset_at_core_write_only call (5s timeout per chip).
+                    }
+                }
                 for (const tt::ChipId non_mmio_id : relay_broken_non_mmio) {
                     bool device_failed = false;
                     for (const auto& eth_logical_core :
