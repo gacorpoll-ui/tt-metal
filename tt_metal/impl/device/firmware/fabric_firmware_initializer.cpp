@@ -3498,6 +3498,74 @@ void FabricFirmwareInitializer::compile_and_configure_fabric() {
             configured_count++;
         }
     }
+    // FIX WL-RS (#42429): After Pass 1, promote any non-MMIO device whose ALL active ETH
+    // channels are base-UMD into dead_relay_devices_ so ring-sync skips them.
+    //
+    // Context: FIX WL (device.cpp) skips write_launch_msg_to_core for base-UMD relay-
+    // receiving ERISCs on non-MMIO devices (e.g. device 4/5/6/7 chan 0 and chan 7 on T3K).
+    // This prevents the ~5s relay-flush timeout seen when those ERISCs are inadvertently
+    // launched via the UMD relay, causing them to stop ACKing flush packets.
+    //
+    // However, skipping launch messages means these devices never load fabric firmware.
+    // They cannot reach LOCAL_HANDSHAKE_COMPLETE, so wait_for_fabric_router_sync() would
+    // spin for the full 120s timeout before giving up on them.
+    //
+    // On MAIN (pre-FIX CZ DE), these channels were misclassified as CORRUPT (wrong
+    // edm_status_address 0x18090 instead of 0x18070), landed in probe_dead_channels_map,
+    // and were already in dead_relay_devices_ via FIX E2.  FIX CZ DE corrects the address,
+    // so they now land in base_umd_channels_map instead — but the dead_relay skip that was
+    // implicit must now be explicit here.
+    //
+    // Condition: non-MMIO device, not already dead-relay, ALL active ETH channels are
+    // base-UMD (none received a launch message).  When this condition holds, the relay
+    // is structurally intact (FIX WL preserved it) but no fabric firmware was loaded, so
+    // the device will never participate in ring-sync or dispatch.
+    for (auto* dev : compiled_devices) {
+        if (!dev) {
+            continue;
+        }
+        const bool is_non_mmio = cluster_.get_associated_mmio_device(dev->id()) != dev->id();
+        if (!is_non_mmio || dead_relay_devices_.count(dev->id()) > 0) {
+            continue;
+        }
+        const auto& base_umd = base_umd_channels_map[dev->id()];
+        if (base_umd.empty()) {
+            continue;  // no base-UMD channels — firmware was loaded normally
+        }
+        const auto fabric_node_id_fwlrs = [&]() -> std::optional<tt_fabric::FabricNodeId> {
+            try {
+                return control_plane_.get_fabric_node_id_from_physical_chip_id(dev->id());
+            } catch (...) {
+                return std::nullopt;
+            }
+        }();
+        if (!fabric_node_id_fwlrs) {
+            continue;
+        }
+        const auto& active_channels = control_plane_.get_active_fabric_eth_channels(*fabric_node_id_fwlrs);
+        bool all_channels_no_firmware = !active_channels.empty();
+        for (const auto& [chan_id, dir] : active_channels) {
+            const bool no_fw = base_umd.count(chan_id) || get_external(dev->id()).count(chan_id);
+            if (!no_fw) {
+                all_channels_no_firmware = false;
+                break;
+            }
+        }
+        if (!all_channels_no_firmware) {
+            continue;
+        }
+        dead_relay_devices_.insert(dev->id());
+        dev->set_fabric_relay_path_broken();
+        log_warning(
+            tt::LogMetal,
+            "compile_and_configure_fabric: Device {} non-MMIO all-base-UMD — FIX WL "
+            "skipped write_launch_msg_to_core for all {} active ETH channel(s), no fabric "
+            "firmware loaded.  Adding to dead_relay_devices_ so wait_for_eth_cores_launched "
+            "and wait_for_fabric_router_sync skip this device (FIX WL-RS #42429).",
+            dev->id(),
+            base_umd.size());
+    }
+
     // Pass 2: MMIO devices (PCIe-direct — safe to configure after non-MMIO relay ops complete)
     for (auto* dev : compiled_devices) {
         if (dev && cluster_.get_associated_mmio_device(dev->id()) == dev->id()) {
