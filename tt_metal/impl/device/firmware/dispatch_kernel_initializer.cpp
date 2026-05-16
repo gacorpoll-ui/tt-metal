@@ -296,17 +296,63 @@ void DispatchKernelInitializer::wait_for_dispatch_cores() const {
         // to avoid adding 5s per-device overhead to every test teardown — this is purely waste since
         // the exception is caught and teardown continues regardless.
         // NOTE: was 200ms; increased to 1000ms (#42429) to avoid premature timeout on slower relay paths.
-        try {
-            tt::llrt::internal_::wait_until_cores_done(dev->id(), dev_msgs::RUN_MSG_GO, dispatch_cores, 1000, true);
-        } catch (const std::exception& e) {
+        //
+        // FIX DE (#42429): For MMIO devices whose tunneled non-MMIO peers ALL have broken relay
+        // paths, the dispatch ERISC on the master router channel (chan=8) will inevitably time out —
+        // it is waiting for the peer ERISC on the non-MMIO device which can no longer respond
+        // through the broken relay.  Waiting 1000ms × 4 MMIO devices = ~4s per teardown event;
+        // with multiple teardown cycles (warm-up + real test) the CI 60s job timeout gets hit.
+        //
+        // Check: if this is an MMIO device and every non-MMIO device tunneled through it has
+        // fabric_relay_path_broken_ == true, skip the polling wait and go directly to rescue.
+        // This converts 4 × 1000ms sequential timeouts into ~0ms.
+        bool all_tunnel_peers_broken = false;
+        if (dev->is_mmio_capable()) {
+            auto tunnels = cluster_.get_tunnels_from_mmio_device(dev->id());
+            if (!tunnels.empty()) {
+                bool any_working_peer = false;
+                for (const auto& tunnel : tunnels) {
+                    // tunnel[0] is the MMIO device itself; tunnel[1..] are the non-MMIO hops.
+                    for (uint32_t ts = 1; ts < tunnel.size(); ++ts) {
+                        ChipId peer_id = tunnel[ts];
+                        Device* peer_dev = device_manager_->get_device(peer_id);
+                        if (peer_dev == nullptr || !peer_dev->is_fabric_relay_path_broken()) {
+                            any_working_peer = true;
+                            break;
+                        }
+                    }
+                    if (any_working_peer) {
+                        break;
+                    }
+                }
+                all_tunnel_peers_broken = !tunnels.empty() && !any_working_peer;
+            }
+        }
+        if (all_tunnel_peers_broken) {
+            // All non-MMIO peers are dead-relay — the master router dispatch ERISC on this
+            // MMIO device cannot complete TERMINATE (peer never acks).  Skip the 1000ms wait
+            // and proceed directly to rescue.  This is the same action FIX DT-1 takes after
+            // the timeout, but without burning 1000ms first.
             log_warning(
                 tt::LogMetal,
-                "[FIX DT-1 (#42429)] Device {}: dispatch ERISC teardown timeout (1000ms) — "
-                "rescue_stuck_dispatch_cores firing. ERISCs may be left with stale go_msg=0x02. "
-                "Warm-up will detect this and trigger remedial tt-smi -r. Error: {}",
-                dev->id(),
-                e.what());
+                "[FIX DE (#42429)] Device {}: all tunneled non-MMIO peers have broken relay paths — "
+                "skipping 1000ms dispatch ERISC teardown wait and going directly to rescue.",
+                dev->id());
             rescue_stuck_dispatch_cores(dev);
+        } else {
+            try {
+                tt::llrt::internal_::wait_until_cores_done(
+                    dev->id(), dev_msgs::RUN_MSG_GO, dispatch_cores, 1000, true);
+            } catch (const std::exception& e) {
+                log_warning(
+                    tt::LogMetal,
+                    "[FIX DT-1 (#42429)] Device {}: dispatch ERISC teardown timeout (1000ms) — "
+                    "rescue_stuck_dispatch_cores firing. ERISCs may be left with stale go_msg=0x02. "
+                    "Warm-up will detect this and trigger remedial tt-smi -r. Error: {}",
+                    dev->id(),
+                    e.what());
+                rescue_stuck_dispatch_cores(dev);
+            }
         }
         // FIX PF (GAP-57): Clear fw_launch_addr for ALL dispatch ETH cores on MMIO devices
         // after teardown, regardless of whether they completed normally or were rescued.
