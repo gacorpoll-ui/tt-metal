@@ -188,6 +188,17 @@ FabricCoresHealth configure_fabric_cores(
                 pre_known_dead_channels.size());
         }
     }
+    // FIX RR (#42429): MMIO device — attempt PCIe-direct soft reset for all dead channels.
+    // FIX DC (#42429): Two-pass: assert+deassert all first, then parallel-poll.
+    // Sequential cost: N × 500ms. Parallel cost: 500ms regardless of N.
+    struct FIX_BH_PollState {
+        uint32_t router_chan;
+        tt_cxy_pair core_loc;
+        bool booted = false;
+        bool done = false;
+    };
+    std::vector<FIX_BH_PollState> bh_poll_states;
+
     {
         const auto chip_id = device->id();
         for (const auto& [router_chan, _] : router_chans_and_direction) {
@@ -207,8 +218,8 @@ FabricCoresHealth configure_fabric_cores(
                     continue;
                 }
                 // FIX RR (#42429): MMIO device — attempt PCIe-direct soft reset.
-                // If soft reset or ROM boot succeeds, remove from dead_channels so L1 write proceeds.
-                // If it fails, channel stays in dead_channels for degraded mode (FIX BH-DEGRADE).
+                // FIX DC (#42429): Pass 1 — assert + write fw_launch_addr + deassert only.
+                // Polling moved to Pass 2 (parallel) below to avoid N × 500ms sequential wait.
                 try {
                     auto virtual_core = cluster.get_virtual_eth_core_from_channel(chip_id, router_chan);
                     tt_cxy_pair core_loc(chip_id, virtual_core);
@@ -236,76 +247,9 @@ FabricCoresHealth configure_fabric_cores(
                         // fw_launch_addr was not previously zeroed.
                     }
                     cluster.deassert_risc_reset_at_core(core_loc, tt::umd::RiscType::ERISC0);
-                    // FIX BH (#42429): Wait for ERISC to boot from ROM phase (0x49705180)
-                    // to base-UMD firmware before declaring recovery.  Without this wait,
-                    // write_launch_msg_to_core races with ROM boot: the host writes the
-                    // pre-launch canary (0xdeadb07e) to L1 while ERISC is still in ROM
-                    // and cannot process the launch message.  0xdeadb07e then persists in L1;
-                    // FIX BG marks the master channel as dead; AllGather is skipped (FIX QE);
-                    // and the test fails — even though FIX RR's assert/deassert succeeded.
-                    //
-                    // We poll edm_status_address via PCIe-direct cluster.read_core until the
-                    // value transitions away from the ROM postcode (kRomPostcode = 0x49705180).
-                    // If it transitions within kFIX_BH_BootWaitMs (500ms) we declare recovery.
-                    // If it does not, the channel was pre-confirmed dead and stays in dead_channels
-                    // for degraded mode (FIX BH-DEGRADE) — not promoted to newly_dead_channels.
-                    {
-                        constexpr uint32_t kRomPostcode_BH = 0x49705180u;
-                        constexpr uint32_t kFIX_BH_BootWaitMs = 500;
-                        constexpr uint32_t kFIX_BH_PollIntervalMs = 5;
-                        const uint64_t edm_addr =
-                            static_cast<uint64_t>(router_config.edm_status_address);
-                        uint32_t elapsed_bh_ms = 0;
-                        bool fix_bh_ok = false;
-                        while (elapsed_bh_ms < kFIX_BH_BootWaitMs) {
-                            std::vector<uint32_t> status_buf(1, 0);
-                            cluster.read_core(status_buf, sizeof(uint32_t), core_loc, edm_addr);
-                            if (status_buf[0] != kRomPostcode_BH) {
-                                fix_bh_ok = true;
-                                log_info(
-                                    tt::LogMetal,
-                                    "configure_fabric_cores: device {} channel {} FIX BH — "
-                                    "ERISC booted from ROM to 0x{:08x} after {}ms.",
-                                    chip_id,
-                                    router_chan,
-                                    status_buf[0],
-                                    elapsed_bh_ms);
-                                break;
-                            }
-                            std::this_thread::sleep_for(
-                                std::chrono::milliseconds(kFIX_BH_PollIntervalMs));
-                            elapsed_bh_ms += kFIX_BH_PollIntervalMs;
-                        }
-                        if (fix_bh_ok) {
-                            // Boot succeeded — clear from dead set so L1 init proceeds and
-                            // configure_fabric() loads firmware on this channel.
-                            dead_channels.erase(router_chan);
-                            recovered_channels.insert(router_chan);
-                            log_info(
-                                tt::LogMetal,
-                                "configure_fabric_cores: device {} channel {} FIX RR+BH — "
-                                "PCIe-direct soft reset and ROM boot both succeeded. "
-                                "Channel cleared from dead_channels; L1 init will proceed.",
-                                chip_id,
-                                router_chan);
-                        } else {
-                            // FIX BH-DEGRADE (#42429): ROM boot did not complete within 500ms.
-                            // This channel was pre-confirmed dead by FIX BT — it was already in
-                            // dead_channels before FIX RR attempted recovery.  Staying dead after
-                            // a failed recovery attempt is NOT an unexpected new failure; it is
-                            // "still dead".  Leave dead_channels intact (degraded mode) rather
-                            // than promoting to newly_dead_channels (which triggers TT_THROW).
-                            log_warning(
-                                tt::LogMetal,
-                                "configure_fabric_cores: device {} channel {} FIX BH — "
-                                "ERISC did not exit ROM phase within {}ms "
-                                "(still at 0x49705180 after FIX RR deassert). "
-                                "Channel remains in dead_channels; continuing in degraded mode.",
-                                chip_id,
-                                router_chan,
-                                kFIX_BH_BootWaitMs);
-                        }
-                    }
+                    // FIX DC (#42429): Collect this channel for parallel boot poll (Pass 2).
+                    // Polling is deferred so all channels boot concurrently under a shared deadline.
+                    bh_poll_states.push_back({router_chan, core_loc, false, false});
                 } catch (const std::exception& e) {
                     // FIX BH-DEGRADE: Channel was pre-confirmed dead; soft reset failure keeps it
                     // dead (degraded mode), not newly_dead (TT_THROW).
@@ -397,6 +341,72 @@ FabricCoresHealth configure_fabric_cores(
                     "(unknown exception). Skipping L1 clear for this channel.",
                     chip_id,
                     router_chan);
+            }
+        }
+    }
+
+    // FIX DC (#42429) FIX BH Pass 2: parallel-poll all MMIO dead channels that were deasserted
+    // in Pass 1.  All channels boot concurrently under a single shared deadline.
+    // Sequential cost: N × 500ms (e.g. 24 × 500ms = 12s). Parallel cost: 500ms regardless of N.
+    if (!bh_poll_states.empty()) {
+        constexpr uint32_t kRomPostcode_BH = 0x49705180u;
+        constexpr uint32_t kFIX_BH_BootWaitMs = 500;
+        constexpr uint32_t kFIX_BH_PollIntervalMs = 5;
+        const uint64_t edm_addr_bh = static_cast<uint64_t>(router_config.edm_status_address);
+        const auto chip_id_bh = device->id();
+        log_info(
+            tt::LogMetal,
+            "FIX DC (#42429) FIX BH: parallel-polling {} MMIO dead channel(s) for ROM exit "
+            "(shared {}ms deadline, dev={}).",
+            bh_poll_states.size(),
+            kFIX_BH_BootWaitMs,
+            chip_id_bh);
+        const auto bh_deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(kFIX_BH_BootWaitMs);
+        while (std::chrono::steady_clock::now() < bh_deadline) {
+            bool all_done = true;
+            for (auto& st : bh_poll_states) {
+                if (st.done) continue;
+                all_done = false;
+                std::vector<uint32_t> status_buf(1, 0);
+                cluster.read_core(status_buf, sizeof(uint32_t), st.core_loc, edm_addr_bh);
+                if (status_buf[0] != kRomPostcode_BH) {
+                    st.booted = true;
+                    st.done = true;
+                    log_info(
+                        tt::LogMetal,
+                        "FIX DC (#42429) FIX BH: device {} channel {} booted from ROM to 0x{:08x}.",
+                        chip_id_bh,
+                        st.router_chan,
+                        status_buf[0]);
+                }
+            }
+            if (all_done) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(kFIX_BH_PollIntervalMs));
+        }
+        for (auto& st : bh_poll_states) {
+            if (st.booted) {
+                // Boot succeeded — clear from dead set so L1 init proceeds and
+                // configure_fabric() loads firmware on this channel.
+                dead_channels.erase(st.router_chan);
+                recovered_channels.insert(st.router_chan);
+                log_info(
+                    tt::LogMetal,
+                    "FIX DC (#42429) FIX RR+BH: device {} channel {} recovered (parallel poll). "
+                    "Cleared from dead_channels; L1 init will proceed.",
+                    chip_id_bh,
+                    st.router_chan);
+            } else {
+                // FIX BH-DEGRADE (#42429): ROM boot did not complete within 500ms.
+                // This channel was pre-confirmed dead by FIX BT — staying dead after a failed
+                // recovery attempt is "still dead", not a new failure.  Leave dead_channels intact.
+                log_warning(
+                    tt::LogMetal,
+                    "FIX DC (#42429) FIX BH: device {} channel {} did not exit ROM within {}ms. "
+                    "Remains in dead_channels (degraded mode).",
+                    chip_id_bh,
+                    st.router_chan,
+                    kFIX_BH_BootWaitMs);
             }
         }
     }

@@ -3197,48 +3197,69 @@ void FabricFirmwareInitializer::compile_and_configure_fabric() {
                 }
             }
 
-            // Phase D: Poll each deasserted channel for base-UMD boot.
-            // All channels deasserted together → ETH link training fires simultaneously on all
-            // pairs → all boot to base-UMD firmware in roughly the same window.
+            // Phase D: Parallel poll of all deasserted channels for base-UMD boot.
+            // FIX DC (#42429): Changed from sequential per-channel 2000ms poll to shared-deadline
+            // parallel poll.  Sequential cost: N_channels × kRRNM_BootWaitMs (24 × 2s = 48s).
+            // Parallel cost: max(kRRNM_BootWaitMs) = 2s regardless of channel count.
             const uint64_t edm_addr_cs =
                 static_cast<uint64_t>(router_config_rrnm.edm_status_address);
 
-            for (const auto& ac : step1_deasserted) {
-                uint32_t elapsed_ms = 0;
+            struct PhaseDPollState {
+                const Step1AssertedChannel* ac;
                 bool booted = false;
-                while (elapsed_ms < kRRNM_BootWaitMs) {
+                bool done = false;
+            };
+            std::vector<PhaseDPollState> phase_d_states;
+            phase_d_states.reserve(step1_deasserted.size());
+            for (const auto& ac : step1_deasserted) {
+                phase_d_states.push_back({&ac, false, false});
+            }
+            log_info(
+                tt::LogMetal,
+                "FIX DC (#42429) FIX CS Phase D: parallel-polling {} MMIO channel(s) for base-UMD boot "
+                "(shared {}ms deadline). (#42429)",
+                phase_d_states.size(),
+                kRRNM_BootWaitMs);
+
+            const auto phase_d_deadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(kRRNM_BootWaitMs);
+            while (std::chrono::steady_clock::now() < phase_d_deadline) {
+                bool all_done = true;
+                for (auto& st : phase_d_states) {
+                    if (st.done) continue;
+                    all_done = false;
                     std::vector<uint32_t> status_buf(1, 0);
                     try {
                         cluster_.read_core(
-                            status_buf, sizeof(uint32_t), ac.core_loc, edm_addr_cs);
+                            status_buf, sizeof(uint32_t), st.ac->core_loc, edm_addr_cs);
                     } catch (...) {
                         // Transient read error; keep polling.
                     }
                     if (status_buf[0] == kBaseUmdSentinel_RRNM) {
-                        booted = true;
+                        st.booted = true;
+                        st.done = true;
                         log_info(
                             tt::LogMetal,
-                            "FIX CS (#42429) FIX RR-NM step 1: MMIO dev={} chan={} reached "
-                            "base-UMD (0x49706550) after {}ms. Relay path available. (#42429)",
-                            ac.dev->id(),
-                            ac.chan,
-                            elapsed_ms);
-                        break;
+                            "FIX DC (#42429) FIX CS Phase D: MMIO dev={} chan={} reached base-UMD "
+                            "(0x49706550). Relay path available. (#42429)",
+                            st.ac->dev->id(),
+                            st.ac->chan);
                     }
-                    std::this_thread::sleep_for(
-                        std::chrono::milliseconds(kRRNM_PollIntervalMs));
-                    elapsed_ms += kRRNM_PollIntervalMs;
                 }
-                if (booted) {
-                    mmio_recovered_channels[ac.dev->id()].insert(ac.chan);
+                if (all_done) break;
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(kRRNM_PollIntervalMs));
+            }
+            for (auto& st : phase_d_states) {
+                if (st.booted) {
+                    mmio_recovered_channels[st.ac->dev->id()].insert(st.ac->chan);
                 } else {
                     log_warning(
                         tt::LogMetal,
-                        "FIX CS (#42429) FIX RR-NM step 1: MMIO dev={} chan={} did not exit ROM "
-                        "within {}ms after collective deassert — relay path NOT available for "
-                        "non-MMIO peer. (#42429)",
-                        ac.dev->id(),
-                        ac.chan,
+                        "FIX DC (#42429) FIX CS Phase D: MMIO dev={} chan={} did not reach base-UMD "
+                        "within {}ms after collective deassert — relay path NOT available. (#42429)",
+                        st.ac->dev->id(),
+                        st.ac->chan,
                         kRRNM_BootWaitMs);
                 }
             }
