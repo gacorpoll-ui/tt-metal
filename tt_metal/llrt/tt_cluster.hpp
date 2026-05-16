@@ -89,6 +89,12 @@ public:
     // initialize_and_launch_firmware for unreachable devices, and by read_core to avoid
     // per-read 5s timeouts in wait_until_cores_done.
     bool is_relay_broken(ChipId chip_id) const { return relay_broken_chips_.count(chip_id) > 0; }
+    // FIX CE (#42429): Pre-mark relay as broken so wait_for_non_mmio_flush returns immediately
+    // during teardown instead of blocking for up to 5s per chip on dead ERISC CMD queues.
+    void mark_relay_broken(ChipId chip_id) {
+        relay_broken_chips_.insert(chip_id);
+        this->driver_->mark_relay_broken(chip_id);
+    }
     // FIX XY-2 (#42429): clear relay_broken after successful ERISC force-reset so subsequent
     // multicast writes and launch phases are not permanently suppressed.
     void clear_relay_broken(ChipId chip_id) {
