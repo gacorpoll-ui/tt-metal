@@ -751,6 +751,62 @@ void Device::configure_fabric(
                 }
             }
 
+            // FIX WL (#42429): skip write_launch_msg_to_core for base-UMD relay channels.
+            //
+            // On non-MMIO devices (e.g. device 4 chan 0/7 on T3K), skip_soft_reset_channels
+            // contains the ETH channels running live base-UMD relay-receiving firmware
+            // (edm_status == 0x49706550).  These ERISCs are forwarding host relay writes to this
+            // device via the MMIO relay ERISC (device 0 chan 8).
+            //
+            // Writing a launch message to a base-UMD relay-receiving ERISC on a non-MMIO device
+            // causes it to start executing fabric firmware and stop relaying writes.  The MMIO
+            // relay ERISC (device 0 chan 8) then calls wait_for_non_mmio_flush and waits for an
+            // ACK that never comes — timing out at ~5 seconds (FIX CH timeout observed in CI
+            // runs 25949429100 and 25949951144).
+            //
+            // Before FIX CZ DE, these channels were misclassified as CORRUPT (read garbage at
+            // 0x18090 instead of 0x49706550 at 0x18070) and landed in all_dead_channels, so
+            // write_launch_msg was already skipped.  FIX CZ DE corrects the address, so they now
+            // correctly land in skip_soft_reset_channels — but the write_launch_msg skip that was
+            // implicit via all_dead_channels must now be explicit here.
+            //
+            // For MMIO device channels (e.g. device 0 chan 8): the write goes directly over PCIe,
+            // no relay flush is involved, so writing a launch message there is safe.  Those
+            // channels need the launch message to start fabric firmware.  The guard below only
+            // fires for non-MMIO devices (is_mmio_capable() == false) because:
+            //   - MMIO device skip_soft_reset channels get launch messages safely (PCIe direct)
+            //   - non-MMIO device skip_soft_reset channels must NOT get launch messages (relay)
+            if (core_type == CoreType::ETH && !skip_soft_reset_channels.empty() && !is_mmio_capable()) {
+                try {
+                    auto eth_chan = soc_desc_for_dead.get_eth_channel_for_core(
+                        tt::umd::CoreCoord(logical_core.x, logical_core.y, CoreType::ETH, CoordSystem::LOGICAL),
+                        CoordSystem::LOGICAL);
+                    if (skip_soft_reset_channels.count(eth_chan)) {
+                        log_warning(
+                            tt::LogMetal,
+                            "configure_fabric: Device {} skipping write_launch_msg_to_core for "
+                            "base-UMD relay ETH core ({},{}) channel {} — writing launch msg to "
+                            "relay-receiving ERISC would disrupt relay flush protocol "
+                            "(FIX WL #42429)",
+                            this->id_,
+                            logical_core.x,
+                            logical_core.y,
+                            eth_chan);
+                        continue;
+                    }
+                } catch (const std::exception& e) {
+                    log_warning(
+                        tt::LogMetal,
+                        "configure_fabric: Device {} cannot resolve ETH channel for logical core "
+                        "({},{}) in skip_soft_reset_channels check — skipping write_launch_msg_to_core: {}",
+                        this->id_,
+                        logical_core.x,
+                        logical_core.y,
+                        e.what());
+                    continue;
+                }
+            }
+
             // FIX VC2-EXT (#42429): skip write_launch_msg_to_core for external UMD channels.
             // Channels in external_umd_channels (e.g. ch14/15 on MMIO devices — peer in cluster
             // but no TRANSLATED coord) must not receive fabric firmware.  FIX VC (ce966d016f8)
