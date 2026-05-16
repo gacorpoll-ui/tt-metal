@@ -314,15 +314,15 @@ FabricEriscDatamoverConfig::FabricEriscDatamoverConfig(Topology topology) : topo
     }
 
     this->handshake_addr = next_l1_addr;
-    // Reserve the full handshake_info_t footprint (32B) before placing preping_addr.
-    // handshake_info_t is 32 bytes; the first eth_channel_sync_size (16B) holds local_value +
-    // neighbor IDs + padding, and the second 16B is scratch[0..3].  preping_addr previously
-    // aliased scratch[0] (H+16) because only eth_channel_sync_size was reserved here.
-    next_l1_addr += handshake_info_size;
-
-    // FIX CZ (#42429): 16B pre-ping rendezvous slot, 16-byte aligned (same as handshake).
-    // Both MMIO and non-MMIO ERISCs need the same address so the ETH DMA lands correctly.
-    this->preping_addr = next_l1_addr;
+    // Reserve eth_channel_sync_size (16B) for the handshake slot.  handshake_info_t is
+    // actually 32B (local_value + neighbor IDs + scratch[0..3]) but only the first 16B are
+    // used by fabric_receiver_side_handshake / fabric_sender_side_handshake.
+    // NOTE: preping_addr is placed AFTER edm_status_address (see below) to preserve the
+    // base-UMD firmware sync address at 0x18070 — terminate_stale_erisc_routers() relies
+    // on edm_status_address matching the address where base-UMD writes its 0x49706550
+    // sentinel.  Moving preping_addr here would shift edm_status_address to 0x18090 and
+    // cause terminate_stale_erisc_routers() to read ROM-initialized garbage (0x65206530),
+    // falsely declaring all ETH channels CORRUPT on freshly-booted hardware (#42429).
     next_l1_addr += eth_channel_sync_size;
 
     // FIX CZ Option 5 (#42429): Session-unique gate value for the PPWT spin.
@@ -380,7 +380,14 @@ FabricEriscDatamoverConfig::FabricEriscDatamoverConfig(Topology topology) : topo
     this->edm_local_sync_address = termination_signal_address + field_size;
     this->edm_status_address = edm_local_sync_address + field_size;
 
-    uint32_t buffer_address = edm_status_address + field_size;
+    // FIX CZ (#42429): Pre-ping rendezvous slot placed immediately after edm_status_address.
+    // This preserves the historical edm_status_address offset (0x18070) that aligns with
+    // the base-UMD firmware's erisc_sync_addr write.  Placing preping_addr here (not before
+    // the counter chain) ensures terminate_stale_erisc_routers() sees the real base-UMD
+    // sentinel (0x49706550) rather than ROM-initialized garbage at a shifted address.
+    this->preping_addr = edm_status_address + field_size;
+
+    uint32_t buffer_address = static_cast<uint32_t>(this->preping_addr) + eth_channel_sync_size;
 
     // ----------- Sender Channels
     for (uint32_t i = 0; i < num_sender_channels; i++) {
@@ -733,7 +740,7 @@ FabricEriscDatamoverBuilder::FabricEriscDatamoverBuilder(
     is_inter_mesh(local_fabric_node_id.mesh_id != peer_fabric_node_id.mesh_id),
     handshake_address(tt::round_up(
         tt::tt_metal::hal::get_erisc_l1_unreserved_base(), FabricEriscDatamoverConfig::eth_channel_sync_size)),
-    preping_address(handshake_address + FabricEriscDatamoverConfig::handshake_info_size),
+    preping_address(static_cast<size_t>(config.preping_addr)),
     channel_buffer_size(config.channel_buffer_size_bytes),
     local_sender_channels_connection_info_addr(config.sender_channels_worker_conn_info_base_address),
     termination_signal_ptr(config.termination_signal_address),
